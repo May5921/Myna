@@ -687,6 +687,12 @@ export function init(ctx) {
 			case "Tab":
 				e.preventDefault();
 				e.stopPropagation();
+				if (e.shiftKey) {
+					// Shift+Tab 只关菜单，不消费补全
+					dismissedValue = input.value;
+					close();
+					break;
+				}
 				accept();
 				break;
 			case "Escape":

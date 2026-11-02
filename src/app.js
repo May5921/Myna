@@ -28,7 +28,7 @@ const state = {
 const attachments = { get: () => [], clear: () => {} };
 
 // ---------- 文本工具 ----------
-const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
 // 极简 markdown：段落、列表、标题、代码块、行内代码/加粗。不做完整解析，够用即可。
 // 相对/绝对/Windows 盘符路径（对齐 DSH isExplicitFilePath）
@@ -290,6 +290,7 @@ function addUser(text) {
 	row.append(bubble);
 	stream.append(row);
 	follow();
+	return row;
 }
 
 function addAssistantRow() {
@@ -1213,6 +1214,7 @@ async function submit() {
 	autosize();
 	updateSend();
 	addUser(text || `[${extra.length} 张图片]`);
+	const row = stream.lastElementChild;
 	setStreaming(true);
 	try {
 		const cmd = { type: "prompt", message: text };
@@ -1220,6 +1222,13 @@ async function submit() {
 		await window.pi.command(cmd);
 		attachments.clear();
 	} catch (e) {
+		// 发送失败：回滚刚插入的“假发送”气泡，并把草稿还给用户
+		if (row?.classList.contains("mine")) row.remove();
+		if (!input.value) {
+			input.value = text;
+			autosize();
+			updateSend();
+		}
 		showError(e.message);
 		setStreaming(false);
 	}
@@ -1265,7 +1274,16 @@ window.pi.onEvent((ev) => {
 		case "tool_execution_start": {
 			const el = buildToolRow({ name: ev.toolName, args: ev.args });
 			el.classList.add("running", "fresh");
-			const host = state.live?.row ?? stream;
+			let host = state.live?.body;
+			if (!host) {
+				// message_end 之后才开始的工具：补一个与历史一致的 row/body 容器
+				const row = document.createElement("div");
+				row.className = "row assistant";
+				host = document.createElement("div");
+				host.className = "body";
+				row.append(host);
+				stream.append(row);
+			}
 			host.append(el);
 			state.tools.set(ev.toolCallId, el);
 			follow();
@@ -1317,20 +1335,22 @@ input.addEventListener("keydown", (e) => {
 	}
 });
 document.addEventListener("keydown", (e) => {
-	if (e.key === "Escape") {
-		// 模型菜单在二级面板时，Esc 先返回根面板，再关菜单
-		if (!menu.hidden && menuBack) {
-			e.preventDefault();
-			menuBack();
-			return;
+	if (e.key !== "Escape") return;
+	// 模型菜单在二级面板时，Esc 先返回根面板；关菜单这一下不能顺带 abort
+	if (!menu.hidden) {
+		e.preventDefault();
+		if (menuBack) menuBack();
+		else {
+			menu.hidden = true;
+			menuBack = null;
 		}
-		menu.hidden = true;
-		menuBack = null;
-		if (state.streaming) window.pi.command({ type: "abort" });
+		return;
 	}
+	menuBack = null;
+	if (state.streaming) window.pi.command({ type: "abort" }).catch(() => {});
 });
 sendBtn.onclick = () => {
-	if (state.streaming) window.pi.command({ type: "abort" });
+	if (state.streaming) window.pi.command({ type: "abort" }).catch(() => {});
 	else submit();
 };
 $("cwd").onclick = pifold;

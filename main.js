@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -137,21 +137,33 @@ function startPi(cwd) {
 	});
 	child = proc;
 	proc.stdout.setEncoding("utf8");
-	proc.stdout.on("data", onData);
+	proc.stdout.on("data", (d) => {
+		if (child === proc) onData(d);
+	});
 	proc.stderr.setEncoding("utf8");
 	proc.stderr.on("data", (d) => send("pi:stderr", String(d)));
+	// 没有 'error' 监听时，写已关闭的 stdin 会抛 EPIPE 直接崩主进程
+	proc.stdin.on("error", () => {});
 	proc.on("exit", (code) => {
 		// 死进程必须及时让位：否则后续命令会写进已关闭的 stdin（EPIPE/「pi 进程已停止」）
 		if (child === proc) {
 			child = null;
 			piReady = false;
 		}
+		// 只让死进程自己的命令失败，别误伤刚切过来的新进程
+		for (const [id, w] of waiting) {
+			if (w.proc !== proc) continue;
+			w.reject(new Error("pi 进程已停止"));
+			waiting.delete(id);
+		}
+		buffer = "";
 		send("pi:exit", code);
 	});
 }
 
 function command(cmd, timeoutMs = 60000) {
-	if (!child) return Promise.reject(new Error("pi 未启动"));
+	const proc = child;
+	if (!proc) return Promise.reject(new Error("pi 未启动"));
 	const id = `r${++seq}`;
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => {
@@ -159,6 +171,7 @@ function command(cmd, timeoutMs = 60000) {
 			reject(new Error(`命令超时: ${cmd.type}`));
 		}, timeoutMs);
 		waiting.set(id, {
+			proc,
 			resolve: (d) => {
 				clearTimeout(timer);
 				resolve(d);
@@ -168,7 +181,13 @@ function command(cmd, timeoutMs = 60000) {
 				reject(e);
 			},
 		});
-		child.stdin.write(`${JSON.stringify({ id, ...cmd })}\n`);
+		try {
+			proc.stdin.write(`${JSON.stringify({ id, ...cmd })}\n`);
+		} catch {
+			waiting.delete(id);
+			clearTimeout(timer);
+			reject(new Error("pi 进程已停止"));
+		}
 	});
 }
 
@@ -179,10 +198,11 @@ function ensureReady() {
 	if (piReady && child) return Promise.resolve();
 	if (readyTask) return readyTask;
 	readyTask = (async () => {
-		for (let i = 0; i < 60; i++) {
+		// 冷启动前几次给足时间；之后快速失败，避免 UI 静默挂 4 分钟
+		for (let i = 0; i < 24; i++) {
 			if (!child) startPi(currentCwd);
 			try {
-				await command({ type: "get_state" }, 4000);
+				await command({ type: "get_state" }, i < 4 ? 4000 : 1200);
 				piReady = true;
 				return;
 			} catch {}
@@ -828,6 +848,9 @@ function createWindow() {
 			sandbox: false,
 		},
 	});
+	// 锁死导航：拖文件到页面空白处不得把窗口导航到 file://（preload 仍会注入）
+	win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+	win.webContents.on("will-navigate", (e) => e.preventDefault());
 	win.loadURL("app://bundle/index.html");
 	win.webContents.once("did-finish-load", () => log("[perf] window ready", Date.now() - T0, "ms"));
 	win.once("ready-to-show", () => win.show());
@@ -883,7 +906,8 @@ app.whenReady().then(() => {
 		const { pathname } = new URL(request.url);
 		const rel = decodeURIComponent(pathname).replace(/^\/+/, "");
 		const target = join(ROOT, rel);
-		if (!target.startsWith(ROOT)) return new Response("forbidden", { status: 403 });
+		// 字符串前缀比较可被 ..\pi-mini-evil\x 绕过，必须比到分隔符
+		if (target !== ROOT && !target.startsWith(ROOT + sep)) return new Response("forbidden", { status: 403 });
 		const res = await net.fetch(pathToFileURL(target).toString());
 		// 开发热重载必须绕过 Chromium 的模块缓存，否则改完 JS 还是旧代码
 		const headers = new Headers(res.headers);
