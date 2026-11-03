@@ -9,7 +9,8 @@
 		"start": "electron .",
 		"test": "node --test \"tests/*.test.mjs\"",
 		"check": "node scripts/check-syntax.mjs",
-		"build:portable": "node scripts/build-portable.mjs"
+		"build:portable": "node scripts/build-portable.mjs",
+		"build:zip": "node scripts/build-zip.mjs"
 	},
 	"devDependencies": {
 		"electron": "^45.2.1"

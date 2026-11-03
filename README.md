@@ -40,7 +40,10 @@ npm start
 npm test          # 15 项行为/契约测试
 npm run check     # 全量 node --check
 npm run build:portable   # dist/pi-mini 便携目录
+npm run build:zip        # dist/pi-mini-win64.zip（约 153 MB）
 ```
+
+便携版不需要安装：解压后双击 `pi-mini/electron.exe`，要求 PATH 里有 `pi` 命令。还没做安装包与自动更新。
 
 ## 结构
 
