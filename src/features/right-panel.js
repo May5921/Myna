@@ -785,6 +785,9 @@ export function init(ctx) {
 	const diffBusy = new Set();
 
 	// ---------- 文件树 ----------
+	// 点目录（.git 已在主进程跳过，其余如 .cache/.anaconda）不进树，避免家目录被噪音淹没；
+	// 仓库相关目录放行，点文件（.gitignore/.env）照常显示。
+	const HIDDEN_DIR_KEEP = new Set([".github", ".vscode", ".devcontainer", ".claude", ".pi"]);
 	const buildFileTree = (files) => {
 		const root = { name: "", path: "", dir: true, kids: [], map: new Map() };
 		for (const f of files) {
@@ -793,6 +796,9 @@ export function init(ctx) {
 				.replace(/^\/+|\/+$/g, "");
 			if (!raw) continue;
 			const segs = raw.split("/").filter(Boolean);
+			const hiddenSeg = segs.slice(0, -1).find((s) => s.startsWith(".") && !HIDDEN_DIR_KEEP.has(s));
+			if (hiddenSeg) continue;
+			if (f?.dir && segs[segs.length - 1]?.startsWith(".") && !HIDDEN_DIR_KEEP.has(segs[segs.length - 1])) continue;
 			let cur = root;
 			let acc = "";
 			for (let i = 0; i < segs.length; i++) {

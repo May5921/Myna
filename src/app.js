@@ -1835,7 +1835,8 @@ window.pi.onEvent((ev) => {
 	switch (ev.type) {
 		case "message_start": {
 			const m = ev.message;
-			if (m?.role === "assistant") addAssistantRow();
+			// agent_start 已经建过运行行时复用，别在首条消息时再多挂一行
+			if (m?.role === "assistant" && !state.live) addAssistantRow();
 			break;
 		}
 		case "message_update": {
@@ -1898,6 +1899,8 @@ window.pi.onEvent((ev) => {
 			state.runStart = performance.now();
 			state.runTools = 0;
 			stream.querySelector(".run-summary-row")?.remove();
+			// 不等 message_start：发送后立刻出「思考中… 0.0s」，工具阶段也有反馈
+			if (!state.live && !state.revealFinal) addAssistantRow();
 			break;
 		case "agent_settled":
 			setStreaming(false);
@@ -1919,6 +1922,10 @@ window.pi.onEvent((ev) => {
 				}
 				state.aborted = false;
 			}
+			// 只思考、没正文也没工具/图片的空回合不留下空白行（例如请求被 pi 内部吞掉）
+			const lastRow = [...stream.querySelectorAll(".row.assistant")].pop();
+			const lastBody = lastRow?.querySelector(":scope > .body");
+			if (lastBody && !lastBody.textContent.trim() && !lastBody.querySelector("img, .tool, pre, table, .stopped")) lastRow.remove();
 			showRunSummary();
 			// 新会话的第一轮结束后 sessionFile 才有值，刷新一次便于下次启动恢复
 			refreshState().catch(() => {});
