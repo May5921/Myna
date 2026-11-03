@@ -101,7 +101,7 @@ export function init(ctx) {
 		border-radius: 16px;
 		box-shadow: var(--shadow-menu);
 		color: var(--text);
-		font: 13px/1.6 var(--ui);
+		font: 12.5px/1.6 var(--ui);
 		outline: none;
 		animation: ext-rise 140ms ease-out;
 	}
@@ -129,7 +129,7 @@ export function init(ctx) {
 		max-height: 40vh;
 		overflow-y: auto;
 		color: var(--dim);
-		font-size: 13px;
+		font-size: 12.5px;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
@@ -146,11 +146,14 @@ export function init(ctx) {
 		display: block;
 		width: 100%;
 		height: 34px;
+		/* 定高不被压：.ext-opt 有 overflow:hidden（自动最小尺寸=0），
+		   在定高的滚动列里会被 flex 压缩成一条条碎行，而不是滚动 */
+		flex: none;
 		padding: 0 10px;
 		border-radius: 8px;
 		background: none;
 		color: var(--text);
-		font: 13px/34px var(--ui);
+		font: 12.5px/34px var(--ui);
 		text-align: left;
 		white-space: nowrap;
 		overflow: hidden;
@@ -172,7 +175,7 @@ export function init(ctx) {
 		border-radius: var(--radius-xl);
 		background: var(--bg);
 		color: var(--text);
-		font: 13px/1.5 var(--ui);
+		font: 12.5px/1.5 var(--ui);
 		outline: 0;
 	}
 	.ext-input::placeholder { color: var(--faint); }
@@ -200,7 +203,7 @@ export function init(ctx) {
 	.ext-hint {
 		margin-right: auto;
 		color: var(--faint);
-		font-size: 11.5px;
+		font-size: 12px;
 		user-select: none;
 	}
 	.ext-btn {
@@ -210,22 +213,27 @@ export function init(ctx) {
 		border-radius: var(--radius-xl);
 		background: var(--bg);
 		color: var(--dim);
-		font: 13px/1.5 var(--ui);
+		font: 12.5px/1.5 var(--ui);
 	}
 	.ext-btn:hover { background: var(--hover); color: var(--text); }
 	.ext-btn:focus-visible { outline: 1px solid var(--line-strong); outline-offset: 1px; }
 	.ext-btn.primary {
 		background: var(--send-bg);
 		border-color: transparent;
-		color: #fff;
+		/* 原来是裸 #fff；洋白底色的 token 就是 --bg，别再硬编码一次 */
+		color: var(--bg);
 	}
-	.ext-btn.primary:hover { background: var(--send-bg); color: #fff; opacity: .9; }
+	.ext-btn.primary:hover { background: var(--send-bg); color: var(--bg); opacity: .9; }
 	.ext-toasts {
+		/* STYLE.md 的语义色只有 --err，没有警告色；notify(warning) 又不能和普通提示
+		   长得一样。按 right-panel 的做法把这一处颜色收口成局部 token，改一处即可换掉 */
+		--ext-warn: #c08b1e;
 		position: fixed;
 		left: 50%;
 		bottom: 96px;
 		transform: translateX(-50%);
-		z-index: 90;
+		/* 浮在弹窗(100)与会话上方；别压过图片灯箱(1200) */
+		z-index: 110;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -245,14 +253,15 @@ export function init(ctx) {
 		overflow-wrap: anywhere;
 		animation: ext-rise 120ms ease-out;
 	}
-	.ext-toast.warning { color: #c08b1e; }
+	.ext-toast.warning { color: var(--ext-warn); }
 	.ext-toast.error { color: var(--err); }
 	.ext-toast.ext-leave { animation: ext-fade-out 160ms ease-in forwards; }
 	.ext-status {
 		flex: 0 0 auto;
 		width: min(var(--thread-max-width), 100% - 48px);
 		margin: 0 auto;
-		padding: 0 2px 4px;
+		/* 左右 14px 对齐 #input 的内容缩进，底 4px 与 #composer 的 6px 上边距留出间隙 */
+		padding: 0 14px 4px;
 		color: var(--dim);
 		font: 12px/1.5 var(--mono);
 		white-space: pre-wrap;
@@ -442,8 +451,9 @@ export function init(ctx) {
 		const rec = { ev, overlay, card, answered: false, timer: 0, tick: 0, deadline: 0, timerEl: null };
 		current = rec;
 
-		// 点遮罩 = 取消（mousedown 才判定，避免从卡片拖到遮罩误触）
+		// 点遮罩 = 取消（mousedown 才判定，避免从卡片拖到遮罩误触；右键不算）
 		overlay.addEventListener("mousedown", (e) => {
+			if (e.button !== 0) return;
 			if (e.target === overlay) finish(rec, { cancelled: true });
 		});
 
@@ -491,6 +501,8 @@ export function init(ctx) {
 				b.className = "ext-opt";
 				b.setAttribute("role", "option");
 				b.setAttribute("aria-label", label);
+				// 长选项被 nowrap+ellipsis 截断后，鼠标悬停还能看到全文
+				b.title = label;
 				b.textContent = label;
 				b.onclick = () => finish(rec, { value: raw[i] });
 				list.append(b);

@@ -59,7 +59,8 @@ export function init(ctx) {
 		border: 1px solid var(--line);
 		border-radius: 12px;
 		box-shadow: var(--shadow-menu);
-		padding: 5px;
+		/* Codex --suggestion-menu-gutter = 4px；外壳 padding 与行圆角 12-4=8 必须成对 */
+		padding: 4px;
 		overflow: hidden;
 		animation: sug-in 110ms ease-out;
 	}
@@ -85,13 +86,14 @@ export function init(ctx) {
 	.sug-item {
 		display: flex;
 		align-items: center;
-		gap: 9px;
+		gap: 8px;
 		height: 30px;
 		padding: 0 8px;
 		border-radius: 8px;
 		color: var(--text);
 		font-size: 14px;
 		line-height: 20px;
+		cursor: pointer;
 		user-select: none;
 	}
 	.sug-item.on { background: var(--hover); }
@@ -118,6 +120,11 @@ export function init(ctx) {
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
+	/* 右列（目录）为空时不该留 60% 空白把主标签截到 40% */
+	.sug-name.grow {
+		flex: 0 1 auto;
+		max-width: 100%;
+	}
 	.sug-dir, .sug-desc {
 		flex: 1 1 0;
 		min-width: 0;
@@ -131,7 +138,7 @@ export function init(ctx) {
 	.sug-tab {
 		display: none;
 		flex: none;
-		font: 10px/16px var(--mono);
+		font: 11px/16px var(--mono);
 		color: var(--faint);
 		background: var(--hover);
 		border-radius: 4px;
@@ -152,26 +159,26 @@ export function init(ctx) {
 		color: var(--faint);
 		border: 1px solid var(--line);
 		border-radius: 5px;
-		padding: 0 5px;
+		padding: 0 4px;
 	}
 	.sug-foot {
 		flex: none;
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		padding: 5px 4px 1px 6px;
+		padding: 4px 4px 0;
 		border-top: 1px solid var(--line);
 		margin-top: 4px;
 		font-size: 11px;
 		color: var(--faint);
 	}
 	.sug-foot .k {
-		font: 10px/1.4 var(--mono);
+		font: 11px/1.4 var(--mono);
 		color: var(--faint);
 		border: 1px solid var(--line);
 		border-radius: 4px;
 		padding: 0 4px;
-		margin-left: 6px;
+		margin-left: 8px;
 	}
 	.sug-foot .k:first-child { margin-left: 0; }
 	.sug-note { margin-left: auto; }
@@ -207,11 +214,13 @@ export function init(ctx) {
 		pop.className = "sug";
 		pop.id = "sug";
 		pop.hidden = true;
-		pop.setAttribute("role", "listbox");
-		pop.setAttribute("aria-label", "输入建议");
 
 		list = document.createElement("div");
 		list.className = "sug-list";
+		list.id = "sug-list";
+		// listbox 落在滚动容器上、aria-activedescendant 指向其子行（ARCHITECTURE.md §2）
+		list.setAttribute("role", "listbox");
+		list.setAttribute("aria-label", "输入建议");
 
 		const foot = document.createElement("div");
 		foot.className = "sug-foot";
@@ -321,10 +330,14 @@ export function init(ctx) {
 			const name = document.createElement("span");
 			name.className = "sug-name";
 			name.textContent = `/${item.name}`;
-			const desc = document.createElement("span");
-			desc.className = "sug-desc";
-			desc.textContent = item.description || item.name;
-			main.append(name, desc);
+			main.append(name);
+			// 没有描述就不要把命令名重复显示一遍（DSH 仅在有 description 时渲染右列）
+			if (item.description && item.description !== item.name) {
+				const desc = document.createElement("span");
+				desc.className = "sug-desc";
+				desc.textContent = item.description;
+				main.append(desc);
+			}
 			row.title = item.description || item.name;
 		} else {
 			const name = document.createElement("span");
@@ -335,6 +348,7 @@ export function init(ctx) {
 			dir.textContent = dirName(item.path);
 			main.append(name);
 			if (dir.textContent) main.append(dir);
+			else name.classList.add("grow");
 			row.title = item.path;
 		}
 		row.append(ico, main);
@@ -366,6 +380,7 @@ export function init(ctx) {
 		rowEls = items.map(rowFor);
 		const group = document.createElement("div");
 		group.className = "sug-group";
+		group.setAttribute("role", "presentation"); // 分组标题不是可选项，别让读屏念成 option
 		group.textContent = mode === "command" ? "命令" : "文件";
 		list.replaceChildren(group, ...rowEls);
 		note.textContent = mode === "file" && fileState.truncated ? "索引仅收录前 2000 项" : "";
@@ -685,14 +700,18 @@ export function init(ctx) {
 				accept();
 				break;
 			case "Tab":
-				e.preventDefault();
-				e.stopPropagation();
 				if (e.shiftKey) {
 					// Shift+Tab 只关菜单，不消费补全
+					e.preventDefault();
+					e.stopPropagation();
 					dismissedValue = input.value;
 					close();
 					break;
 				}
+				// 无高亮时放行：让 Tab 正常做焦点遍历，不抢焦点（ARCHITECTURE.md §2「无高亮时放行」）
+				if (index < 0) return;
+				e.preventDefault();
+				e.stopPropagation();
 				accept();
 				break;
 			case "Escape":
@@ -705,9 +724,10 @@ export function init(ctx) {
 	};
 	document.addEventListener("keydown", onKeyDown, true);
 
+	ensurePop(); // 先把 listbox 建出来，aria-controls 才有指向目标
 	input.setAttribute("aria-autocomplete", "list");
 	input.setAttribute("aria-haspopup", "listbox");
-	input.setAttribute("aria-controls", "sug");
+	input.setAttribute("aria-controls", "sug-list");
 	input.setAttribute("aria-expanded", "false");
 
 	input.addEventListener("input", update);

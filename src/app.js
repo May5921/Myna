@@ -143,13 +143,15 @@ function tableAlign(spec) {
 
 function renderTable(header, specs, rows) {
 	const cell = (tag, text, align) => `<${tag}${align ? ` style="text-align:${align}"` : ""}>${inlineMd(text ?? "")}</${tag}>`;
+	// 列数以表头与各行最大值为准，避免数据行比表头长时丢列
+	const cols = Math.max(header.length, ...rows.map((r) => r.length), 0);
 	let html = `<div class="table-wrap"><table><thead><tr>`;
-	html += header.map((h, i) => cell("th", h, tableAlign(specs[i] || ""))).join("");
+	html += Array.from({ length: cols }, (_, i) => cell("th", header[i] ?? "", tableAlign(specs[i] || ""))).join("");
 	html += `</tr></thead>`;
 	if (rows.length) {
 		html += `<tbody>`;
 		for (const row of rows) {
-			html += `<tr>${header.map((_, i) => cell("td", row[i] ?? "", tableAlign(specs[i] || ""))).join("")}</tr>`;
+			html += `<tr>${Array.from({ length: cols }, (_, i) => cell("td", row[i] ?? "", tableAlign(specs[i] || ""))).join("")}</tr>`;
 		}
 		html += `</tbody>`;
 	}
@@ -196,13 +198,14 @@ function renderFragment(part) {
 			i = j - 1;
 			continue;
 		}
-		const h = line.match(/^#{1,6}\s+(.*)$/);
+		const h = line.match(/^(#{1,6})\s+(.*)$/);
 		const ul = line.match(/^\s*[-*]\s+(.*)$/);
 		const ol = line.match(/^\s*\d+\.\s+(.*)$/);
 		if (h) {
 			flushPara();
 			flushList();
-			html += `<p class="h">${inlineMd(h[1])}</p>`;
+			const lv = h[1].length;
+			html += `<h${lv} class="h">${inlineMd(h[2])}</h${lv}>`;
 			continue;
 		}
 		if (ul || ol) {
@@ -227,7 +230,8 @@ function md(src) {
 	const parts = String(src).split(/```/);
 	let out = "";
 	for (let i = 0; i < parts.length; i++) {
-		if (i % 2 === 1) {
+		// 围栏未闭合时（parts 数为偶），最后一段是正文而不是代码
+		if (i % 2 === 1 && !(i === parts.length - 1 && parts.length % 2 === 0)) {
 			const nl = parts[i].indexOf("\n");
 			const langRaw = nl > -1 ? parts[i].slice(0, nl).trim() : "";
 			const body = nl > -1 ? parts[i].slice(nl + 1) : parts[i];
@@ -433,11 +437,6 @@ function finalizeAssistant(message) {
 		st.el.style.background = "";
 		st.el.textContent = `${fmtTokens(total)} tokens · 平均 ${(total / elapsed).toFixed(1)} tok/s`;
 		st.box.hidden = false;
-		const box = st.box;
-		setTimeout(() => box.classList.add("fade"), 3200);
-		setTimeout(() => {
-			box.hidden = true;
-		}, 3800);
 	} else if (st?.box) {
 		st.box.hidden = true;
 	}
@@ -558,6 +557,8 @@ function toggleDisclosure(root, force) {
 	root.dataset.open = open ? "1" : "0";
 	const hdr = root.querySelector(".hdr");
 	if (hdr) hdr.setAttribute("aria-expanded", open ? "true" : "false");
+	const inner = root.querySelector(".inner");
+	if (inner) inner.inert = !open;
 }
 
 function bindDisclosure(root) {
@@ -585,6 +586,7 @@ function buildToolRow({ name, args, output, diff, isError, durationMs }) {
 	hdr.setAttribute("aria-expanded", "false");
 
 	const spec = toolSpec(name, args);
+	if (spec.file) root.dataset.file = spec.file;
 
 	const lead = document.createElement("span");
 	lead.className = "lead";
@@ -659,7 +661,7 @@ function appendToolImages(root, content) {
 		const img = document.createElement("img");
 		img.className = "tool-img";
 		img.loading = "lazy";
-		img.alt = "工具结果图片";
+		img.alt = root.dataset.file ? root.dataset.file.split(/[\\/]/).pop() : "工具结果图片";
 		img.src = `data:${b.mimeType || "image/png"};base64,${b.data}`;
 		wrap.append(img);
 	}
@@ -677,8 +679,20 @@ function appendToolOutput(root, output) {
 	}
 	if ((tool === "grep" || tool === "find") && appendSearchOutput(inner, output)) return;
 	const pre = document.createElement("pre");
-	pre.textContent = output.length > 4000 ? `${output.slice(0, 4000)}\n…` : output;
+	const truncated = output.length > 4000;
+	pre.textContent = truncated ? `${output.slice(0, 4000)}\n…` : output;
 	inner.append(pre);
+	if (truncated) {
+		const more = document.createElement("button");
+		more.type = "button";
+		more.className = "more";
+		more.textContent = "显示全部";
+		more.onclick = () => {
+			pre.textContent = output;
+			more.remove();
+		};
+		inner.append(more);
+	}
 }
 
 // ---------- ReadBlock：补行号 + 截断提示 ----------
@@ -987,6 +1001,7 @@ function sessionRow(s) {
 	const b = document.createElement("button");
 	b.type = "button";
 	b.className = "item" + (s.path === state.sessionFile ? " active" : "");
+	if (s.path === state.sessionFile) b.setAttribute("aria-current", "true");
 	const name = document.createElement("span");
 	name.className = "item-title";
 	name.textContent = s.name || s.title || "未命名会话";
@@ -1017,7 +1032,8 @@ function sessionRow(s) {
 	actions.onclick = (e) => {
 		e.stopPropagation();
 		const wasHidden = pop.hidden;
-		for (const m of document.querySelectorAll(".sess-menu")) m.hidden = true;
+		for (const m of document.querySelectorAll(".proj-menu, .sess-menu")) m.hidden = true;
+		for (const p of document.querySelectorAll(".proj.menu-open")) p.classList.remove("menu-open");
 		pop.hidden = !wasHidden;
 	};
 	row.append(b, actions, pop);
@@ -1059,7 +1075,10 @@ function renderSessions() {
 	search.innerHTML = SEARCH_ICON;
 	search.onclick = () => {
 		state.sideSearch = !state.sideSearch;
-		if (!state.sideSearch) state.sideQuery = "";
+		if (!state.sideSearch) {
+			state.sideQuery = "";
+			state.sideCaret = 0;
+		}
 		renderSessions();
 	};
 	const bind = document.createElement("button");
@@ -1082,17 +1101,25 @@ function renderSessions() {
 		inp.value = state.sideQuery || "";
 		inp.oninput = () => {
 			state.sideQuery = inp.value;
+			state.sideCaret = inp.selectionStart ?? inp.value.length;
+			// 中文输入法组合期间不重建列表，否则 IME 会被打断
+			if (inp.dataset.composing === "1") return;
 			renderSessions();
-			const el = list.querySelector(".side-search input");
-			if (el) {
-				el.focus();
-				el.setSelectionRange(el.value.length, el.value.length);
-			}
+		};
+		inp.oncompositionstart = () => {
+			inp.dataset.composing = "1";
+		};
+		inp.oncompositionend = () => {
+			delete inp.dataset.composing;
+			state.sideQuery = inp.value;
+			state.sideCaret = inp.selectionStart ?? inp.value.length;
+			renderSessions();
 		};
 		inp.onkeydown = (e) => {
 			if (e.key === "Escape") {
 				state.sideSearch = false;
 				state.sideQuery = "";
+				state.sideCaret = 0;
 				renderSessions();
 			}
 		};
@@ -1100,8 +1127,10 @@ function renderSessions() {
 		list.append(box);
 		queueMicrotask(() => {
 			const el = list.querySelector(".side-search input");
-			el?.focus();
-			el?.setSelectionRange(el.value.length, el.value.length);
+			if (!el) return;
+			el.focus();
+			const pos = Math.min(state.sideCaret ?? el.value.length, el.value.length);
+			el.setSelectionRange(pos, pos);
 		});
 	}
 
@@ -1159,6 +1188,8 @@ function renderSessions() {
 		proj.innerHTML = `<span class="chev">›</span>${FOLDER_ICON}<span class="lbl">${esc(leaf)}</span>`;
 		proj.title = cwd;
 		proj.setAttribute("role", "button");
+		proj.tabIndex = 0;
+		proj.setAttribute("aria-expanded", open ? "true" : "false");
 
 		const actions = document.createElement("span");
 		actions.className = "proj-actions";
@@ -1197,7 +1228,11 @@ function renderSessions() {
 		}
 		more.onclick = (e) => {
 			e.stopPropagation();
-			menu.hidden = !menu.hidden;
+			const wasHidden = menu.hidden;
+			for (const m of document.querySelectorAll(".proj-menu, .sess-menu")) m.hidden = true;
+			for (const p of document.querySelectorAll(".proj.menu-open")) p.classList.remove("menu-open");
+			menu.hidden = !wasHidden;
+			proj.classList.toggle("menu-open", !menu.hidden);
 		};
 		const newChat = document.createElement("button");
 		newChat.type = "button";
@@ -1220,7 +1255,9 @@ function renderSessions() {
 		const kids = document.createElement("div");
 		kids.className = "kids";
 		kids.hidden = !open;
-		proj.onclick = async () => {
+		proj.onclick = async (e) => {
+			// 菜单项自己处理，别连带折叠分组
+			if (e.target.closest(".proj-menu")) return;
 			if (!current) {
 				await bindWorkspace(cwd);
 				return;
@@ -1230,7 +1267,14 @@ function renderSessions() {
 			else state.collapsed.add(cwd);
 			kids.hidden = !nowOpen;
 			proj.classList.toggle("open", nowOpen);
+			proj.setAttribute("aria-expanded", nowOpen ? "true" : "false");
 			saveCollapsed();
+		};
+		proj.onkeydown = (e) => {
+			if (e.key === "Enter" || e.key === " ") {
+				e.preventDefault();
+				proj.click();
+			}
 		};
 
 		for (const s of items.slice(0, state.expandedGroups?.has(cwd) ? items.length : 6)) {
@@ -1258,6 +1302,9 @@ function renderSessions() {
 				load.textContent = "加载更多会话";
 				load.onclick = async (e) => {
 					e.stopPropagation();
+					if (load.disabled) return;
+					load.disabled = true;
+					load.textContent = "加载中…";
 					state.sessionPage = Math.min(200, page + 20);
 					try {
 						state.sessions = await window.pi.sessions({ perCwd: state.sessionPage });
@@ -1272,7 +1319,17 @@ function renderSessions() {
 
 	const archivedItems = state.sessions
 		.filter((s) => state.archived.has(s.path) && s.path !== state.sessionFile)
+		.filter((s) => !q || `${s.name || ""} ${s.title || ""}`.toLowerCase().includes(q))
 		.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+	// 无可见会话时的空态（含搜索无匹配）
+	if (!ordered.some(([, listItems]) => listItems.length) && !archivedItems.length) {
+		const empty = document.createElement("div");
+		empty.className = "side-empty";
+		empty.textContent = q ? "没有匹配的会话" : "暂无会话";
+		list.append(empty);
+	}
+
 	if (archivedItems.length) {
 		const head = document.createElement("button");
 		head.type = "button";
@@ -1294,6 +1351,7 @@ function renderSessions() {
 
 document.addEventListener("click", () => {
 	for (const m of document.querySelectorAll(".proj-menu, .sess-menu")) m.hidden = true;
+	for (const p of document.querySelectorAll(".proj.menu-open")) p.classList.remove("menu-open");
 });
 
 // 开发/截图用：清空归档列表（location.reload 会被 will-navigate 拦截）
@@ -1524,7 +1582,10 @@ function autosize() {
 
 function updateSend() {
 	const hasImages = (attachments.get() || []).length > 0;
-	sendBtn.classList.toggle("on", state.streaming || input.value.trim().length > 0 || hasImages);
+	const on = state.streaming || input.value.trim().length > 0 || hasImages;
+	sendBtn.classList.toggle("on", on);
+	// 空草稿空闲时真正禁用，避免 Tab 到无反馈的按钮；流式时是停止键，保持可用
+	sendBtn.disabled = !on;
 }
 
 // ---------- 事件 ----------
@@ -1541,7 +1602,10 @@ window.pi.onEvent((ev) => {
 				state.liveRaw += a.delta;
 				state.textPending += a.delta;
 				state.liveTokens += estimateTokens(a.delta);
-				if (state.liveTps && !state.liveTps.start) state.liveTps.start = performance.now();
+				if (state.liveTps) {
+					state.liveTps.box.hidden = false;
+					if (!state.liveTps.start) state.liveTps.start = performance.now();
+				}
 				scheduleReveal();
 				follow();
 			}
@@ -1561,6 +1625,8 @@ window.pi.onEvent((ev) => {
 		case "tool_execution_start": {
 			const el = buildToolRow({ name: ev.toolName, args: ev.args });
 			el.classList.add("running", "fresh");
+			// 纯工具消息不会有文本：别让「等待首个 token」一直挂着
+			if (state.liveTps && state.liveTokens === 0) state.liveTps.box.hidden = true;
 			let host = state.live?.body;
 			if (!host) {
 				// message_end 之后才开始的工具：补一个与历史一致的 row/body 容器

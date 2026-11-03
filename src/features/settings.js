@@ -7,7 +7,9 @@
 
 const RETRY_KEY = "pi-mini.auto-retry";
 const ERR_MS = 3000;
-const TOAST_MS = 4000;
+// 普通提示 3.5s（与 extension-ui 的 toast 一致）；带可点操作的多留 1.5s 给人按
+const TOAST_MS = 3500;
+const TOAST_ACTION_MS = 5000;
 const CONFIRM_MS = 2500;
 const SAVED_MS = 1400;
 const MENU_GAP = 6;
@@ -111,7 +113,7 @@ const CSS = `
 	border-bottom: 1px solid var(--line);
 }
 .settings-title {
-	font-size: 13px;
+	font-size: 14px;
 	font-weight: 600;
 	letter-spacing: -0.01em;
 	color: var(--text);
@@ -123,8 +125,6 @@ const CSS = `
 	display: grid;
 	place-items: center;
 	color: var(--faint);
-	font-size: 16px;
-	line-height: 1;
 	transition: background-color 120ms ease, color 120ms ease;
 }
 .settings-close:hover { background: var(--hover); color: var(--text); }
@@ -138,7 +138,7 @@ const CSS = `
 }
 .settings-note {
 	padding: 6px 16px 0;
-	font-size: 11.5px;
+	font-size: 12px;
 	line-height: 1.35;
 	color: var(--err);
 }
@@ -172,13 +172,13 @@ const CSS = `
 	min-width: 0;
 	padding: 4px 0;
 }
-.settings-label { font-size: 13px; line-height: 1.35; color: var(--text); }
-.settings-sub { font-size: 11.5px; line-height: 1.35; color: var(--faint); }
+.settings-label { font-size: 14px; line-height: 1.35; color: var(--text); }
+.settings-sub { font-size: 12px; line-height: 1.35; color: var(--faint); }
 .settings-ctl { display: flex; align-items: center; gap: 8px; justify-self: end; }
 .settings-err {
 	grid-column: 1 / -1;
 	padding: 0 0 8px;
-	font-size: 11.5px;
+	font-size: 12px;
 	line-height: 1.35;
 	color: var(--err);
 }
@@ -231,7 +231,7 @@ const CSS = `
 	width: 34px;
 	height: 20px;
 	border-radius: 999px;
-	background: var(--line);
+	background: var(--line-strong);
 	transition: background-color 120ms ease;
 }
 .settings-switch::after {
@@ -320,9 +320,12 @@ const CSS = `
 .settings-toast {
 	position: fixed;
 	left: 50%;
-	bottom: 24px;
+	/* 与 composer 顶边（约 96px）齐平：24px 会压在输入框上 */
+	bottom: 96px;
 	transform: translateX(-50%);
-	z-index: 90;
+	/* 与 extension / export 的 toast 同一层：要浮在设置遮罩(60)与扩展弹窗(100)之上，
+	   否则弹窗一开，提示就被遮罩压成灰的（DSH 也是 toast 1100 > modal 1000） */
+	z-index: 110;
 	max-width: min(560px, calc(100vw - 32px));
 	padding: 8px 12px;
 	background: var(--bg);
@@ -442,10 +445,13 @@ export function init(ctx) {
 	const head = el("div", "settings-head");
 	const title = el("span", "settings-title", "设置");
 	title.id = "settings-title";
-	const closeBtn = el("button", "settings-close", "×");
+	const closeBtn = el("button", "settings-close");
 	closeBtn.type = "button";
 	closeBtn.title = "关闭";
 	closeBtn.setAttribute("aria-label", "关闭设置");
+	// 文本 "×" 的字形基线各家字体不一，居中靠猜；线框叉与顶栏图标同规格
+	closeBtn.innerHTML =
+		'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.6 3.6 10.4 10.4M10.4 3.6 3.6 10.4"/></svg>';
 	head.append(title, closeBtn);
 
 	const panelBody = el("div", "settings-body");
@@ -486,12 +492,30 @@ export function init(ctx) {
 	};
 
 	const onMenuKey = (e) => {
-		if (!menu || e.key !== "Escape") return;
+		if (!menu) return;
+		if (e.key === "Escape") {
+			e.preventDefault();
+			e.stopPropagation();
+			const anchor = menu.anchor;
+			closeMenu();
+			anchor?.focus?.();
+			return;
+		}
+		// STYLE §2：打开时不预选任何行；方向键才把焦点送进菜单，项间 roving
+		if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+		const active = document.activeElement;
+		if (!active || !(active === menu.anchor || menu.el.contains(active))) return;
+		const items = [...menu.el.querySelectorAll(".settings-menu-item")];
+		if (!items.length) return;
 		e.preventDefault();
 		e.stopPropagation();
-		const anchor = menu.anchor;
-		closeMenu();
-		anchor?.focus?.();
+		const at = items.indexOf(active);
+		let next;
+		if (e.key === "Home") next = items[0];
+		else if (e.key === "End") next = items[items.length - 1];
+		else if (e.key === "ArrowDown") next = at < 0 ? items[0] : items[(at + 1) % items.length];
+		else next = at < 0 ? items[items.length - 1] : items[(at - 1 + items.length) % items.length];
+		next.focus();
 	};
 
 	const onViewport = (e) => {
@@ -529,7 +553,9 @@ export function init(ctx) {
 			b.onclick = (e) => {
 				e.preventDefault();
 				e.stopPropagation();
+				const anchor = menu?.anchor;
 				closeMenu();
+				anchor?.focus?.(); // 项随 closeMenu 被移除，焦点别掉回 body
 				onPick(item);
 			};
 			host.append(b);
@@ -1075,7 +1101,7 @@ export function init(ctx) {
 		}
 		document.body.append(box);
 		toastEl = box;
-		toastTimer = setTimeout(closeToast, TOAST_MS);
+		toastTimer = setTimeout(closeToast, opts.open ? TOAST_ACTION_MS : TOAST_MS);
 	}
 
 	// ---------- 开关 ----------
@@ -1110,16 +1136,33 @@ export function init(ctx) {
 		return [...nodes].filter((n) => n.offsetParent !== null && !n.hidden);
 	}
 
+	// 让位规则：上面还压着真正的模态层（aria-modal）时，Esc/Tab 都归它。
+	// 扩展弹窗（z-index 100）与图片灯箱（z-index 1200）叠在设置（z-index 60）之上，
+	// 两处都用 document capture，不让位就会一次 Esc 关两层、两套焦点陷阱互相抢 Tab。
+	// 注意：message-fork 的分支弹窗只有 role="dialog"（z-index 90），不在这里，
+	// 它与设置遮罩互斥，不构成叠加。
+	const modalAbove = () =>
+		[...document.querySelectorAll('[aria-modal="true"]')].some(
+			(n) => n !== dialog && n.getClientRects().length > 0,
+		);
+
 	function onDocKey(e) {
 		if (overlay.hidden) return;
+		if (modalAbove()) return;
 		if (e.key === "Escape") {
 			e.preventDefault();
 			e.stopPropagation(); // 别让 app.js 的全局 Esc 触发 abort
-			if (menu) closeMenu();
-			else closeDialog();
+			if (menu) {
+				// 焦点可能在菜单项里，先收回到触发按钮再拆菜单，否则掉回 body
+				const anchor = menu.anchor;
+				closeMenu();
+				anchor?.focus?.();
+			} else closeDialog();
 			return;
 		}
 		if (e.key !== "Tab") return;
+		// 菜单在 body 上，焦点陷阱管不到它，Tab 前先收起，免得留下够不着的孤儿菜单
+		closeMenu();
 		const items = focusables();
 		if (!items.length) return;
 		const first = items[0];
@@ -1245,6 +1288,7 @@ export function init(ctx) {
 	};
 
 	overlay.addEventListener("pointerdown", (e) => {
+		if (e.button !== 0) return; // 右键/中键点在遮罩上不该关窗
 		if (e.target === overlay) closeDialog();
 	});
 

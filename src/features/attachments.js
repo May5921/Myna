@@ -25,14 +25,15 @@ export function init(ctx) {
 		transition: background-color 120ms ease, color 120ms ease;
 	}
 	.att-plus:hover { background: var(--hover); color: var(--text); }
-	.att-plus[data-full="1"] { color: var(--faint); }
+	.att-plus[data-full="1"] { color: var(--faint); cursor: default; }
+	.att-plus[data-full="1"]:hover { background: none; color: var(--faint); }
 	.att-rail {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 6px;
 		padding: 2px 2px 6px;
-		margin: 10px 12px 0;
+		margin: 10px 14px 0; /* 与 #input 的左右 14px 对齐，否则缩略图比正文缩进一格 */
 	}
 	.att-rail[hidden], .att-rail:empty { display: none; }
 	.att-item { position: relative; flex: none; width: 44px; height: 44px; }
@@ -47,20 +48,37 @@ export function init(ctx) {
 	}
 	.att-del {
 		position: absolute;
-		top: -5px;
-		right: -5px;
+		top: 2px;
+		right: 2px;
 		width: 16px;
 		height: 16px;
 		display: grid;
 		place-items: center;
 		border-radius: 50%;
-		background: rgba(0, 0, 0, 0.55);
-		color: #fff;
+		background: var(--dim);
+		color: var(--bg);
 		font: 11px/1 var(--mono);
-		transition: background-color 120ms ease;
+		cursor: pointer;
+		/* 默认不挡缩略图：hover / 键盘聚焦 / 无指针设备才显形（DSH ComposerAttachments .remove） */
+		opacity: 0;
+		transition: opacity 120ms ease, background-color 120ms ease;
 	}
-	.att-del:hover, .att-del:focus-visible { background: rgba(0, 0, 0, 0.82); }
+	.att-item:hover .att-del, .att-del:focus-visible { opacity: 1; }
+	.att-del:hover, .att-del:focus-visible { background: var(--text); }
 	.att-del:focus-visible { outline: 1px solid var(--text); outline-offset: 1px; }
+	@media (hover: none) {
+		.att-del { opacity: 1; }
+	}
+	.att-note {
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		color: var(--faint);
+		font: 11px/16px var(--ui);
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+	.att-note[hidden] { display: none; }
 	.box.att-drop { border-color: var(--dim); background: var(--hover); }
 	@media (prefers-reduced-motion: reduce) {
 		.att-plus, .att-del { transition: none; }
@@ -153,6 +171,22 @@ export function init(ctx) {
 	rail.hidden = true;
 	box.insertBefore(rail, input);
 
+	// 拒绝原因必须能看见：console 里 warn 一百遍用户也不知道图为什么没加上
+	const noteEl = document.createElement("span");
+	noteEl.className = "att-note";
+	noteEl.hidden = true;
+	let noteTimer = 0;
+	const flashNote = (text) => {
+		noteEl.textContent = text;
+		noteEl.hidden = false;
+		rail.hidden = false;
+		clearTimeout(noteTimer);
+		noteTimer = setTimeout(() => {
+			noteEl.hidden = true;
+			rail.hidden = items.length === 0;
+		}, 2400);
+	};
+
 	const picker = document.createElement("input");
 	picker.type = "file";
 	picker.accept = "image/*";
@@ -173,7 +207,10 @@ export function init(ctx) {
 	const syncPlus = () => {
 		const full = items.length >= MAX_COUNT;
 		plusBtn.dataset.full = full ? "1" : "0";
-		plusBtn.title = full ? `最多 ${MAX_COUNT} 张图片` : "添加图片";
+		plusBtn.disabled = full; // 达上限就是禁用态，不能点了没反应
+		const label = full ? `最多 ${MAX_COUNT} 张图片` : "添加图片";
+		plusBtn.title = label;
+		plusBtn.setAttribute("aria-label", label);
 	};
 
 	// app.js 的 updateSend 只在 input 事件里跑：图加减 / 清空后补一次，让「只有图片」也点亮发送键
@@ -200,15 +237,21 @@ export function init(ctx) {
 			del.addEventListener("click", (e) => {
 				e.preventDefault();
 				e.stopPropagation();
+				const at = items.findIndex((x) => x.id === it.id);
 				items = items.filter((x) => x.id !== it.id);
 				render();
 				notifyInput();
+				// render 重建了整条 rail，按钮已从文档里消失 → 焦点会掉到 body，手动还给邻居
+				const btns = rail.querySelectorAll(".att-del");
+				const next = at >= 0 && btns[at] ? btns[at] : plusBtn;
+				next.focus({ preventScroll: true });
 			});
 
 			wrap.append(img, del);
 			rail.append(wrap);
 		}
-		rail.hidden = items.length === 0;
+		rail.append(noteEl);
+		rail.hidden = items.length === 0 && noteEl.hidden;
 		syncPlus();
 	};
 
@@ -218,19 +261,26 @@ export function init(ctx) {
 		const all = Array.from(files || []);
 		const list = all.filter(isImage);
 		if (!list.length) {
-			if (all.length) console.warn("[attachments] 只接受 image/*，已忽略", all.length, "个文件");
+			if (all.length) {
+				console.warn("[attachments] 只接受 image/*，已忽略", all.length, "个文件");
+				flashNote("只支持图片");
+			}
 			return;
 		}
+		const skipped = [];
 		if (list.length < all.length) {
 			console.warn("[attachments] 忽略非图片文件", all.length - list.length, "个");
+			skipped.push("只支持图片");
 		}
 		for (const f of list) {
 			if (items.length + pending >= MAX_COUNT) {
 				console.warn(`[attachments] 最多 ${MAX_COUNT} 张，已忽略`, f.name || f.type);
+				skipped.push(`最多 ${MAX_COUNT} 张图片`);
 				continue;
 			}
 			if (f.size > MAX_BYTES) {
 				console.warn("[attachments] 单张不能超过 10MB，已忽略", f.name || f.type, f.size);
+				skipped.push(`单张不能超过 ${MAX_BYTES / 1024 / 1024}MB`);
 				continue;
 			}
 			pending++;
@@ -247,6 +297,9 @@ export function init(ctx) {
 				.finally(() => {
 					pending--;
 				});
+		}
+		if (skipped.length) {
+			flashNote(skipped.length > 1 ? `${skipped[0]}（已忽略 ${skipped.length} 项）` : skipped[0]);
 		}
 	};
 
@@ -295,13 +348,16 @@ export function init(ctx) {
 
 	// ---------- 入口 3：拖拽到 .box ----------
 	const hasFilePayload = (dt) => Boolean(dt) && Array.from(dt.types || []).includes("Files");
+	const atLimit = () => items.length + pending >= MAX_COUNT;
 	box.addEventListener("dragover", (e) => {
 		if (!hasFilePayload(e.dataTransfer)) return;
 		e.preventDefault();
+		const full = atLimit();
 		try {
-			e.dataTransfer.dropEffect = "copy";
+			// 满额就别给「可放下」的加号光标：dropEffect=none 是浏览器的拒绝态
+			e.dataTransfer.dropEffect = full ? "none" : "copy";
 		} catch {}
-		box.classList.add("att-drop");
+		box.classList.toggle("att-drop", !full);
 	});
 	box.addEventListener("dragleave", (e) => {
 		if (!box.contains(e.relatedTarget)) box.classList.remove("att-drop");

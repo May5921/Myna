@@ -29,22 +29,57 @@ const PANEL_ICON =
 	'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.2" y="3" width="11.6" height="10" rx="1.6"/><path d="M9.6 3v10"/></svg>';
 const CHEV_ICON =
 	'<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.6 1.8 7 5l-3.4 3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const CLOSE_ICON =
+	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.7 2.7 9.3 9.3M9.3 2.7 2.7 9.3"/></svg>';
 
-// 非消息条目的短标签（完整 type 放 title）；get_tree 里这些节点不带 message
-const SYS_TAG = {
-	compaction: "compact",
-	branch_summary: "branch",
-	model_change: "model",
-	thinking_level_change: "think",
-	usage: "usage",
-	custom: "custom",
-	custom_message: "custom",
-	context_edit: "edit",
-	label: "label",
-	session_info: "session",
+// 文件树图标：16px 线性、单色（STYLE §3 不做彩色填充，所以类型只靠形状区分）
+const ICONS = {
+	folder:
+		'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M2.1 5c0-.5.4-.9.9-.9h3l1.4 1.6h5.6c.5 0 .9.4.9.9v5.4c0 .5-.4.9-.9.9H3c-.5 0-.9-.4-.9-.9V5Z"/></svg>',
+	file: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><path d="M4.4 2.1h4.2l3 3v8.8H4.4V2.1Z"/><path d="M8.4 2.2v3.1h3"/></svg>',
+	code: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M5.8 5.8 3.4 8l2.4 2.2M10.2 5.8 12.6 8l-2.4 2.2"/></svg>',
+	data: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M6.4 3.2c-1.2 0-1.6.5-1.6 1.6 0 1-.3 1.5-1.2 1.7.9.2 1.2.7 1.2 1.7 0 1.1.4 1.6 1.6 1.6M9.6 3.2c1.2 0 1.6.5 1.6 1.6 0 1 .3 1.5 1.2 1.7-.9.2-1.2.7-1.2 1.7 0 1.1-.4 1.6-1.6 1.6"/></svg>',
+	image:
+		'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"><rect x="2.3" y="3.4" width="11.4" height="9.2" rx="1.4"/><circle cx="6.1" cy="6.7" r=".9"/><path d="m3.4 11.4 3-2.8 2.5 2.1 1.9-1.5 2 1.8"/></svg>',
+	text: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"><path d="M3.4 4.6h9.2M3.4 8h9.2M3.4 11.4h6"/></svg>',
+};
+
+const EXT_KIND = {
+	js: "code", mjs: "code", cjs: "code", jsx: "code", ts: "code", tsx: "code", css: "code",
+	scss: "code", less: "code", html: "code", vue: "code", py: "code", rs: "code", go: "code",
+	java: "code", sh: "code", ps1: "code", bat: "code", sql: "code",
+	json: "data", jsonl: "data", csv: "data", yml: "data", yaml: "data", toml: "data",
+	lock: "data", ini: "data", env: "data",
+	png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image",
+	ico: "image", bmp: "image",
+	md: "text", mdx: "text", txt: "text", log: "text",
+};
+
+const fileKind = (name) => {
+	const s = String(name || "").toLowerCase();
+	const i = s.lastIndexOf(".");
+	return i > 0 ? EXT_KIND[s.slice(i + 1)] || "file" : "file";
+};
+
+// 非消息条目的角色标签（完整 type 放 title）；get_tree 里这些节点不带 message。
+// 用中文两字/三字：定宽 36px 内对齐，英文 assistant/thinking_level_change 塞不下。
+const SYS_ROLE = {
+	compaction: "压缩",
+	branch_summary: "分支",
+	model_change: "模型",
+	thinking_level_change: "思考",
+	usage: "用量",
+	custom: "自定义",
+	custom_message: "自定义",
+	context_edit: "编辑",
+	label: "标签",
+	session_info: "会话",
 };
 
 const CSS = `
+/* 抽屉宽度只在这里定：panel 宽、主区让位宽度、窄窗断点共用同一个值 */
+:root { --rp-w: 300px; }
+
 .rp-toggle {
 	width: 28px;
 	height: 28px;
@@ -70,7 +105,7 @@ const CSS = `
 	top: var(--titlebar-height);
 	right: 0;
 	bottom: 0;
-	width: 300px;
+	width: var(--rp-w);
 	z-index: 40;
 	display: flex;
 	flex-direction: column;
@@ -86,10 +121,18 @@ const CSS = `
 	transition: transform 120ms ease, visibility 0s;
 }
 
-/* 抽屉打开时把主界面让出 300px，避免盖住输入框右侧的模型/发送键 */
-body.rp-open #app {
-	padding-right: 300px;
-	transition: padding-right 120ms ease;
+/* 抽屉打开时让「对话列」窄出抽屉的宽度。只动 #stream / #composer，不动 #app：
+   给 #app 加 padding 会连顶栏一起缩，右上角的右栏开关和设置齿轮会从你刚点的地方滑走。
+   用 margin 而不是 padding——滚动条才会跟着内容列的右沿一起退到抽屉边上。 */
+body.rp-open #stream,
+body.rp-open #composer { margin-right: var(--rp-w); }
+/* transition 挂在元素本体：只写在打开态的话，关闭时声明被撤掉，收起会瞬移。 */
+#stream,
+#composer { transition: margin-right 120ms ease; }
+/* 275 侧栏 + 300 抽屉之后正文列不足 400px，窄窗改为覆盖式，不再挤主对话 */
+@media (max-width: 980px) {
+	body.rp-open #stream,
+	body.rp-open #composer { margin-right: 0; }
 }
 
 .rp-tabs {
@@ -98,7 +141,7 @@ body.rp-open #app {
 	display: flex;
 	align-items: center;
 	gap: 2px;
-	padding: 0 6px;
+	padding: 0 4px;
 	border-bottom: 1px solid var(--line);
 }
 .rp-tab {
@@ -115,13 +158,12 @@ body.rp-open #app {
 .rp-tab:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .rp-grow { flex: 1; }
 .rp-close {
+	flex: none;
 	width: 24px;
 	height: 24px;
 	border-radius: 6px;
 	display: grid;
 	place-items: center;
-	font-size: 14px;
-	line-height: 1;
 	color: var(--faint);
 	transition: background-color 120ms ease, color 120ms ease;
 }
@@ -134,7 +176,9 @@ body.rp-open #app {
 	min-width: 0;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 4px 6px 10px;
+	/* 常驻滚动条槽：切 tab 时内容列不横向跳动 */
+	scrollbar-gutter: stable;
+	padding: 4px 4px 10px;
 }
 .rp-pane[hidden] { display: none; }
 
@@ -144,7 +188,7 @@ body.rp-open #app {
 	gap: 2px;
 	width: 100%;
 	height: 26px;
-	padding: 0 6px;
+	padding: 0 4px;
 	border-radius: 6px;
 	text-align: left;
 	font-size: 12.5px;
@@ -154,30 +198,47 @@ body.rp-open #app {
 }
 .rp-row:hover { background: var(--hover); color: var(--text); }
 .rp-row:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
-.rp-chev {
+/* 图标槽：目录/文件都占 16px，缩进步长也用 16，
+   子级 chevron 才会落在父级图标下方，而不是压到父级文字左沿 */
+.rp-chev,
+.rp-ico {
 	flex: none;
-	width: 14px;
-	height: 14px;
+	width: 16px;
+	height: 16px;
 	display: grid;
 	place-items: center;
 	color: var(--faint);
-	transition: transform 120ms ease;
 }
+.rp-chev { transition: transform 120ms ease; }
 .rp-chev.rp-is-open { transform: rotate(90deg); }
 .rp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rp-dir > .rp-name { color: var(--text); font-weight: var(--weight-shell); }
 
 .rp-state {
-	padding: 12px 6px;
+	padding: 12px 4px;
 	font-size: 12px;
 	line-height: 1.5;
 	color: var(--faint);
 	word-break: break-word;
 }
 .rp-state-err { margin-top: 4px; font-size: 11px; line-height: 1.45; color: var(--err); }
+/* 拉取失败后没有别的入口能重来（load() 只在重开面板/切 tab 时才重试），给一个显式重试 */
+.rp-retry {
+	margin-top: 8px;
+	height: 22px;
+	padding: 0 8px;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	font-size: 12px;
+	line-height: 1;
+	color: var(--dim);
+	transition: background-color 120ms ease, color 120ms ease;
+}
+.rp-retry:hover { background: var(--hover); color: var(--text); }
+.rp-retry:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .rp-note {
 	margin: 6px 0 0;
-	padding: 8px 6px 0;
+	padding: 8px 4px 0;
 	border-top: 1px solid var(--line);
 	font-size: 11px;
 	line-height: 1.45;
@@ -223,7 +284,7 @@ body.rp-open #app {
 	gap: 8px;
 	width: 100%;
 	height: 26px;
-	padding: 0 6px;
+	padding: 0 4px;
 	border-radius: 6px;
 	text-align: left;
 	transition: background-color 120ms ease;
@@ -232,9 +293,7 @@ body.rp-open #app {
 .rp-chg:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .rp-chg.rp-is-on { background: var(--sel); }
 .rp-st {
-	flex: none;
-	min-width: 16px;
-	max-width: 22px;
+	flex: 0 0 16px;
 	overflow: hidden;
 	font-family: var(--mono);
 	font-size: 11px;
@@ -244,16 +303,36 @@ body.rp-open #app {
 }
 .rp-st.rp-is-add { color: var(--rp-add); }
 .rp-st.rp-is-del { color: var(--rp-del); }
+/* 长路径：目录段先牺牲（省略号），文件名保到最后一刻，否则 300px 宽只剩 "…"。
+   两段都不 grow：留在右边的空白不做分配，路径才会紧贴左边、不往右顶。 */
 .rp-chg-path {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	font-size: 12.5px;
+	line-height: 1;
+}
+.rp-chg-dir {
+	flex: 0 8 auto;
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	font-size: 12.5px;
-	line-height: 1;
+	color: var(--faint);
+}
+.rp-chg-base {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 68%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	color: var(--dim);
 }
-.rp-chg.rp-is-on .rp-chg-path { color: var(--text); }
+/* 没有目录段时文件名可以吃满整行 */
+.rp-chg-path.rp-is-flat > .rp-chg-base { flex: 1 1 auto; max-width: 100%; }
+.rp-chg.rp-is-on .rp-chg-base { color: var(--text); }
 
 .rp-diff {
 	margin: 2px 0 6px 6px;
@@ -263,18 +342,22 @@ body.rp-open #app {
 	overflow-x: auto;
 }
 .rp-dl {
+	/* 行高锁 18px（= 正文 diff 的 11.8/1.55 取整），底色整条铺满横向滚动宽度 */
+	width: max-content;
+	min-width: 100%;
 	padding: 0 8px;
 	font-family: var(--mono);
 	font-size: 12px;
-	line-height: 1.55;
+	line-height: 18px;
 	color: var(--dim);
 	white-space: pre;
 }
 .rp-dl.rp-dl-add { color: var(--rp-add); background: var(--rp-add-bg); }
 .rp-dl.rp-dl-del { color: var(--rp-del); background: var(--rp-del-bg); }
-.rp-dl.rp-dl-hunk { color: var(--link); background: var(--accent-soft); }
+/* hunk 只染色不加底：整行蓝底会把 +/- 的绿红压掉（STYLE §3 不做彩色填充） */
+.rp-dl.rp-dl-hunk { color: var(--link); }
 .rp-dl.rp-dl-meta { color: var(--faint); }
-.rp-empty { padding: 10px 6px 4px; font-size: 12px; line-height: 1.5; color: var(--faint); }
+.rp-empty { padding: 10px 4px 4px; font-size: 12px; line-height: 1.5; color: var(--faint); }
 
 .rp-node {
 	display: flex;
@@ -282,7 +365,7 @@ body.rp-open #app {
 	gap: 6px;
 	width: 100%;
 	height: 26px;
-	padding: 0 6px;
+	padding: 0 4px;
 	border-radius: 6px;
 	text-align: left;
 	transition: background-color 120ms ease;
@@ -290,11 +373,10 @@ body.rp-open #app {
 .rp-node:hover { background: var(--hover); }
 .rp-node:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .rp-node.rp-is-active { background: var(--sel); }
+/* 角色列定宽：不定宽时每行文字起点随标签长短浮动，树看起来是斜的 */
 .rp-role {
-	flex: none;
-	max-width: 96px;
+	flex: 0 0 36px;
 	overflow: hidden;
-	font-family: var(--mono);
 	font-size: 11px;
 	line-height: 1;
 	text-overflow: ellipsis;
@@ -315,15 +397,19 @@ body.rp-open #app {
 .rp-node.rp-is-active .rp-sum { color: var(--text); }
 .rp-node.rp-is-sys .rp-role,
 .rp-node.rp-is-sys .rp-sum { color: var(--faint); }
+/* 叶标槽：每行都占位、只有末端行点亮，免得正文列被顶出一个参差的右边界 */
 .rp-leaf {
-	flex: none;
+	flex: 0 0 5px;
 	width: 5px;
 	height: 5px;
 	border-radius: 999px;
 	background: var(--send-bg);
 }
+.rp-leaf.rp-is-off { background: transparent; }
 
 @media (prefers-reduced-motion: reduce) {
+	#stream,
+	#composer,
 	.rp-panel,
 	.rp-toggle,
 	.rp-tab,
@@ -332,6 +418,7 @@ body.rp-open #app {
 	.rp-chev,
 	.rp-chg,
 	.rp-node,
+	.rp-retry,
 	.rp-refresh { transition: none; }
 }
 `;
@@ -379,9 +466,16 @@ export function init(ctx) {
 		return out.join(" ");
 	};
 
-	const stateEl = (text, detail) => {
+	const stateEl = (text, detail, onRetry) => {
 		const box = el("div", "rp-state", text);
+		box.setAttribute("role", "status"); // 加载/错误都是异步到达，读屏要能播报
 		if (detail) box.append(el("div", "rp-state-err", detail));
+		if (detail && onRetry) {
+			const again = el("button", "rp-retry", "重试");
+			again.type = "button";
+			again.onclick = onRetry;
+			box.append(again);
+		}
 		return box;
 	};
 
@@ -449,7 +543,8 @@ export function init(ctx) {
 	}
 	tabsBar.append(el("span", "rp-grow"));
 
-	const closeBtn = el("button", "rp-close", "×");
+	const closeBtn = el("button", "rp-close");
+	closeBtn.innerHTML = CLOSE_ICON; // 用图标而不是 "×"：字形随字体回退变化，和 1.4px 描边图标也不搭
 	closeBtn.type = "button";
 	closeBtn.title = "关闭右栏";
 	closeBtn.setAttribute("aria-label", "关闭右栏");
@@ -666,9 +761,16 @@ export function init(ctx) {
 		const host = pane.get("files");
 		const keep = host.scrollTop;
 		host.textContent = "";
+		host.setAttribute("aria-busy", busy.files ? "true" : "false");
 
 		if (!data.files) {
-			host.append(stateEl(errors.files ? "文件列表不可用" : busy.files ? "读取中…" : "还没加载", errors.files));
+			host.append(
+				stateEl(
+					errors.files ? "文件列表不可用" : busy.files ? "读取中…" : "还没加载",
+					errors.files,
+					() => load("files", true),
+				),
+			);
 			return;
 		}
 
@@ -681,17 +783,21 @@ export function init(ctx) {
 				for (const node of kids) {
 					const row = el("button", `rp-row${node.dir ? " rp-dir" : ""}`);
 					row.type = "button";
-					row.style.paddingLeft = `${6 + depth * 12}px`;
+					// 缩进步长 = 图标槽 16px：子级 chevron 落在父级图标下方，而不是压住父级文字
+					row.style.paddingLeft = `${4 + depth * 16}px`;
 					row.title = node.path;
 
 					const chev = el("span", "rp-chev");
 					const isOpen = node.dir && expanded.has(node.path);
-					if (node.dir) {
+					// 空目录没有可展开的东西，别给一个点不动的 chevron
+					if (node.dir && node.kids.length) {
 						chev.innerHTML = CHEV_ICON;
 						if (isOpen) chev.classList.add("rp-is-open");
 						row.setAttribute("aria-expanded", isOpen ? "true" : "false");
 					}
-					row.append(chev, el("span", "rp-name", node.name));
+					const ico = el("span", "rp-ico");
+					ico.innerHTML = node.dir ? ICONS.folder : ICONS[fileKind(node.name)] || ICONS.file;
+					row.append(chev, ico, el("span", "rp-name", node.name));
 
 					if (node.dir) {
 						row.onclick = () => {
@@ -749,8 +855,16 @@ export function init(ctx) {
 			const row = el("button", `rp-chg${openDiffs.has(key) ? " rp-is-on" : ""}`);
 			row.type = "button";
 			row.title = c.path;
-			const stCls = ST_CLASS[c.status] || "mod";
-			row.append(el("span", `rp-st rp-is-${stCls}`, c.status), el("span", "rp-chg-path", c.path));
+			const st = el("span", `rp-st rp-is-${ST_CLASS[c.status] || "mod"}`, c.status);
+			st.title = `${staged ? "已暂存" : "未暂存"} · ${c.status}`;
+			// 目录段单独一段：截断先吃目录，文件名尽量留全
+			const shown = c.path.replace(/\\/g, "/");
+			const cut = shown.lastIndexOf("/") + 1;
+			const pathEl = el("span", "rp-chg-path");
+			if (cut > 0) pathEl.append(el("span", "rp-chg-dir", shown.slice(0, cut)));
+			else pathEl.classList.add("rp-is-flat");
+			pathEl.append(el("span", "rp-chg-base", shown.slice(cut)));
+			row.append(st, pathEl);
 			row.onclick = () => {
 				if (openDiffs.has(key)) openDiffs.delete(key);
 				else openDiffs.add(key);
@@ -780,6 +894,7 @@ export function init(ctx) {
 		const host = pane.get("changes");
 		const keep = host.scrollTop;
 		host.textContent = "";
+		host.setAttribute("aria-busy", busy.changes ? "true" : "false");
 
 		const bar = el("div", "rp-bar");
 		bar.append(el("span", "rp-bar-t", "工作区变更"));
@@ -792,12 +907,26 @@ export function init(ctx) {
 		host.append(bar);
 
 		if (!data.changes) {
-			host.append(stateEl(errors.changes ? "变更列表不可用" : busy.changes ? "读取中…" : "还没加载", errors.changes));
+			host.append(
+				stateEl(
+					errors.changes ? "变更列表不可用" : busy.changes ? "读取中…" : "还没加载",
+					errors.changes,
+					() => load("changes", true),
+				),
+			);
 			return;
 		}
 
 		const staged = data.changes.filter((c) => c.staged);
 		const unstaged = data.changes.filter((c) => !c.staged);
+
+		// 两组都空时不再排 "已暂存 0 / 没有… / 未暂存 0 / 没有…" 四行废话，只留一句空态
+		if (!staged.length && !unstaged.length) {
+			host.append(stateEl("工作区没有变更"));
+			if (errors.changes) host.append(el("div", "rp-note rp-is-err", errors.changes));
+			host.scrollTop = keep;
+			return;
+		}
 
 		const head = (label, n) => {
 			const row = el("div", "rp-group");
@@ -817,20 +946,20 @@ export function init(ctx) {
 		const msg = entry.message && typeof entry.message === "object" ? entry.message : null;
 
 		if (msg) {
-			if (msg.role === "user") return { role: "user", text: oneLine(blockText(msg.content)), sys: false };
+			if (msg.role === "user") return { role: "用户", text: oneLine(blockText(msg.content)), sys: false };
 			if (msg.role === "assistant") {
 				const calls = Array.isArray(msg.content)
 					? msg.content.filter((b) => b?.type === "toolCall" && b.name).map((b) => b.name)
 					: [];
 				const text = oneLine(blockText(msg.content)) || (calls.length ? `调用 ${calls.join(", ")}` : "");
-				return { role: "assistant", text, sys: false };
+				return { role: "助手", text, sys: false };
 			}
 			if (msg.role === "toolResult") {
-				const name = String(msg.toolName || "tool");
+				const name = String(msg.toolName || "工具");
 				const text = oneLine(blockText(msg.content));
-				return { role: "tool", text: text ? `${name} · ${text}` : name, sys: false };
+				return { role: "工具", text: text ? `${name} · ${text}` : name, sys: false };
 			}
-			return { role: String(msg.role || "message"), text: oneLine(blockText(msg.content)), sys: false };
+			return { role: String(msg.role || "消息"), text: oneLine(blockText(msg.content)), sys: false };
 		}
 
 		const type = String(entry.type || "entry");
@@ -842,26 +971,32 @@ export function init(ctx) {
 		else if (type === "label") text = oneLine(entry.label);
 		else if (type === "session_info") text = oneLine(entry.name);
 		else if (type === "usage") text = oneLine(entry.kind);
-		return { role: SYS_TAG[type] || type, text, sys: true, type };
+		return { role: SYS_ROLE[type] || type, text, sys: true, type };
 	};
 
 	function treeRow(node, depth, leafId) {
 		const info = nodeInfo(node);
 		const row = el("button", `rp-node${info.sys ? " rp-is-sys" : ""}`);
 		row.type = "button";
-		row.style.paddingLeft = `${6 + depth * 12}px`;
-		row.title = info.text || info.role;
+		row.style.paddingLeft = `${4 + depth * 16}px`;
+		// get_tree 的 label/labelTimestamp 之前被整个丢掉，至少让它在 title 里可见
+		const label = typeof node?.label === "string" ? node.label : "";
+		row.title = [label, info.text].filter(Boolean).join(" · ") || info.role;
 		row.dataset.entryId = String(node?.entry?.id ?? "");
 
 		const role = el("span", "rp-role", info.role);
 		if (info.type) role.title = info.type;
 		row.append(role, el("span", "rp-sum", info.text || "—"));
 
-		if (leafId && node?.entry?.id === leafId) {
-			const dot = el("span", "rp-leaf");
+		const isLeaf = !!leafId && node?.entry?.id === leafId;
+		const dot = el("span", "rp-leaf");
+		if (isLeaf) {
 			dot.title = "当前分支末端";
-			row.append(dot);
+			row.setAttribute("aria-current", "true");
+		} else {
+			dot.classList.add("rp-is-off");
 		}
+		row.append(dot);
 
 		row.onclick = () => {
 			const host = pane.get("tree");
@@ -875,9 +1010,16 @@ export function init(ctx) {
 		const host = pane.get("tree");
 		const keep = host.scrollTop;
 		host.textContent = "";
+		host.setAttribute("aria-busy", busy.tree ? "true" : "false");
 
 		if (!data.tree) {
-			host.append(stateEl(errors.tree ? "会话树不可用" : busy.tree ? "读取中…" : "还没加载", errors.tree));
+			host.append(
+				stateEl(
+					errors.tree ? "会话树不可用" : busy.tree ? "读取中…" : "还没加载",
+					errors.tree,
+					() => load("tree", true),
+				),
+			);
 			return;
 		}
 
@@ -910,6 +1052,7 @@ export function init(ctx) {
 			const b = tabBtn.get(t.key);
 			b.classList.toggle("rp-is-on", on);
 			b.setAttribute("aria-selected", on ? "true" : "false");
+			b.tabIndex = on ? 0 : -1; // roving tabindex：Tab 只停一次，剩余切换交给方向键
 			pane.get(t.key).hidden = !on;
 		}
 		if (tab === "files") renderFiles();
@@ -932,10 +1075,31 @@ export function init(ctx) {
 		document.body.classList.toggle("rp-open", open);
 		panel.setAttribute("aria-hidden", open ? "false" : "true");
 		toggle.setAttribute("aria-expanded", open ? "true" : "false");
-		if (!open) return;
-		render();
+		if (!open) {
+			// 焦点连续性（同 DSH close-focus）：收起后焦点不能留在 aria-hidden 子树里
+			if (panel.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+			return;
+		}
+		// 先 load 后 render：load 在 await 前就同步置 busy 并画出「读取中…」，
+		// 反过来会先闪一帧「还没加载」
 		load(tab, true);
+		render();
 	}
+
+	// tablist 键盘导航：ARIA tabs 模式要求方向键切 tab（配合 render() 里的 roving tabindex）
+	tabsBar.addEventListener("keydown", (e) => {
+		const i = TABS.findIndex((t) => t.key === tab);
+		let next = -1;
+		if (e.key === "ArrowRight") next = (i + 1) % TABS.length;
+		else if (e.key === "ArrowLeft") next = (i - 1 + TABS.length) % TABS.length;
+		else if (e.key === "Home") next = 0;
+		else if (e.key === "End") next = TABS.length - 1;
+		if (next < 0) return;
+		e.preventDefault();
+		const t = TABS[next];
+		setTab(t.key);
+		tabBtn.get(t.key).focus();
+	});
 
 	toggle.onclick = (e) => {
 		e.preventDefault();
@@ -943,16 +1107,21 @@ export function init(ctx) {
 		setOpen(!open);
 	};
 
-	// Esc：只在面板打开且没有更高的 modal 时拦截（capture，挡掉 app.js 的 abort）
-	const modalAbove = () =>
-		[...document.querySelectorAll('[aria-modal="true"]')].some((n) => n.getClientRects().length > 0);
+	// Esc：面板打开且上方没有弹层时才拦截（capture，挡掉 app.js 的 abort）。
+	// 注意只查 [aria-modal] 不够：context-meter / message-fork 只有 role="dialog"，会被漏掉。
+	const overlayAbove = () =>
+		[...document.querySelectorAll('[role="dialog"], [aria-modal="true"], #menu')].some(
+			(n) => n.getClientRects().length > 0,
+		);
 
 	document.addEventListener(
 		"keydown",
 		(e) => {
 			if (!open) return;
 			if (e.key !== "Escape" || e.isComposing) return;
-			if (modalAbove()) return;
+			if (overlayAbove()) return;
+			// 输入框里 Esc 已经是「停止生成」（app.js:1632 的 abort）且不可撤销，流式中让它赢
+			if (ctx.state?.streaming && document.activeElement === ctx.input) return;
 			e.preventDefault();
 			e.stopPropagation();
 			setOpen(false);

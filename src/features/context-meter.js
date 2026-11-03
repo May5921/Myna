@@ -43,19 +43,32 @@ const CSS = `
 .ctx-btn:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .ctx-btn[hidden] { display: none; }
 .ctx-ring { display: block; }
-.ctx-track { stroke: var(--line); }
-.ctx-arc { stroke: var(--text); transition: stroke-dasharray 220ms ease; }
+/* 2px 细环用 --line(0.08) 在页面上几乎看不见，环需要 3:1 的非文本对比底线 */
+.ctx-track { stroke: var(--line-strong); }
+.ctx-arc {
+	stroke: var(--text);
+	/* 圆头与 DSH ContextMeter 的 .fill 一致，否则弧端是齐头缺口 */
+	stroke-linecap: round;
+	transition: stroke-dasharray 220ms ease;
+}
 .ctx-pct {
+	/* 定宽 + 右对齐：百分比从 9% 跳到 45% 时不再把右侧 #model 推来推去 */
+	min-width: 4ch;
+	text-align: right;
 	font: 11px/1 var(--mono);
 	color: var(--faint);
 	font-variant-numeric: tabular-nums;
 }
 .ctx-pop {
 	position: fixed;
+	/* 浮层带 11–19：压过 #menu(10)，让位给 queue(45)/右侧栏(40)/设置为 60 */
 	z-index: 12;
 	width: max-content;
 	min-width: 176px;
 	max-width: min(280px, calc(100vw - 16px));
+	/* 窗口很矮时别顶出视口；超出就自己滚 */
+	max-height: calc(100vh - 24px);
+	overflow-y: auto;
 	background: var(--bg);
 	border: 1px solid var(--line);
 	border-radius: 12px;
@@ -310,6 +323,8 @@ export function init(ctx) {
 		btn.title = isNum(cu.tokens)
 			? `上下文 ${fmtCompact(cu.tokens)} / ${fmtCompact(cu.contextWindow)} · ${pct}`
 			: `上下文 — / ${fmtCompact(cu.contextWindow)}`;
+		// 可访问名不能只有"查看上下文占用"：环里的百分比是纯视觉，读屏读不到
+		btn.setAttribute("aria-label", isNum(cu.percent) ? `上下文占用 ${pct}，查看明细` : "查看上下文占用");
 		if (pop) renderPop();
 	};
 

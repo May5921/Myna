@@ -29,7 +29,7 @@ const CSS = `
 .queue-head {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px; /* STYLE §3⑥ 间距只用 4 的倍数（原 10） */
 	height: 36px;
 	padding: 0 8px 0 12px;
 }
@@ -55,6 +55,8 @@ const CSS = `
 .queue-clear {
 	flex: none;
 	height: 24px;
+	/*「清空」40px →「确认清空」64px：预留宽度，二次确认时整行不跳动 */
+	min-width: 64px;
 	padding: 0 8px;
 	border: none;
 	border-radius: 8px;
@@ -65,7 +67,8 @@ const CSS = `
 	transition: background-color 120ms ease, color 120ms ease;
 }
 .queue-clear:hover { background: var(--hover); color: var(--text); }
-.queue-clear[data-armed="1"] { background: var(--hover); color: var(--text); }
+/* armed 必须和 hover 有区别，否则看不出已进入确认态 */
+.queue-clear[data-armed="1"] { background: var(--hover); color: var(--err); }
 .queue-clear:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 
 .queue-chevron {
@@ -91,14 +94,15 @@ const CSS = `
 	overflow-y: auto;
 	list-style: none;
 	scrollbar-width: thin;
-	scrollbar-color: var(--line) transparent;
+	/* 与 base.css 全局 thumb（rgba(13,13,13,.2)）对齐；--line 只有 8% 透明，拖动条等于看不见 */
+	scrollbar-color: rgba(13, 13, 13, 0.2) transparent;
 }
 .queue-list[hidden] { display: none; }
 
 .queue-row {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px; /* STYLE §3⑥ 间距只用 4 的倍数（原 10） */
 	min-height: 36px;
 	padding: 4px 12px;
 }
@@ -226,6 +230,7 @@ export function init(ctx) {
 
 	const countEl = document.createElement("span");
 	countEl.className = "queue-count";
+	countEl.setAttribute("aria-live", "polite"); // 队列增减时焦点不在 Dock 上，靠 live 区域播报条数
 
 	const clearBtn = document.createElement("button");
 	clearBtn.type = "button";
@@ -238,7 +243,8 @@ export function init(ctx) {
 	chevronBtn.type = "button";
 	chevronBtn.className = "queue-chevron";
 	chevronBtn.setAttribute("aria-controls", "queue-list");
-	chevronBtn.setAttribute("aria-expanded", "true");
+	chevronBtn.setAttribute("aria-expanded", "false"); // 初值 collapsed = true，不能先声明成展开
+	chevronBtn.setAttribute("aria-label", "展开队列");
 
 	const listEl = document.createElement("ul");
 	listEl.className = "queue-list";
@@ -283,8 +289,10 @@ export function init(ctx) {
 		countEl.textContent = `${n} 条待发送`;
 		listEl.hidden = !listVisible;
 		chevronBtn.replaceChildren(chevronIcon(listVisible));
+		const chevronLabel = listVisible ? "收起队列" : "展开队列";
 		chevronBtn.setAttribute("aria-expanded", listVisible ? "true" : "false");
-		chevronBtn.title = listVisible ? "收起队列" : "展开队列";
+		chevronBtn.title = chevronLabel;
+		chevronBtn.setAttribute("aria-label", chevronLabel); // 图标按钮没有可读文本，名字必须显式同步
 		listEl.replaceChildren();
 		for (const item of queue) listEl.append(rowEl(item.text));
 	}
@@ -296,9 +304,11 @@ export function init(ctx) {
 
 	// ---------- 发送键在运行中：草稿有内容显示 Send（排队），空则保持 Stop ----------
 	const syncSend = () => {
-		const queuing = !!ctx.state?.streaming && input.value.trim().length > 0;
+		const streaming = !!ctx.state?.streaming;
+		const queuing = streaming && input.value.trim().length > 0;
 		sendBtn.classList.toggle("queue-send", queuing);
-		sendBtn.title = queuing ? "排队发送（Ctrl+Enter 插话）" : sendTitle;
+		// 运行中空草稿时按钮实际是「停止」（#send.stop 方块），title 不能回落成「发送」
+		sendBtn.title = queuing ? "排队发送（Ctrl+Enter 插话）" : streaming ? "停止" : sendTitle;
 	};
 
 	// ---------- Toast（只用于插话反馈）----------
@@ -339,6 +349,11 @@ export function init(ctx) {
 	};
 
 	const enqueue = async () => {
+		// follow_up 只带文本：带图排队会把附件静默留在 rail 上，用户以为已经发出去了
+		if ((ctx.attachments?.get?.() || []).length) {
+			toast("排队不支持图片，请等这轮结束再发");
+			return;
+		}
 		const draft = takeDraft();
 		if (!draft) return;
 		try {

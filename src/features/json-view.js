@@ -58,6 +58,8 @@ function buildNode(value, key, keyKind, depth, state, openDepth) {
 		size: info.size,
 		open: container && depth < openDepth,
 		children: null,
+		// 值被截到 STRING_MAX 时留住原文，只用来做 title，不进 DOM 文本
+		title: typeof value === "string" && value.length > STRING_MAX ? value : "",
 	};
 	if (!container) return node;
 
@@ -144,6 +146,8 @@ function renderNode(node) {
 	const key = document.createElement("span");
 	key.className = "jt-key" + (node.keyKind === "index" ? " idx" : "");
 	key.textContent = node.keyKind === "key" ? `${node.key}:` : node.key;
+	// 键名列超 46% 宽会省略号截断（mono 12px 下约 40 字符），长键名必须能看全
+	if (node.key.length > 16) key.title = node.key;
 	row.append(key);
 
 	if (container) {
@@ -158,6 +162,8 @@ function renderNode(node) {
 		const val = document.createElement("span");
 		val.className = "jt-val";
 		val.textContent = node.summary;
+		// 预览被截到 120 字符：完整值挂 title，不然只能切回原始视图
+		if (node.title) val.title = node.title;
 		const type = document.createElement("span");
 		type.className = "jt-type";
 		type.textContent = node.kind;
@@ -183,6 +189,9 @@ function renderNode(node) {
 	};
 	row.addEventListener("click", (e) => {
 		e.preventDefault();
+		// 拖选值文本时会以 click 结束，别把选中当成折叠
+		const sel = window.getSelection?.();
+		if (sel && !sel.isCollapsed && row.contains(sel.anchorNode)) return;
 		setOpen(wrap.classList.contains("collapsed"));
 	});
 	row.addEventListener("keydown", (e) => {
@@ -273,7 +282,7 @@ export function init(ctx) {
 	}
 	.jt-tag {
 		flex: 0 0 auto;
-		font: 10.5px/1.5 var(--ui);
+		font: 11px/1.5 var(--ui);
 		letter-spacing: 0.04em;
 		color: var(--faint);
 	}
@@ -289,8 +298,8 @@ export function init(ctx) {
 	}
 	.jt-toggle {
 		flex: 0 0 auto;
-		height: 19px;
-		padding: 0 7px;
+		height: 24px;
+		padding: 0 8px;
 		border: 1px solid var(--line);
 		border-radius: 8px;
 		background: var(--bg);
@@ -347,7 +356,7 @@ export function init(ctx) {
 	.jt-type,
 	.jt-count {
 		flex: 0 0 auto;
-		font-size: 10.5px;
+		font-size: 11px;
 		color: var(--faint);
 		font-variant-numeric: tabular-nums;
 		user-select: none;
@@ -359,9 +368,12 @@ export function init(ctx) {
 	}
 	@media (prefers-reduced-motion: reduce) { .jt-chev { transition: none; } }
 	`;
-	const style = document.createElement("style");
-	style.textContent = CSS;
-	document.head.append(style);
+	if (!document.head.querySelector('style[data-feature="json-view"]')) {
+		const style = document.createElement("style");
+		style.dataset.feature = "json-view";
+		style.textContent = CSS;
+		document.head.append(style);
+	}
 
 	let timer = 0;
 	const scan = () => {

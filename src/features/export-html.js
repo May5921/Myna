@@ -7,7 +7,9 @@
 // = 当前工作区根目录；同名文件已存在会被静默覆盖，无提示、无后缀。
 // 见 pi-coding-agent dist/core/export-html/index.js:193-199（APP_NAME 默认 "pi"）。
 
-const TOAST_MS = 5000;
+const TOAST_MS = 3500;
+// 有按钮可点 / 是错误详情时多留一会儿，3500ms 读不完 180 字的报错
+const TOAST_LONG_MS = 5000;
 const MAX_ERR = 180;
 
 const IS_ABS = (p) => /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("\\\\") || p.startsWith("/");
@@ -29,9 +31,11 @@ const CSS = `
 .export-toast {
 	position: fixed;
 	left: 50%;
-	bottom: 24px;
+	/* composer 顶边约 96px：24px 会压在输入框上 */
+	bottom: 96px;
 	transform: translateX(-50%);
-	z-index: 30;
+	/* 与 settings / extension 的 toast 同一层：高于设置遮罩(60)与扩展弹窗(100) */
+	z-index: 110;
 	display: flex;
 	align-items: center;
 	gap: 10px;
@@ -49,7 +53,13 @@ const CSS = `
 }
 .export-toast.is-in { opacity: 1; }
 .export-toast.is-err { color: var(--err); }
-.export-toast-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.export-toast-text {
+	/* flex 项默认 min-width:auto = min-content，长路径会撑破 max-width 且省略号失效 */
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .export-toast-act {
 	flex: none;
 	color: var(--link);
@@ -157,7 +167,7 @@ export function init(ctx) {
 		toast = el;
 		document.body.append(el);
 		requestAnimationFrame(() => el.classList.add("is-in"));
-		toastTimer = setTimeout(closeToast, TOAST_MS);
+		toastTimer = setTimeout(closeToast, opts.action || opts.error ? TOAST_LONG_MS : TOAST_MS);
 	};
 
 	// ---------- 导出 ----------
@@ -170,7 +180,6 @@ export function init(ctx) {
 
 		busy = true;
 		btn.disabled = true;
-		btn.classList.add("is-busy");
 		btn.setAttribute("aria-busy", "true");
 		btn.title = "正在导出…";
 
@@ -194,7 +203,6 @@ export function init(ctx) {
 		} finally {
 			busy = false;
 			btn.disabled = false;
-			btn.classList.remove("is-busy");
 			btn.removeAttribute("aria-busy");
 			btn.title = "导出会话 HTML";
 		}

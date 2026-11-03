@@ -36,7 +36,7 @@
 				--text-sm: 12px;
 				--text-xs: 11px;
 				--weight-shell: 445;
-				--sidebar-width: 274px;
+				--sidebar-width: 275px;
 				--titlebar-height: 46px;
 				--thread-max-width: 768px;
 				--thread-inset-top: 33px;
@@ -93,7 +93,7 @@
 
 			#app {
 				display: grid;
-				grid-template-columns: 275px 1fr;
+				grid-template-columns: var(--sidebar-width) 1fr;
 				height: 100%;
 			}
 			#app.rail-hidden {
@@ -266,12 +266,13 @@
 				gap: 2px;
 			}
 			.proj:hover .proj-actions,
-			.proj:focus-within .proj-actions {
+			.proj:focus-within .proj-actions,
+			.proj.menu-open .proj-actions {
 				display: inline-flex;
 			}
 			.proj-menu {
 				position: absolute;
-				top: 30px;
+				top: 32px;
 				right: 6px;
 				z-index: 6;
 				min-width: 150px;
@@ -348,7 +349,7 @@
 				gap: 8px;
 				width: 100%;
 				height: 32px;
-				padding: 0 8px;
+				padding: 0 8px 0 30px;
 				border-radius: 8px;
 				color: var(--text);
 				text-align: left;
@@ -371,7 +372,7 @@
 			.item-more {
 				display: block;
 				width: 100%;
-				height: 28px;
+				height: 30px;
 				padding: 0 8px 0 30px;
 				text-align: left;
 				border-radius: 8px;
@@ -389,6 +390,16 @@
 			.item.active {
 				background: var(--sel);
 				color: var(--text);
+			}
+			#list button:focus-visible,
+			.proj:focus-visible {
+				outline: 2px solid var(--line-strong);
+				outline-offset: -2px;
+			}
+			.side-empty {
+				padding: 6px 8px 6px 30px;
+				font-size: 12px;
+				color: var(--faint);
 			}
 			.srow {
 				position: relative;
@@ -576,7 +587,11 @@
 			.body p {
 				margin: 0 0 10px;
 			}
-			.body p.h {
+			.body :is(h1, h2, h3, h4, h5, h6) {
+				font-size: inherit;
+				line-height: inherit;
+			}
+			.body :is(p, h1, h2, h3, h4, h5, h6).h {
 				font-weight: 600;
 				margin: 18px 0 8px;
 			}
@@ -620,7 +635,8 @@
 			}
 			.body table {
 				border-collapse: collapse;
-				width: 100%;
+				width: max-content;
+				min-width: 100%;
 				font-size: 13px;
 			}
 			.body th,
@@ -962,7 +978,7 @@
 				vertical-align: -2px;
 				animation: blink 1.1s steps(1) infinite;
 			}
-			/* 流式速度：↓ tokens · t/s（对齐 pi-web MessageView） */
+			/* 流式速度：等待首 token / ↓ tokens · tok/s / 结束摘要 */
 			.row.assistant > .meta {
 				display: flex;
 				align-items: center;
@@ -971,6 +987,7 @@
 				font-size: 11px;
 				color: var(--faint);
 				font-variant-numeric: tabular-nums;
+				transition: opacity 400ms ease;
 			}
 			.row.assistant > .meta[hidden] {
 				display: none;
@@ -992,12 +1009,6 @@
 				padding: 0;
 				background: transparent;
 				color: var(--faint);
-			}
-			.row.assistant > .meta {
-				transition: opacity 400ms ease;
-			}
-			.row.assistant > .meta.fade {
-				opacity: 0;
 			}
 			@keyframes blink {
 				50% {
@@ -1029,10 +1040,10 @@
 				position: absolute;
 				left: 50%;
 				transform: translateX(-50%);
-				bottom: 96px;
+				bottom: 150px;
 				font-size: 12px;
 				color: var(--dim);
-				background: #fff;
+				background: var(--bg);
 				border: 1px solid var(--line);
 				border-radius: 999px;
 				padding: 4px 11px;
@@ -1045,8 +1056,20 @@
 
 			/* ---------- 输入区 ---------- */
 			#composer {
+				position: relative;
 				flex: 0 0 auto;
 				padding: 6px 0 var(--composer-bottom-inset);
+				background: var(--bg);
+			}
+			#composer::before {
+				content: "";
+				position: absolute;
+				left: 0;
+				right: 0;
+				top: -20px;
+				height: 20px;
+				background: linear-gradient(to bottom, transparent, var(--bg));
+				pointer-events: none;
 			}
 			.box {
 				width: min(var(--thread-max-width), 100% - 48px);
@@ -1055,11 +1078,6 @@
 				border-radius: var(--radius-composer);
 				background: var(--bg);
 				padding: 0;
-				box-shadow: var(--shadow-composer);
-				transition: border-color 140ms ease, box-shadow 140ms ease;
-			}
-			.box:focus-within {
-				border-color: var(--line);
 				box-shadow: var(--shadow-composer);
 			}
 			#input {
@@ -1072,7 +1090,7 @@
 				color: var(--text);
 				font: inherit;
 				line-height: 1.5;
-				max-height: 200px;
+				max-height: 220px;
 				padding: 12px 14px 4px;
 				overflow-y: auto;
 				scrollbar-width: none;
@@ -1081,7 +1099,7 @@
 				display: none;
 			}
 			#input::placeholder {
-				color: #a8a8a8;
+				color: var(--faint);
 			}
 			.cbar {
 				display: flex;
@@ -1121,8 +1139,11 @@
 				border-radius: 50%;
 				display: grid;
 				place-items: center;
-				background: #f3f3f3;
+				background: var(--side);
 				color: var(--faint);
+			}
+			#send:disabled {
+				cursor: default;
 			}
 			#send .sq {
 				display: none;
@@ -1134,11 +1155,11 @@
 				display: block;
 			}
 			#send.on {
-				background: #1a1c1f;
-				color: #fff;
+				background: var(--send-bg);
+				color: var(--bg);
 			}
 			#send.on:hover {
-				background: #000;
+				background: var(--text);
 			}
 
 			/* ---------- 空状态 ---------- */

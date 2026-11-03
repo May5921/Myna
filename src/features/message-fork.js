@@ -4,33 +4,12 @@
 //      fork({ entryId }) → { text, cancelled }
 //      get_messages     → { messages }
 const CSS = `
-/* 分支按钮并入行内的 .acts 横条（由 message-actions 建容器） */
-.row.mine > .acts .fork-btn {
-	width: 28px;
-	height: 28px;
-	border-radius: 7px;
-	display: grid;
-	place-items: center;
-	background: none;
-	color: var(--faint);
-	transition: background-color 120ms ease, color 120ms ease;
-}
-.row.mine > .acts .fork-btn:hover {
-	background: var(--hover);
-	color: var(--text);
-}
-.row.mine > .acts .fork-btn:focus-visible {
-	outline: none;
-	background: var(--hover);
-	color: var(--text);
-}
-.row.mine > .acts .fork-btn[disabled] {
-	opacity: 0.35;
+/* 分支按钮并入行内的 .acts 横条；按钮外观统一由 message-actions 的
+   .row > .acts button 负责，这里只留浮层与 toast。 */
+/* 读取历史期间的等待态（拿 fock 列表要等 IPC，不能毫无反馈） */
+.row.mine > .acts [data-act="fork"][data-busy] {
+	opacity: 0.4;
 	cursor: default;
-}
-.row.mine > .acts .fork-btn[disabled]:hover {
-	background: none;
-	color: var(--faint);
 }
 /* 确认浮层：Codex 菜单皮，锚在按钮旁，不铺遮罩 */
 .fork-pop {
@@ -67,8 +46,8 @@ const CSS = `
 .fork-pop-btn {
 	height: 26px;
 	padding: 0 10px;
-	border-radius: 8px;
-	font-size: 12.4px;
+	border-radius: var(--radius-md);
+	font-size: 12.5px;
 	white-space: nowrap;
 	color: var(--dim);
 	transition: background-color 120ms ease, color 120ms ease;
@@ -96,7 +75,8 @@ const CSS = `
 .fork-toasts {
 	position: fixed;
 	left: 50%;
-	bottom: 96px;
+	/* 让开 #jump（bottom: 96px）——两者原来完全重叠 */
+	bottom: 132px;
 	transform: translateX(-50%);
 	z-index: 90;
 	display: flex;
@@ -125,7 +105,6 @@ const CSS = `
 	from { opacity: 0; transform: translateY(4px); }
 }
 @media (prefers-reduced-motion: reduce) {
-	.fork-btn,
 	.fork-pop,
 	.fork-pop-btn,
 	.fork-toast {
@@ -140,18 +119,22 @@ const BRANCH_ICON =
 	'<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="3.4" r="1.5"/><circle cx="5" cy="12.6" r="1.5"/><circle cx="11.4" cy="3.4" r="1.5"/><path d="M5 4.9v6.2"/><path d="M11.4 4.9v.7c0 1.4-1.1 2.5-2.5 2.5H5.7"/></svg>';
 
 const TOAST_MS = 3200;
+let inited = false;
 
 export function init(ctx) {
 	const stream = ctx?.stream;
 	const pi = ctx?.pi;
 	if (!stream || typeof pi?.command !== "function") return;
-	// 样式由模块自己注入；重复 init 直接退出
-	if (document.head.querySelector('style[data-feature="message-fork"]')) return;
+	if (inited) return;
+	inited = true;
 
-	const style = document.createElement("style");
-	style.dataset.feature = "message-fork";
-	style.textContent = CSS;
-	document.head.append(style);
+	// 只对样式做存在性判断：原来「样式在就整体 return」会让行为静默缺失
+	if (!document.head.querySelector('style[data-feature="message-fork"]')) {
+		const style = document.createElement("style");
+		style.dataset.feature = "message-fork";
+		style.textContent = CSS;
+		document.head.append(style);
+	}
 
 	// ---------- toast ----------
 	let toastHost = null;
@@ -208,9 +191,13 @@ export function init(ctx) {
 
 	function closePop() {
 		if (pop.hidden) return;
+		// 焦点在浮层里就还给锚点按钮，别让键盘用户掉到 body 上
+		const hadFocus = pop.contains(document.activeElement);
+		const back = anchorBtn;
 		pop.hidden = true;
 		entryId = null;
 		anchorBtn = null;
+		if (hadFocus && back?.isConnected) back.focus?.();
 	}
 
 	// 用户主动收起；fork 请求在飞时不响应，免得看不到结果
@@ -221,6 +208,8 @@ export function init(ctx) {
 
 	// 定位：按钮下方，放不下就翻到上方；永不越过输入框顶边
 	function place(btn) {
+		// 先以不可见状态参与布局再量尺寸：直接 hidden=false 会先闪一帧在旧位置
+		pop.style.visibility = "hidden";
 		pop.hidden = false;
 		const r = btn.getBoundingClientRect();
 		const w = pop.offsetWidth;
@@ -234,6 +223,7 @@ export function init(ctx) {
 		left = Math.min(Math.max(8, left), Math.max(8, window.innerWidth - w - 8));
 		pop.style.left = `${Math.round(left)}px`;
 		pop.style.top = `${Math.round(top)}px`;
+		pop.style.visibility = "";
 	}
 
 	async function createFork() {
@@ -275,6 +265,7 @@ export function init(ctx) {
 		anchorBtn = btn;
 
 		let list;
+		btn.dataset.busy = "1";
 		try {
 			list = await pi.command({ type: "get_fork_messages" });
 		} catch (e) {
@@ -282,6 +273,8 @@ export function init(ctx) {
 			anchorBtn = null;
 			toast("读取历史消息失败", true);
 			return;
+		} finally {
+			delete btn.dataset.busy;
 		}
 		// 等待期间换了目标、行被重绘或开始流式：放弃
 		if (anchorBtn !== btn || !row.isConnected || ctx.state?.streaming) {
@@ -294,7 +287,7 @@ export function init(ctx) {
 		if (!hit?.entryId) {
 			console.warn("[message-fork] 找不到对应的历史消息", text.slice(0, 40));
 			anchorBtn = null;
-			toast("找不到对应的历史消息");
+			toast("找不到对应的历史消息", true);
 			return;
 		}
 
@@ -308,8 +301,11 @@ export function init(ctx) {
 		const btn = row.querySelector(':scope > .acts [data-act="fork"]');
 		if (!btn) return;
 		const blocked = !!ctx.state?.streaming;
-		btn.disabled = blocked;
+		// 原生 disabled 不派发 hover/focus，没法解释为什么按不动（DSH MessageIconActions）
+		if (blocked) btn.setAttribute("data-unavailable", "");
+		else btn.removeAttribute("data-unavailable");
 		btn.setAttribute("aria-disabled", blocked ? "true" : "false");
+		btn.title = blocked ? "生成中，结束后才能分支" : "从这条消息创建分支";
 	};
 
 	const syncAll = () => {
@@ -331,7 +327,6 @@ export function init(ctx) {
 		const btn = document.createElement("button");
 		btn.type = "button";
 		btn.dataset.act = "fork";
-		btn.classList.add("fork-btn");
 		btn.title = "从这条消息创建分支";
 		btn.setAttribute("aria-label", "从这条消息创建分支");
 		btn.innerHTML = BRANCH_ICON;
@@ -389,6 +384,8 @@ export function init(ctx) {
 				return;
 			}
 			if (e.key === "Enter" && !e.isComposing) {
+				// 焦点不在浮层里就别劫持：否则在输入框里敲 Enter 会去创建分支
+				if (!pop.contains(document.activeElement)) return;
 				e.preventDefault();
 				e.stopPropagation();
 				if (document.activeElement === cancelBtn) dismiss();
