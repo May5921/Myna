@@ -107,6 +107,8 @@ const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js"]
 
 其余已完成：设置面板（`settings.js`，含 clone / cycle_model / cycle_thinking_level / abort_retry / get_last_assistant_text）、队列与插话（`queue.js`）、导出 HTML（`export-html.js`）、扩展 UI 桥（`extension-ui.js`）、上下文圆环（`context-meter.js`）、空态 chip（`empty-chips.js`）。
 
+2026-11-03 追加：设置改为 DSH 四座位外壳（188px 左导航 + options 滚动）与提供商编辑器（`pi:providers` / `pi:save-provider` / `pi:delete-provider`，写 `~/.pi/agent/models.json` 前备份 + 原子落盘）；会话内容全文搜索（`pi:search-sessions`，侧栏「内容匹配」）；底部终端（`terminal.js` + `pi:term-run`，powershell 一次性命令，非 PTY）；Ctrl+K 命令面板（`shortcuts.js`）；会话归档；实时 tok/s 徽标与「完成 · Ns」状态条；`npm run check` / `npm run build:portable`（`dist/pi-mini`，无打包器）；`.github/workflows/ci.yml` 与 MIT LICENSE。
+
 ## 7. 开发闭环（重要，能省你大量时间）
 
 ### 热重载
