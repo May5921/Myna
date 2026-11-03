@@ -401,6 +401,46 @@
 				font-size: 12px;
 				color: var(--faint);
 			}
+			.side-hits {
+				padding: 6px 8px 4px;
+			}
+			.hits-head {
+				padding: 2px 8px 6px;
+				font-size: 11px;
+				color: var(--faint);
+			}
+			.hit {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+				width: 100%;
+				padding: 6px 8px;
+				border: 0;
+				border-radius: 8px;
+				background: transparent;
+				color: var(--text);
+				text-align: left;
+				cursor: pointer;
+			}
+			.hit:hover {
+				background: var(--hover);
+			}
+			.hit-title {
+				font-size: 12.5px;
+				font-weight: 500;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.hit-snippet {
+				font-size: 11.5px;
+				line-height: 1.45;
+				color: var(--dim);
+				display: -webkit-box;
+				-webkit-line-clamp: 2;
+				-webkit-box-orient: vertical;
+				overflow: hidden;
+			}
 			.srow {
 				position: relative;
 				display: flex;

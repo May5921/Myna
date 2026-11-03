@@ -2,7 +2,7 @@
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -416,6 +416,248 @@ ipcMain.handle("pi:perf", async () => {
 	return { uptime: Date.now() - T0, rss: m.rss, heapUsed: m.heapUsed, external: m.external, pid: process.pid };
 });
 
+// 设置「关于/扩展」用的只读信息：版本、路径、pi 全局包与本地扩展
+ipcMain.handle("pi:app-info", async () => {
+	const pi = resolvePiCli();
+	let piVersion = "";
+	if (pi) {
+		try {
+			piVersion = JSON.parse(readFileSync(join(pi, "..", "..", "package.json"), "utf8")).version || "";
+		} catch {}
+	}
+	const agentRoot = join(homedir(), ".pi", "agent");
+	const readJson = (p, fallback) => {
+		try {
+			return JSON.parse(readFileSync(p, "utf8"));
+		} catch {
+			return fallback;
+		}
+	};
+	const settings = readJson(join(agentRoot, "settings.json"), {});
+	const packages = Array.isArray(settings.packages) ? settings.packages : [];
+	const extensions = [];
+	try {
+		for (const d of readdirSync(join(agentRoot, "extensions"), { withFileTypes: true })) {
+			if (d.isDirectory() && !d.name.startsWith(".")) extensions.push(d.name);
+		}
+	} catch {}
+	return {
+		version: app.getVersion(),
+		electron: process.versions.electron,
+		chrome: process.versions.chrome,
+		node: process.versions.node,
+		piVersion,
+		piCli: pi || "",
+		agentRoot,
+		logFile: LOG_FILE,
+		packages,
+		extensions,
+	};
+});
+
+// 设置「提供商」：读/写 ~/.pi/agent/models.json；apiKey 只回掩码
+const MODELS_JSON = join(homedir(), ".pi", "agent", "models.json");
+const API_TYPES = new Set(["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"]);
+
+function maskKey(k) {
+	const s = String(k || "");
+	if (!s) return "";
+	if (s.startsWith("$") || s.startsWith("!")) return s;
+	return s.length <= 6 ? "••••" : `••••${s.slice(-4)}`;
+}
+
+const PROVIDER_KEY = /^[a-z0-9][a-z0-9._-]*$/i;
+
+function readModelsFile() {
+	let text = "";
+	let raw = null;
+	try {
+		text = readFileSync(MODELS_JSON, "utf8");
+		raw = JSON.parse(text);
+	} catch {}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) raw = {};
+	if (!raw.providers || typeof raw.providers !== "object" || Array.isArray(raw.providers)) raw.providers = {};
+	return { raw, text };
+}
+
+function writeModelsFile(raw, previous) {
+	if (previous) {
+		try {
+			const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+			writeFileSync(`${MODELS_JSON}.bak-${stamp}`, previous, "utf8");
+		} catch {}
+	}
+	const tmp = `${MODELS_JSON}.tmp-${process.pid}`;
+	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+	renameSync(tmp, MODELS_JSON);
+}
+
+// 只接受 id/name/reasoning/contextWindow/maxTokens/input 这几个能稳定表达的字段；
+// 模型条目里其它字段（compat 等）按 id 从旧配置里原样保留。
+function cleanProviderModels(list, previous, allowEmpty = false) {
+	const prev = new Map((Array.isArray(previous) ? previous : []).map((m) => [String(m?.id || ""), m]));
+	const seen = new Set();
+	const out = [];
+	for (const m of Array.isArray(list) ? list : []) {
+		const id = String(m?.id || "").trim();
+		if (!id) continue;
+		if (seen.has(id)) throw new Error(`模型 ID「${id}」重复`);
+		seen.add(id);
+		const base = prev.get(id) || {};
+		const next = { ...base, id };
+		const name = String(m?.name || "").trim();
+		if (name) next.name = name;
+		else delete next.name;
+		next.reasoning = Boolean(m?.reasoning);
+		const ctx = Number(m?.contextWindow);
+		if (Number.isFinite(ctx) && ctx > 0) next.contextWindow = Math.round(ctx);
+		else delete next.contextWindow;
+		const max = Number(m?.maxTokens);
+		if (Number.isFinite(max) && max > 0) next.maxTokens = Math.round(max);
+		else delete next.maxTokens;
+		const modalities = Array.isArray(m?.input) ? m.input.filter((x) => x === "text" || x === "image") : null;
+		if (modalities && modalities.length) next.input = modalities;
+		else if (!Array.isArray(base.input) || !base.input.length) next.input = ["text"];
+		out.push(next);
+	}
+	if (!out.length) {
+		if (allowEmpty) return [];
+		throw new Error("至少需要一个模型");
+	}
+	return out;
+}
+
+ipcMain.handle("pi:providers", async () => {
+	const { raw } = readModelsFile();
+	return {
+		path: MODELS_JSON,
+		providers: Object.entries(raw.providers).map(([key, p]) => ({
+			key,
+			name: p?.name || key,
+			baseUrl: p?.baseUrl || "",
+			api: p?.api || "",
+			apiKey: maskKey(p?.apiKey),
+			hasKey: Boolean(p?.apiKey),
+			models: (Array.isArray(p?.models) ? p.models : []).map((m) => ({
+				id: String(m?.id || ""),
+				name: String(m?.name || ""),
+				reasoning: Boolean(m?.reasoning),
+				input: Array.isArray(m?.input) ? m.input : [],
+				contextWindow: Number(m?.contextWindow) || 0,
+				maxTokens: Number(m?.maxTokens) || 0,
+			})),
+			modelCount: Array.isArray(p?.models) ? p.models.length : 0,
+			overrides: p?.modelOverrides && typeof p.modelOverrides === "object" ? Object.keys(p.modelOverrides).length : 0,
+		})),
+	};
+});
+
+ipcMain.handle("pi:save-provider", async (_e, input) => {
+	const key = String(input?.key || "").trim();
+	const create = Boolean(input?.create);
+	if (!PROVIDER_KEY.test(key)) throw new Error("标识只能包含字母、数字、点、下划线、短横线，且不能以符号开头");
+	const baseUrl = String(input?.baseUrl || "").trim();
+	const api = String(input?.api || "").trim();
+	const typedKey = String(input?.apiKey || "").trim();
+	const { raw, text } = readModelsFile();
+	const existing = raw.providers[key];
+	if (create && existing) throw new Error(`提供商「${key}」已存在`);
+	if (!create && !existing) throw new Error(`提供商「${key}」不存在，请刷新后重试`);
+	if (create) {
+		if (!/^https?:\/\//i.test(baseUrl)) throw new Error("Base URL 必须以 http:// 或 https:// 开头");
+		if (!API_TYPES.has(api)) throw new Error("不支持的 API 类型");
+	} else {
+		// 内置路由（如 opencode-go）可能没有 baseUrl/api，更新时只校验填了的字段
+		if (baseUrl && !/^https?:\/\//i.test(baseUrl)) throw new Error("Base URL 必须以 http:// 或 https:// 开头");
+		if (api && !API_TYPES.has(api)) throw new Error("不支持的 API 类型");
+	}
+	const name = String(input?.name || "").trim() || key;
+	const apiKey = typedKey || String(existing?.apiKey || "");
+	const hadModels = Array.isArray(existing?.models) && existing.models.length > 0;
+	const models = cleanProviderModels(input?.models, existing?.models, !create && !hadModels);
+	const next = { ...(existing || {}), name };
+	if (models.length) next.models = models;
+	else delete next.models;
+	if (baseUrl) next.baseUrl = baseUrl;
+	else delete next.baseUrl;
+	if (api) next.api = api;
+	else delete next.api;
+	if (apiKey) next.apiKey = apiKey;
+	else delete next.apiKey;
+	raw.providers[key] = next;
+	writeModelsFile(raw, text);
+	log("[providers] saved", key);
+	return { ok: true, path: MODELS_JSON };
+});
+
+ipcMain.handle("pi:delete-provider", async (_e, keyRaw) => {
+	const key = String(keyRaw || "").trim();
+	const { raw, text } = readModelsFile();
+	if (!raw.providers[key]) throw new Error(`提供商「${key}」不存在`);
+	delete raw.providers[key];
+	writeModelsFile(raw, text);
+	log("[providers] deleted", key);
+	return { ok: true, path: MODELS_JSON };
+});
+
+// ---------- 终端（非 PTY：一次执行一条命令，流式回传）----------
+let termSeq = 0;
+const termRuns = new Map();
+
+function termShell() {
+	if (process.platform !== "win32") return { cmd: "/bin/sh", args: (c) => ["-c", c] };
+	return { cmd: "powershell.exe", args: (c) => ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `$OutputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8;${c}`] };
+}
+
+ipcMain.handle("pi:term-run", async (e, input) => {
+	const command = String(input?.command || "").trim();
+	if (!command) throw new Error("命令为空");
+	if (command.length > 8000) throw new Error("命令过长");
+	const senderId = e.sender.id;
+	for (const [id, run] of termRuns) {
+		if (run.senderId === senderId) {
+			try {
+				run.proc.kill();
+			} catch {}
+			termRuns.delete(id);
+		}
+	}
+	const cwd = existsSync(currentCwd) ? currentCwd : homedir();
+	const runId = `t${++termSeq}`;
+	const shellSpec = termShell();
+	const proc = spawn(shellSpec.cmd, shellSpec.args(command), {
+		cwd,
+		windowsHide: true,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	termRuns.set(runId, { proc, senderId });
+	const sender = e.sender;
+	const send = (channel, payload) => {
+		try {
+			if (!sender.isDestroyed()) sender.send(channel, payload);
+		} catch {}
+	};
+	proc.stdout.on("data", (d) => send("pi:term-data", { runId, stream: "stdout", chunk: d.toString("utf8") }));
+	proc.stderr.on("data", (d) => send("pi:term-data", { runId, stream: "stderr", chunk: d.toString("utf8") }));
+	proc.on("error", (err) => send("pi:term-data", { runId, stream: "stderr", chunk: `${err.message}\n` }));
+	proc.on("close", (code) => {
+		termRuns.delete(runId);
+		send("pi:term-exit", { runId, code: code == null ? -1 : code });
+	});
+	return { runId };
+});
+
+ipcMain.handle("pi:term-kill", async (_e, runIdRaw) => {
+	const runId = String(runIdRaw || "");
+	const run = termRuns.get(runId);
+	if (!run) return { ok: false };
+	try {
+		run.proc.kill();
+	} catch {}
+	termRuns.delete(runId);
+	return { ok: true };
+});
+
 // ---------- IPC ----------
 let restorePending = process.env.PI_MINI_SESSION || null;
 let relaunching = false;
@@ -466,6 +708,96 @@ ipcMain.handle("pi:set-cwd", async (_e, cwd) => {
 ipcMain.handle("pi:sessions", async (_e, opts) => {
 	const perCwd = Math.min(200, Math.max(20, Number(opts?.perCwd) || 20));
 	return listSessions(perCwd);
+});
+
+// 会话内容全文搜索：只扫指定工作区，最近 200 个会话、每个最多读 4MB
+ipcMain.handle("pi:search-sessions", async (_e, input) => {
+	const query = String(input?.query || "").trim();
+	const cwd = String(input?.cwd || currentCwd);
+	if (query.length < 2) return { results: [], truncated: false };
+	const needle = query.toLowerCase();
+	const files = [];
+	if (!existsSync(SESSIONS_ROOT)) return { results: [], truncated: false };
+	for (const dir of readdirSync(SESSIONS_ROOT)) {
+		const full = join(SESSIONS_ROOT, dir);
+		let st;
+		try {
+			st = statSync(full);
+		} catch {
+			continue;
+		}
+		if (!st.isDirectory()) continue;
+		for (const file of readdirSync(full)) {
+			if (!file.endsWith(".jsonl")) continue;
+			const path = join(full, file);
+			const head = readHead(path, 4096);
+			const firstLine = head.slice(0, head.indexOf("\n"));
+			let header;
+			try {
+				header = JSON.parse(firstLine);
+			} catch {
+				continue;
+			}
+			if (cwd && header.cwd !== cwd) continue;
+			let mtime = 0;
+			try {
+				mtime = statSync(path).mtimeMs;
+			} catch {}
+			files.push({ path, header, mtime });
+		}
+	}
+	files.sort((a, b) => b.mtime - a.mtime);
+	const truncated = files.length > 60;
+	const results = [];
+	for (const f of files.slice(0, 60)) {
+		let text;
+		try {
+			text = readFileSync(f.path, "utf8");
+		} catch {
+			continue;
+		}
+		if (text.length > 2000000) text = text.slice(0, 2000000);
+		const lower = text.toLowerCase();
+		const at = lower.indexOf(needle);
+		if (at < 0) continue;
+		const lineStart = text.lastIndexOf("\n", at) + 1;
+		let lineEnd = text.indexOf("\n", at);
+		if (lineEnd < 0) lineEnd = text.length;
+		let role = "";
+		let body = text.slice(lineStart, lineEnd);
+		try {
+			const rec = JSON.parse(body);
+			role = rec?.message?.role || "";
+			const content = rec?.message?.content;
+			const parts = Array.isArray(content) ? content : [{ type: "text", text: content }];
+			body = parts
+				.filter((p) => p?.type === "text")
+				.map((p) => p.text)
+				.join(" ");
+		} catch {}
+		const flat = body.replace(/\s+/g, " ").trim();
+		const hit = flat.toLowerCase().indexOf(needle);
+		let snippet = hit < 0 ? flat.slice(0, 160) : flat.slice(Math.max(0, hit - 60), hit + 120);
+		if (snippet.length > 180) snippet = snippet.slice(0, 177) + "…";
+		let name = null;
+		const nameMatch = text.match(/"type"\s*:\s*"session_info"[^\n]*?"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+		if (nameMatch) {
+			try {
+				name = JSON.parse(`"${nameMatch[1]}"`);
+			} catch {}
+		}
+		results.push({
+			path: f.path,
+			cwd: f.header.cwd,
+			name,
+			title: firstUserText(text.slice(0, 65536)),
+			role,
+			snippet,
+			timestamp: f.header.timestamp,
+		});
+		if (results.length >= 20) break;
+	}
+	return { results, truncated };
 });
 
 ipcMain.handle("pi:open-path", async (_e, path) => {
@@ -762,6 +1094,50 @@ function startDevWatch() {
 						log("[dev] unarch failed", e.message);
 					}
 				}
+				if (want.includes("search")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							const open = document.querySelector('.side-icon[aria-label="搜索会话"]');
+							if (!document.querySelector(".side-search input")) open?.click();
+							await new Promise((r) => setTimeout(r, 300));
+							const inp = document.querySelector(".side-search input");
+							if (!inp) return JSON.stringify({ opened: false });
+							inp.value = "pi-mini";
+							inp.dispatchEvent(new Event("input", { bubbles: true }));
+							await new Promise((r) => setTimeout(r, 1600));
+							return JSON.stringify({
+								opened: true,
+								hits: document.querySelectorAll(".side-hits .hit").length,
+								head: document.querySelector(".hits-head")?.textContent || "",
+								first: document.querySelector(".hit-snippet")?.textContent?.slice(0, 60) || "",
+							});
+						})()`);
+						log("[dev] search", st);
+						await new Promise((r) => setTimeout(r, 300));
+					} catch (e) {
+						log("[dev] search failed", e.message);
+					}
+				}
+				if (want.includes("term")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							if (typeof window.__piTermDemo !== "function") return JSON.stringify({ demo: false });
+							window.__piTermDemo();
+							await new Promise((r) => setTimeout(r, 1800));
+							const term = document.querySelector(".term");
+							return JSON.stringify({
+								demo: true,
+								open: !!term && term.offsetParent !== null,
+								lines: document.querySelectorAll(".term-line").length,
+								text: (document.querySelector(".term-out")?.textContent || "").slice(-80),
+							});
+						})()`);
+						log("[dev] term", st);
+						await new Promise((r) => setTimeout(r, 300));
+					} catch (e) {
+						log("[dev] term failed", e.message);
+					}
+				}
 				if (want.includes("sess")) {
 					try {
 						const st = await win.webContents.executeJavaScript(`(async () => {
@@ -827,6 +1203,19 @@ function startDevWatch() {
 				if (want.includes("settings")) {
 					try {
 						await win.webContents.executeJavaScript("window.__piSettingsDemo && window.__piSettingsDemo()");
+						const navKey = want.match(/setnav-([a-z]+)/)?.[1];
+						if (navKey) {
+							await new Promise((r) => setTimeout(r, 400));
+							await win.webContents.executeJavaScript(`document.querySelector('#settings-nav-${navKey}')?.click()`);
+						}
+						if (want.includes("provopen")) {
+							await new Promise((r) => setTimeout(r, 300));
+							await win.webContents.executeJavaScript(`document.querySelector('.prov-head')?.click()`);
+						}
+						if (want.includes("provadd")) {
+							await new Promise((r) => setTimeout(r, 300));
+							await win.webContents.executeJavaScript(`document.querySelector('.settings-add button')?.click()`);
+						}
 						await new Promise((r) => setTimeout(r, 900));
 					} catch (e) {
 						log("[dev] settings demo failed", e.message);

@@ -90,10 +90,13 @@ const CSS = `
 .settings-overlay[hidden] { display: none; }
 
 .settings-dialog {
-	display: flex;
-	flex-direction: column;
-	width: min(560px, 100vw - 32px);
-	max-height: 80vh;
+	display: grid;
+	grid-template-columns: 188px minmax(0, 1fr);
+	grid-template-rows: auto minmax(0, 1fr);
+	grid-template-areas: "title header" "nav options";
+	width: min(800px, 100vw - 48px);
+	height: min(780px, calc(100vh - 48px));
+	max-height: calc(100vh - 48px);
 	background: var(--bg);
 	border: 1px solid var(--line);
 	border-radius: 16px;
@@ -102,78 +105,248 @@ const CSS = `
 	outline: none;
 }
 
-.settings-head {
-	flex: none;
-	height: 52px;
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	padding: 0 16px;
-	border-bottom: 1px solid var(--line);
-}
 .settings-title {
-	font-size: 14px;
-	font-weight: 600;
-	letter-spacing: -0.01em;
+	grid-area: title;
+	padding: 22px 12px 8px 24px;
+	font-size: 16px;
+	font-weight: 500;
+	line-height: 24px;
 	color: var(--text);
+}
+
+.settings-head {
+	grid-area: header;
+	height: 54px;
+	display: flex;
+	align-items: flex-start;
+	justify-content: flex-end;
+	padding: 20px 14px 8px 10px;
 }
 .settings-close {
 	width: 28px;
 	height: 28px;
-	border-radius: 6px;
+	border-radius: 8px;
 	display: grid;
 	place-items: center;
-	color: var(--faint);
+	color: var(--dim);
 	transition: background-color 120ms ease, color 120ms ease;
 }
 .settings-close:hover { background: var(--hover); color: var(--text); }
 .settings-close:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 
+.settings-nav {
+	grid-area: nav;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 10px 12px 12px;
+	overflow-y: auto;
+}
+.settings-nav-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: none;
+	height: 40px;
+	padding: 9px 16px 9px 12px;
+	border-radius: 12px;
+	text-align: left;
+	font-size: 14px;
+	color: var(--text);
+	transition: background-color 100ms ease;
+}
+.settings-nav-item:hover { background: var(--hover); }
+.settings-nav-item.is-on { background: #ebebef; }
+.settings-nav-item:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+.settings-nav-icon { display: grid; place-items: center; width: 16px; height: 16px; color: var(--dim); flex: none; }
+.settings-nav-item.is-on .settings-nav-icon { color: var(--text); }
+
 .settings-body {
-	flex: 1;
+	grid-area: options;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 4px 0 10px;
+	padding: 0 24px 24px;
 }
+.settings-pane[hidden] { display: none; }
+
+
+.settings-add { display: flex; justify-content: flex-start; padding: 12px 0 0; }
+.settings-hint { padding: 8px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+
+.settings-exts-head {
+	padding: 10px 16px 2px;
+	font-size: 11.5px;
+	color: var(--faint);
+}
+.settings-ext {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	padding: 6px 16px;
+	border-top: 1px solid var(--line);
+	font-size: 12.5px;
+}
+.settings-exts-head + .settings-ext { border-top: 0; }
+.settings-ext-name {
+	flex: 0 0 34%;
+	max-width: 34%;
+	font-family: var(--mono);
+	font-size: 12px;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.settings-ext-desc {
+	flex: 1;
+	min-width: 0;
+	color: var(--dim);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.settings-exts-empty { padding: 10px 16px; font-size: 12.5px; color: var(--faint); }
+
+.prov-list { display: flex; flex-direction: column; gap: 8px; padding: 12px 0 4px; }
+.prov-card { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.prov-card[hidden] { display: none; }
+.prov-add { margin-top: 10px; }
+.prov-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 10px 12px;
+	text-align: left;
+	border-radius: 12px;
+}
+.prov-head:hover { background: var(--hover); }
+.prov-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong, #d8d8d8); flex: none; }
+.prov-dot.on { background: #3d9a4e; }
+.prov-name { font-size: 13.5px; font-weight: 500; color: var(--text); }
+.prov-route { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+.prov-sub {
+	margin-left: auto;
+	max-width: 55%;
+	font-size: 11.5px;
+	color: var(--faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.prov-chev { display: grid; place-items: center; color: var(--faint); transform: rotate(90deg); transition: transform 120ms ease; }
+.prov-head[aria-expanded="true"] .prov-chev { transform: rotate(-90deg); }
+.prov-editor { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding: 12px; }
+.prov-key { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prov-key .prov-key-input { flex: 1; min-width: 160px; }
+.prov-key-hint { flex-basis: 100%; font-size: 11.5px; color: var(--faint); }
+.prov-eye { width: 28px; height: 28px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); flex: none; }
+.prov-eye:hover { background: var(--hover); color: var(--text); }
+.prov-details { border: 1px solid var(--line); border-radius: 10px; }
+.prov-details > summary { padding: 8px 12px; font-size: 12.5px; color: var(--dim); cursor: pointer; }
+.prov-details-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 12px 14px; }
+.prov-field { display: flex; flex-direction: column; gap: 6px; }
+.prov-field-label { font-size: 12px; color: var(--dim); }
+.prov-field-hint { font-size: 11.5px; color: var(--faint); }
+.settings-input.prov-select { width: 100%; }
+.prov-field .settings-input,
+.prov-field .prov-select { width: 100%; }
+.prov-models { display: flex; flex-direction: column; gap: 6px; }
+.prov-model-list { display: flex; flex-direction: column; gap: 6px; }
+.prov-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 72px 72px auto 24px; gap: 6px; align-items: center; }
+.prov-model .settings-input { width: 100%; min-width: 0; height: 28px; font-size: 12px; }
+.prov-m-cap { text-align: right; }
+.prov-chip {
+	flex: none;
+	height: 24px;
+	padding: 0 8px;
+	border-radius: 6px;
+	font-size: 11px;
+	color: var(--dim);
+	border: 1px solid var(--line);
+	white-space: nowrap;
+}
+.prov-chip[aria-pressed="true"] { background: #eaf4ec; border-color: #b9dcc1; color: #2f7a41; }
+.prov-del { width: 22px; height: 22px; border-radius: 5px; display: grid; place-items: center; color: var(--faint); }
+.prov-del:hover { background: var(--hover); color: var(--err); }
+.prov-model-add { align-self: flex-start; font-size: 12px; color: var(--dim); padding: 4px 6px; border-radius: 6px; }
+.prov-model-add:hover { background: var(--hover); color: var(--text); }
+.prov-model-empty { padding: 2px 0; font-size: 12px; color: var(--faint); }
+.prov-foot { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
+.prov-foot-spacer { flex: 1; }
+.prov-btn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line); font-size: 12.5px; color: var(--text); }
+.prov-btn:hover { background: var(--hover); }
+.prov-btn.primary { background: var(--send-bg, #1a1c1f); border-color: transparent; color: #fff; }
+.prov-btn.primary:hover { background: #333; }
+.prov-danger { height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; color: var(--err); }
+.prov-danger:hover, .prov-danger.armed { background: #fdeceb; }
+.prov-empty {
+	padding: 12px;
+	font-size: 12.5px;
+	color: var(--faint);
+	text-align: center;
+	border: 1px dashed var(--line);
+	border-radius: 10px;
+}
+
+.settings-about-row {
+	display: flex;
+	align-items: baseline;
+	gap: 16px;
+	padding: 6px 16px;
+	font-size: 12.5px;
+}
+.settings-about-k { flex: 0 0 96px; color: var(--faint); }
+.settings-about-v {
+	flex: 1;
+	min-width: 0;
+	color: var(--text);
+	font-family: var(--mono);
+	font-size: 11.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .settings-note {
-	padding: 6px 16px 0;
+	padding: 8px 0 0;
 	font-size: 12px;
 	line-height: 1.35;
 	color: var(--err);
 }
 .settings-note[hidden] { display: none; }
 
-.settings-sec { padding-top: 2px; }
+.settings-sec { padding-top: 0; }
 .settings-sec-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
-	padding: 10px 16px 4px;
+	padding: 22px 0 10px;
 }
-.settings-sec-title { font-size: 12px; line-height: 1.4; color: var(--faint); }
+.settings-sec-title { font-size: 16px; line-height: 24px; font-weight: 500; color: var(--text); }
 
 .settings-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	column-gap: 12px;
+	column-gap: 16px;
 	align-items: center;
-	min-height: 44px;
-	padding: 0 16px;
-	transition: background-color 120ms ease;
+	min-height: 0;
+	padding: 16px 0;
+	border-bottom: 1px solid var(--line);
+	transition: none;
 }
-.settings-row:hover { background: var(--hover); }
+.settings-row:hover { background: transparent; }
 .settings-main {
 	display: flex;
 	flex-direction: column;
 	justify-content: center;
-	gap: 1px;
+	gap: 4px;
 	min-width: 0;
-	padding: 4px 0;
+	padding: 0;
 }
-.settings-label { font-size: 14px; line-height: 1.35; color: var(--text); }
-.settings-sub { font-size: 12px; line-height: 1.35; color: var(--faint); }
+.settings-label { font-size: 14px; line-height: 20px; color: var(--text); }
+.settings-sub { font-size: 12px; line-height: 18px; color: var(--dim); }
 .settings-ctl { display: flex; align-items: center; gap: 8px; justify-self: end; }
 .settings-err {
 	grid-column: 1 / -1;
@@ -442,9 +615,10 @@ export function init(ctx) {
 	dialog.setAttribute("aria-modal", "true");
 	dialog.setAttribute("aria-labelledby", "settings-title");
 
-	const head = el("div", "settings-head");
-	const title = el("span", "settings-title", "设置");
+	const title = el("div", "settings-title", "设置");
 	title.id = "settings-title";
+
+	const head = el("div", "settings-head");
 	const closeBtn = el("button", "settings-close");
 	closeBtn.type = "button";
 	closeBtn.title = "关闭";
@@ -452,7 +626,14 @@ export function init(ctx) {
 	// 文本 "×" 的字形基线各家字体不一，居中靠猜；线框叉与顶栏图标同规格
 	closeBtn.innerHTML =
 		'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.6 3.6 10.4 10.4M10.4 3.6 3.6 10.4"/></svg>';
-	head.append(title, closeBtn);
+	head.append(closeBtn);
+
+	const nav = el("nav", "settings-nav");
+	nav.setAttribute("role", "tablist");
+	nav.setAttribute("aria-label", "设置分区");
+	nav.setAttribute("aria-orientation", "vertical");
+	const navFoot = el("div", "settings-version", "pi-mini");
+	nav.append(navFoot);
 
 	const panelBody = el("div", "settings-body");
 	const headNote = el("div", "settings-note");
@@ -460,7 +641,7 @@ export function init(ctx) {
 	headNote.setAttribute("role", "alert");
 	panelBody.append(headNote);
 
-	dialog.append(head, panelBody);
+	dialog.append(title, head, nav, panelBody);
 	overlay.append(dialog);
 	document.body.append(overlay);
 
@@ -585,13 +766,88 @@ export function init(ctx) {
 		return { row, ctl, subEl };
 	};
 
+	// ---------- 分区（左导航 + 右侧面板）----------
+	const NAV_ICONS = {
+		general:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 5h11M2.5 11h11"/><circle cx="6" cy="5" r="1.6"/><circle cx="10" cy="11" r="1.6"/></svg>',
+		session:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2.8 3.4h10.4v7.2H8l-3 2.2v-2.2H2.8Z"/></svg>',
+		model:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="4" y="4" width="8" height="8" rx="1.6"/><path d="M6.5 2.2v1.8M9.5 2.2v1.8M6.5 12v1.8M9.5 12v1.8M2.2 6.5H4M2.2 9.5H4M12 6.5h1.8M12 9.5h1.8"/></svg>',
+		provider:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="2.6" y="3" width="10.8" height="4.2" rx="1.4"/><rect x="2.6" y="8.8" width="10.8" height="4.2" rx="1.4"/><circle cx="5" cy="5.1" r=".8" fill="currentColor" stroke="none"/><circle cx="5" cy="10.9" r=".8" fill="currentColor" stroke="none"/></svg>',
+		behavior:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.4" y="5" width="11.2" height="6" rx="3"/><circle cx="10.4" cy="8" r="1.6"/></svg>',
+		stats:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 13V8M8 13V3.5M13 13V6.5"/></svg>',
+		extensions:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2.2"/><path d="M6.4 6.4h3.2v3.2H6.4Z"/></svg>',
+		about:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="8" cy="8" r="5.4"/><path d="M8 7.2v3.9M8 5.2h.01"/></svg>',
+		quick:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M8.8 2.4 4.6 9h2.8l-.4 4.6L11.4 7H8.6Z"/></svg>',
+	};
+	const panes = new Map();
+	let activePane = null;
+	let selectPane = null;
+
+	const pane = (key, label) => {
+		const btn = el("button", "settings-nav-item");
+		btn.type = "button";
+		btn.id = `settings-nav-${key}`;
+		btn.setAttribute("role", "tab");
+		btn.setAttribute("aria-selected", "false");
+		btn.setAttribute("aria-controls", `settings-pane-${key}`);
+		btn.tabIndex = -1;
+		btn.innerHTML = `<span class="settings-nav-icon">${NAV_ICONS[key] || ""}</span><span>${label}</span>`;
+		const box = el("div", "settings-pane");
+		box.id = `settings-pane-${key}`;
+		box.setAttribute("role", "tabpanel");
+		box.setAttribute("aria-labelledby", btn.id);
+		box.hidden = true;
+		btn.onclick = () => selectPane?.(key);
+		nav.insertBefore(btn, navFoot);
+		panelBody.append(box);
+		panes.set(key, { btn, box });
+		activePane = box;
+		return box;
+	};
+
+	selectPane = (key, focus = true) => {
+		const hit = panes.get(key);
+		if (!hit) return;
+		for (const [k, p] of panes) {
+			const on = k === key;
+			p.btn.classList.toggle("is-on", on);
+			p.btn.setAttribute("aria-selected", on ? "true" : "false");
+			p.btn.tabIndex = on ? 0 : -1;
+			p.box.hidden = !on;
+		}
+		panelBody.scrollTop = 0;
+		if (focus) hit.btn.focus({ preventScroll: true });
+	};
+
+	nav.addEventListener("keydown", (e) => {
+		if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+		const keys = [...panes.keys()];
+		if (!keys.length) return;
+		const cur = keys.findIndex((k) => panes.get(k).btn.getAttribute("aria-selected") === "true");
+		let next;
+		if (e.key === "Home") next = 0;
+		else if (e.key === "End") next = keys.length - 1;
+		else if (e.key === "ArrowDown") next = (cur + 1 + keys.length) % keys.length;
+		else next = (cur - 1 + keys.length) % keys.length;
+		e.preventDefault();
+		selectPane(keys[next]);
+	});
+
 	const section = (text, action) => {
 		const wrap = el("div", "settings-sec");
 		const secHead = el("div", "settings-sec-head");
 		secHead.append(el("span", "settings-sec-title", text));
 		if (action) secHead.append(action);
 		wrap.append(secHead);
-		panelBody.append(wrap);
+		(activePane || panelBody).append(wrap);
 		return wrap;
 	};
 
@@ -641,7 +897,59 @@ export function init(ctx) {
 		setTimeout(() => box.remove(), ERR_MS);
 	};
 
+	// ---------- 0. 通用 ----------
+	const RESTORE_KEY = "pi-mini.restore-session";
+	const PAGE_KEY = "pi-mini.page-size";
+	const readPref = (key, fallback) => {
+		try {
+			const v = localStorage.getItem(key);
+			return v == null ? fallback : v;
+		} catch {
+			return fallback;
+		}
+	};
+	const readPageSize = () => {
+		const n = Number(readPref(PAGE_KEY, 20));
+		return [20, 40, 60, 100].includes(n) ? n : 20;
+	};
+
+	pane("general", "通用");
+	const secGeneral = section("启动与会话列表");
+
+	const restoreRow = makeRow("恢复上次会话", "启动时打开上次使用的会话");
+	const restoreSwitch = makeSwitch("恢复上次会话");
+	restoreSwitch.setAttribute("aria-checked", readPref(RESTORE_KEY, "1") !== "0" ? "true" : "false");
+	restoreSwitch.onclick = (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		const on = restoreSwitch.getAttribute("aria-checked") !== "true";
+		restoreSwitch.setAttribute("aria-checked", on ? "true" : "false");
+		try {
+			localStorage.setItem(RESTORE_KEY, on ? "1" : "0");
+		} catch {}
+	};
+	restoreRow.ctl.append(restoreSwitch);
+	secGeneral.append(restoreRow.row);
+
+	const pageRow = makeRow("会话每页", "侧栏每个工作区显示条数，切换工作区后生效");
+	const pageSel = makeSelect(`${readPageSize()} 条`, (anchor) =>
+		openMenu(
+			anchor,
+			[20, 40, 60, 100].map((n) => ({ key: n, label: `${n} 条` })),
+			readPageSize(),
+			(item) => {
+				try {
+					localStorage.setItem(PAGE_KEY, String(item.key));
+				} catch {}
+				pageSel.text.textContent = item.label;
+			},
+		),
+	);
+	pageRow.ctl.append(pageSel.btn);
+	secGeneral.append(pageRow.row);
+
 	// ---------- 1. 会话 ----------
+	pane("session", "会话");
 	const secSession = section("会话");
 
 	const nameRow = makeRow("会话名", "回车保存，留空不改");
@@ -672,20 +980,399 @@ export function init(ctx) {
 	compactRow.ctl.append(compactBtn);
 	secSession.append(compactRow.row);
 
-	// ---------- 2. 模型与推理 ----------
-	const secModel = section("模型与推理");
+	// ---------- 2. 提供商 ----------
+	pane("providers", "提供商");
+	const provRefresh = el("button", "settings-refresh", "刷新");
+	provRefresh.type = "button";
+	provRefresh.title = "重新读取 models.json";
+	provRefresh.setAttribute("aria-label", "刷新提供商");
+	provRefresh.onclick = () => loadProviders(true);
+	const secProv = section("提供商", provRefresh);
+	const provList = el("div", "prov-list");
+	secProv.append(provList);
+	const provNote = el("div", "settings-note");
+	provNote.hidden = true;
+	secProv.append(provNote);
 
-	const modelRow = makeRow("模型", "当前会话使用的模型");
-	const modelSel = makeSelect("—", (anchor) => openModelMenu(anchor));
-	modelRow.ctl.append(modelSel.btn);
-	secModel.append(modelRow.row);
+	const addWrap = el("div", "settings-add");
+	const addBtn = actionBtn("添加提供商", () => {
+		addOpen = !addOpen;
+		addCard.hidden = !addOpen;
+		if (addOpen) renderAddCard();
+	});
+	addWrap.append(addBtn);
+	secProv.append(addWrap);
+	const addCard = el("div", "prov-card prov-add");
+	addCard.hidden = true;
+	secProv.append(addCard);
+	secProv.append(el("div", "settings-hint", "写入 ~/.pi/agent/models.json 前会先备份；pi 只在启动时读取，保存后重启应用生效。"));
 
-	const thinkRow = makeRow("思考档位", "推理强度");
-	const thinkSel = makeSelect("—", (anchor) => openThinkingMenu(anchor));
-	thinkRow.ctl.append(thinkSel.btn);
-	secModel.append(thinkRow.row);
+	const API_OPTIONS = [
+		{ key: "openai-completions", label: "OpenAI Chat Completions" },
+		{ key: "openai-responses", label: "OpenAI Responses" },
+		{ key: "anthropic-messages", label: "Anthropic Messages" },
+		{ key: "google-generative-ai", label: "Google Generative AI" },
+	];
+	const apiLabel = (key) => (key ? (API_OPTIONS.find((o) => o.key === key) || {}).label || key : "pi 内置路由");
+
+	let provData = null;
+	let provLoading = false;
+	let addOpen = false;
+	let openKey = null;
+
+	const errText = (e) =>
+		brief(
+			String(e?.message || e)
+				.replace(/^Error invoking remote method '[^']+':\s*/, "")
+				.replace(/^Error:\s*/, ""),
+		);
+
+	const mkInput = (cls, placeholder, value, type = "text") => {
+		const i = document.createElement("input");
+		i.type = type;
+		i.className = cls;
+		i.placeholder = placeholder || "";
+		i.value = value == null ? "" : String(value);
+		if (type !== "password") {
+			i.autocomplete = "off";
+			i.spellcheck = false;
+		}
+		return i;
+	};
+
+	const apiSelect = (value) => {
+		const s = document.createElement("select");
+		s.className = "settings-input prov-select";
+		if (!value) {
+			const opt = document.createElement("option");
+			opt.value = "";
+			opt.textContent = "沿用 pi 内置路由";
+			s.append(opt);
+		}
+		for (const o of API_OPTIONS) {
+			const opt = document.createElement("option");
+			opt.value = o.key;
+			opt.textContent = o.label;
+			s.append(opt);
+		}
+		s.value = value && API_OPTIONS.some((o) => o.key === value) ? value : "";
+		return s;
+	};
+
+	const keyField = (hintText, placeholder) => {
+		const wrap = el("div", "prov-key");
+		const input = mkInput("settings-input prov-key-input", placeholder, "", "password");
+		input.autocomplete = "new-password";
+		const eye = el("button", "prov-eye");
+		eye.type = "button";
+		eye.title = "显示 / 隐藏";
+		eye.setAttribute("aria-label", "显示或隐藏 API Key");
+		eye.setAttribute("aria-pressed", "false");
+		eye.innerHTML =
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><path d="M1.5 8C2.9 5.25 5.25 3.5 8 3.5C10.75 3.5 13.1 5.25 14.5 8C13.1 10.75 10.75 12.5 8 12.5C5.25 12.5 2.9 10.75 1.5 8Z"/><path d="M10 8C10 9.1 9.1 10 8 10C6.9 10 6 9.1 6 8C6 6.9 6.9 6 8 6C9.1 6 10 6.9 10 8Z"/></svg>';
+		let shown = false;
+		eye.onclick = () => {
+			shown = !shown;
+			input.type = shown ? "text" : "password";
+			eye.setAttribute("aria-pressed", shown ? "true" : "false");
+		};
+		wrap.append(input, eye);
+		if (hintText) wrap.append(el("div", "prov-key-hint", hintText));
+		return { wrap, input };
+	};
+
+	// 模型列表：一行一个模型，字段直接写回 models.json
+	const modelsEditor = (seed) => {
+		const box = el("div", "prov-models");
+		const list = el("div", "prov-model-list");
+		const drafts = (Array.isArray(seed) ? seed : []).map((m) => ({
+			id: String(m.id || ""),
+			name: String(m.name || ""),
+			reasoning: Boolean(m.reasoning),
+			contextWindow: Number(m.contextWindow) || 0,
+			maxTokens: Number(m.maxTokens) || 0,
+		}));
+		const render = () => {
+			list.replaceChildren();
+			drafts.forEach((m, index) => {
+				const row = el("div", "prov-model");
+				const id = mkInput("settings-input prov-m-id", "模型 ID", m.id);
+				const name = mkInput("settings-input prov-m-name", "显示名称（可选）", m.name);
+				const ctx = mkInput("settings-input prov-m-cap", "上下文", m.contextWindow || "");
+				const max = mkInput("settings-input prov-m-cap", "最大输出", m.maxTokens || "");
+				const reason = el("button", "prov-chip");
+				reason.type = "button";
+				reason.textContent = "推理";
+				reason.title = "标记为推理模型";
+				reason.setAttribute("aria-pressed", m.reasoning ? "true" : "false");
+				reason.onclick = () => {
+					m.reasoning = !m.reasoning;
+					reason.setAttribute("aria-pressed", m.reasoning ? "true" : "false");
+				};
+				const del = el("button", "prov-del");
+				del.type = "button";
+				del.title = "删除这个模型";
+				del.setAttribute("aria-label", "删除模型");
+				del.innerHTML =
+					'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.5 3.5h7M5 3.5V2.5h2v1M3.5 3.5l.5 6h4l.5-6"/></svg>';
+				del.onclick = () => {
+					drafts.splice(index, 1);
+					render();
+				};
+				id.oninput = () => {
+					m.id = id.value;
+				};
+				name.oninput = () => {
+					m.name = name.value;
+				};
+				ctx.oninput = () => {
+					m.contextWindow = Number(ctx.value.replace(/[^0-9]/g, "")) || 0;
+				};
+				max.oninput = () => {
+					m.maxTokens = Number(max.value.replace(/[^0-9]/g, "")) || 0;
+				};
+				row.append(id, name, ctx, max, reason, del);
+				list.append(row);
+			});
+			if (!drafts.length) list.append(el("div", "prov-model-empty", "没有自定义模型；pi 内置目录照常可用"));
+			const add = el("button", "prov-model-add", "+ 添加模型");
+			add.type = "button";
+			add.onclick = () => {
+				drafts.push({ id: "", name: "", reasoning: false, contextWindow: 0, maxTokens: 0 });
+				render();
+				const inputs = list.querySelectorAll(".prov-m-id");
+				if (inputs.length) inputs[inputs.length - 1].focus();
+			};
+			list.append(add);
+		};
+		render();
+		box.append(el("div", "prov-field-label", "模型"), list);
+		return { box, read: () => drafts.filter((m) => m.id.trim()) };
+	};
+
+	const field = (label, control, hintText) => {
+		const wrap = el("div", "prov-field");
+		wrap.append(el("span", "prov-field-label", label));
+		wrap.append(control);
+		if (hintText) wrap.append(el("span", "prov-field-hint", hintText));
+		return wrap;
+	};
+
+	const saveBtnRow = (onCancel, onSave, onDelete) => {
+		const foot = el("div", "prov-foot");
+		if (onDelete) {
+			const del = el("button", "prov-danger", "删除");
+			del.type = "button";
+			let armed = 0;
+			del.onclick = () => {
+				if (!armed) {
+					armed = 1;
+					del.textContent = "确认删除";
+					del.classList.add("armed");
+					setTimeout(() => {
+						armed = 0;
+						del.textContent = "删除";
+						del.classList.remove("armed");
+					}, 3000);
+					return;
+				}
+				onDelete();
+			};
+			foot.append(del);
+		}
+		const cancel = el("button", "prov-btn", "取消");
+		cancel.type = "button";
+		cancel.onclick = onCancel;
+		const save = el("button", "prov-btn primary", "保存");
+		save.type = "button";
+		save.onclick = () => onSave(save);
+		foot.append(el("span", "prov-foot-spacer"), cancel, save);
+		return foot;
+	};
+
+	const editorFor = (p) => {
+		const box = el("div", "prov-editor");
+		const note = el("div", "settings-note");
+		note.hidden = true;
+		const key = keyField(p.hasKey ? `已保存 ${p.apiKey}；留空保持不变` : "未设置密钥；可以直接填写", "sk-… 或 $ENV");
+		const details = document.createElement("details");
+		details.className = "prov-details";
+		details.open = true;
+		const summary = document.createElement("summary");
+		summary.textContent = "自定义设置";
+		details.append(summary);
+		const body = el("div", "prov-details-body");
+		const name = mkInput("settings-input", "显示名称", p.name || "");
+		const base = mkInput("settings-input", "https://api.example.com/v1", p.baseUrl || "");
+		const api = apiSelect(p.api);
+		const models = modelsEditor(p.models);
+		body.append(
+			field("显示名称", name),
+			field("Base URL", base, "留空表示沿用 pi 内置路由；自定义网关才需要填写"),
+			field("API 类型", api),
+			models.box,
+		);
+		details.append(body);
+		box.append(key.wrap, note, details);
+		box.append(
+			saveBtnRow(
+				() => {
+					openKey = null;
+					renderProviders();
+				},
+				async (save) => {
+					save.disabled = true;
+					save.textContent = "保存中…";
+					note.hidden = true;
+					try {
+						await ctx.pi.saveProvider({
+							key: p.key,
+							create: false,
+							name: name.value.trim(),
+							baseUrl: base.value.trim(),
+							api: api.value,
+							apiKey: key.input.value.trim(),
+							models: models.read(),
+						});
+						openKey = null;
+						await loadProviders(true);
+						toast("提供商已保存，重启应用后生效");
+					} catch (e) {
+						note.textContent = errText(e);
+						note.hidden = false;
+						save.disabled = false;
+						save.textContent = "保存";
+					}
+				},
+				async () => {
+					note.hidden = true;
+					try {
+						await ctx.pi.deleteProvider(p.key);
+						openKey = null;
+						await loadProviders(true);
+						toast("提供商已删除");
+					} catch (e) {
+						note.textContent = errText(e);
+						note.hidden = false;
+					}
+				},
+			),
+		);
+		return box;
+	};
+
+	const renderAddCard = () => {
+		addCard.replaceChildren();
+		const note = el("div", "settings-note");
+		note.hidden = true;
+		const key = mkInput("settings-input", "acme-gateway", "");
+		const name = mkInput("settings-input", "我的提供商", "");
+		const base = mkInput("settings-input", "https://api.example.com/v1", "");
+		const api = apiSelect(API_OPTIONS[0].key);
+		const secret = keyField("也支持 $ENV 或 !command 形式", "sk-…");
+		const models = modelsEditor([{ id: "", name: "", reasoning: false }]);
+		const body = el("div", "prov-details-body");
+		body.append(
+			field("标识", key, "provider key，小写字母开头，可含数字、点、下划线、短横线"),
+			field("显示名称", name, "模型菜单里显示的名字，可留空"),
+			field("Base URL", base),
+			field("API Key", secret.wrap),
+			field("API 类型", api),
+			models.box,
+		);
+		addCard.append(body, note);
+		let saving = false;
+		addCard.append(
+			saveBtnRow(
+				() => {
+					addOpen = false;
+					addCard.hidden = true;
+				},
+				async (save) => {
+					if (saving) return;
+					saving = true;
+					save.disabled = true;
+					save.textContent = "添加中…";
+					note.hidden = true;
+					try {
+						await ctx.pi.saveProvider({
+							key: key.value.trim(),
+							create: true,
+							name: name.value.trim(),
+							baseUrl: base.value.trim(),
+							api: api.value,
+							apiKey: secret.input.value.trim(),
+							models: models.read(),
+						});
+						addOpen = false;
+						addCard.hidden = true;
+						await loadProviders(true);
+						toast("提供商已添加，重启应用后生效");
+					} catch (e) {
+						note.textContent = errText(e);
+						note.hidden = false;
+						save.disabled = false;
+						save.textContent = "添加";
+					} finally {
+						saving = false;
+					}
+				},
+			),
+		);
+	};
+
+	const renderProviders = () => {
+		provList.replaceChildren();
+		const items = provData?.providers || [];
+		if (!items.length) provList.append(el("div", "prov-empty", "models.json 里还没有自定义提供商"));
+		for (const p of items) {
+			const card = el("div", "prov-card");
+			const head = el("button", "prov-head");
+			head.type = "button";
+			head.setAttribute("aria-expanded", openKey === p.key ? "true" : "false");
+			const dot = el("span", `prov-dot${p.hasKey ? " on" : ""}`);
+			const nm = el("span", "prov-name", p.name || p.key);
+			const route = el("span", "prov-route", p.key);
+			const subParts = [apiLabel(p.api), `${p.modelCount} 个模型`];
+			if (p.overrides) subParts.push(`${p.overrides} 个覆盖`);
+			subParts.push(p.hasKey ? p.apiKey : "未设置密钥");
+			const sub = el("span", "prov-sub", subParts.join(" · "));
+			const chev = el("span", "prov-chev");
+			chev.innerHTML =
+				'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+			head.append(dot, nm, route, sub, chev);
+			head.onclick = () => {
+				openKey = openKey === p.key ? null : p.key;
+				renderProviders();
+			};
+			card.append(head);
+			if (openKey === p.key) card.append(editorFor(p));
+			provList.append(card);
+		}
+	};
+
+	async function loadProviders(force) {
+		if (provLoading) return;
+		if (provData && !force) return;
+		provLoading = true;
+		provRefresh.disabled = true;
+		provRefresh.textContent = "读取中";
+		try {
+			provData = await ctx.pi.providers();
+			renderProviders();
+			provNote.hidden = true;
+		} catch (e) {
+			provNote.textContent = brief(e);
+			provNote.hidden = false;
+		} finally {
+			provLoading = false;
+			provRefresh.disabled = false;
+			provRefresh.textContent = "刷新";
+		}
+	}
 
 	// ---------- 3. 行为 ----------
+	pane("behavior", "行为");
 	const secBehavior = section("行为");
 
 	const autoCompactRow = makeRow("自动压缩", "接近上下文上限时自动压缩");
@@ -720,6 +1407,7 @@ export function init(ctx) {
 	secBehavior.append(steerRow.row);
 
 	// ---------- 4. 统计 ----------
+	pane("stats", "统计");
 	const refreshBtn = el("button", "settings-refresh", "刷新");
 	refreshBtn.type = "button";
 	refreshBtn.title = "重新读取会话统计";
@@ -751,17 +1439,120 @@ export function init(ctx) {
 	statsNote.hidden = true;
 	secStats.append(statsNote);
 
+	// ---------- 5. 扩展 ----------
+	pane("extensions", "扩展");
+	const extRefresh = el("button", "settings-refresh", "刷新");
+	extRefresh.type = "button";
+	extRefresh.title = "重新读取 pi 扩展与技能";
+	extRefresh.setAttribute("aria-label", "刷新扩展");
+	extRefresh.onclick = () => loadExtensions(true);
+	const secExt = section("已加载的扩展与技能", extRefresh);
+	const extList = el("div", "settings-exts");
+	secExt.append(extList);
+	const extNote = el("div", "settings-note");
+	extNote.hidden = true;
+	secExt.append(extNote);
+
+	// ---------- 6. 关于 ----------
+	pane("about", "关于");
+	const secAbout = section("关于");
+	const aboutList = el("div", "settings-about");
+	secAbout.append(aboutList);
+
+	const SOURCE_LABEL = { extension: "扩展", skill: "技能", prompt: "提示" };
+	let extCommands = null;
+	let extLoading = false;
+	let appInfo = null;
+
+	function renderExtensions() {
+		extList.replaceChildren();
+		const list = extCommands || [];
+		if (!list.length) {
+			extList.append(el("div", "settings-exts-empty", "没有可用的扩展或技能"));
+			return;
+		}
+		const groups = new Map();
+		for (const c of list) {
+			const k = SOURCE_LABEL[c.source] || c.source || "其他";
+			if (!groups.has(k)) groups.set(k, []);
+			groups.get(k).push(c);
+		}
+		for (const [label, items] of groups) {
+			extList.append(el("div", "settings-exts-head", `${label} · ${items.length}`));
+			for (const c of items) {
+				const row = el("div", "settings-ext");
+				const name = el("span", "settings-ext-name", `/${c.name}`);
+				name.title = c.name;
+				const desc = el("span", "settings-ext-desc", c.description || "无描述");
+				desc.title = c.description || "";
+				row.append(name, desc);
+				extList.append(row);
+			}
+		}
+	}
+
+	async function loadExtensions(force) {
+		if (extLoading) return;
+		if (extCommands && !force) return;
+		extLoading = true;
+		extRefresh.disabled = true;
+		extRefresh.textContent = "读取中";
+		try {
+			const res = await ctx.pi.command({ type: "get_commands" });
+			extCommands = (res?.commands || [])
+				.slice()
+				.sort((a, b) => String(a.source).localeCompare(String(b.source)) || String(a.name).localeCompare(String(b.name)));
+			renderExtensions();
+			extNote.hidden = true;
+		} catch (err) {
+			extNote.textContent = brief(err);
+			extNote.hidden = false;
+		} finally {
+			extLoading = false;
+			extRefresh.disabled = false;
+			extRefresh.textContent = "刷新";
+		}
+	}
+
+	function renderAbout() {
+		aboutList.replaceChildren();
+		if (!appInfo) {
+			aboutList.append(el("div", "settings-exts-empty", "读取中…"));
+			return;
+		}
+		const rows = [
+			["版本", `pi-mini ${appInfo.version || "—"}`],
+			["Electron", appInfo.electron || "—"],
+			["Chromium", appInfo.chrome || "—"],
+			["Node", appInfo.node || "—"],
+			["pi", appInfo.piVersion ? `pi ${appInfo.piVersion}` : "未找到"],
+			["pi CLI", appInfo.piCli || "—"],
+			["配置目录", appInfo.agentRoot || "—"],
+			["日志", appInfo.logFile || "—"],
+		];
+		for (const [k, v] of rows) {
+			const row = el("div", "settings-about-row");
+			row.append(el("span", "settings-about-k", k));
+			const val = el("span", "settings-about-v", v);
+			val.title = v;
+			row.append(val);
+			aboutList.append(row);
+		}
+	}
+
+	async function loadAppInfo() {
+		if (appInfo) return;
+		renderAbout();
+		try {
+			appInfo = await ctx.pi.appInfo();
+			if (appInfo?.version) navFoot.textContent = `pi-mini v${appInfo.version}`;
+		} catch {
+			appInfo = null;
+		}
+		renderAbout();
+	}
+
 	// ---------- 渲染 ----------
-	function renderModel() {
-		modelSel.text.textContent = st.model ? st.model.name || st.model.id || "—" : "—";
-		modelSel.text.title = st.model ? `${st.model.name || st.model.id} · ${st.model.provider || ""}` : "";
-		if (modelRow.subEl) modelRow.subEl.textContent = st.model?.provider || "当前会话使用的模型";
-	}
-
-	function renderThinking() {
-		thinkSel.text.textContent = cap(st.thinkingLevel) || "—";
-	}
-
 	function renderModes() {
 		const find = (m) => MODES.find((x) => x.key === m)?.label ?? (m || "—");
 		followSel.text.textContent = find(st.followUp);
@@ -773,8 +1564,6 @@ export function init(ctx) {
 	}
 
 	function render() {
-		renderModel();
-		renderThinking();
 		renderModes();
 		renderSwitches();
 	}
@@ -964,84 +1753,6 @@ export function init(ctx) {
 		});
 	}
 
-	// ---------- 菜单构建 ----------
-	async function openModelMenu(anchor) {
-		closeMenu();
-		const seq = ++menuSeq;
-		let list = models.slice();
-		try {
-			const d = await ctx.pi.command({ type: "get_available_models" });
-			const got = Array.isArray(d?.models) ? d.models.filter((m) => m && (m.id || m.name)) : [];
-			if (got.length) {
-				models = got;
-				list = got;
-			}
-		} catch (e) {
-			if (!list.length) {
-				fail(modelRow.row, e);
-				return;
-			}
-		}
-		if (seq !== menuSeq) return;
-		if (!list.length) {
-			fail(modelRow.row, "没有可用模型");
-			return;
-		}
-		const items = list.map((m) => ({
-			key: `${m.provider}::${m.id}`,
-			label: m.name || m.id,
-			hint: m.provider,
-			model: m,
-		}));
-		const current = st.model ? `${st.model.provider}::${st.model.id}` : "";
-		openMenu(anchor, items, current, (item) => pickModel(item.model));
-	}
-
-	async function pickModel(m) {
-		const prev = st.model;
-		st.model = { id: m.id, name: m.name, provider: m.provider };
-		renderModel();
-		try {
-			const d = await ctx.pi.command({ type: "set_model", provider: m.provider, modelId: m.id });
-			if (d && typeof d === "object" && d.id) st.model = d;
-			ctx.state.model = st.model;
-			renderModel();
-			ctx.refreshState?.();
-		} catch (e) {
-			st.model = prev;
-			renderModel();
-			fail(modelRow.row, e);
-		}
-	}
-
-	async function openThinkingMenu(anchor) {
-		closeMenu();
-		const seq = ++menuSeq;
-		try {
-			const d = await ctx.pi.command({ type: "get_available_thinking_levels" });
-			const got = Array.isArray(d?.levels) ? d.levels.filter((x) => typeof x === "string") : [];
-			if (got.length) levels = got;
-		} catch {
-			// 拉不到就用兜底档位表，菜单照开
-		}
-		if (seq !== menuSeq) return;
-		const items = levels.map((l) => ({ key: l, label: cap(l) }));
-		openMenu(anchor, items, st.thinkingLevel || "", (item) => pickThinking(item.key));
-	}
-
-	async function pickThinking(level) {
-		const prev = st.thinkingLevel;
-		st.thinkingLevel = level;
-		renderThinking();
-		try {
-			await ctx.pi.command({ type: "set_thinking_level", level });
-		} catch (e) {
-			st.thinkingLevel = prev;
-			renderThinking();
-			fail(thinkRow.row, e);
-		}
-	}
-
 	function openModeMenu(anchor, which) {
 		const current = which === "steering" ? st.steering : st.followUp;
 		openMenu(
@@ -1113,7 +1824,7 @@ export function init(ctx) {
 		overlay.hidden = false;
 		gear.setAttribute("aria-expanded", "true");
 		dialog.focus();
-		return Promise.allSettled([loadState(), fetchStats()]);
+		return Promise.allSettled([loadState(), fetchStats(), loadExtensions(false), loadAppInfo(), loadProviders(false)]);
 	}
 
 	function closeDialog() {
@@ -1180,7 +1891,8 @@ export function init(ctx) {
 		}
 	}
 
-	// ---------- 5. 快捷操作（补齐 clone / cycle_* / abort_retry / last_text） ----------
+	// ---------- 7. 快捷操作（补齐 clone / cycle_* / abort_retry / last_text） ----------
+	pane("quick", "快捷操作");
 	const secQuick = section("快捷操作");
 
 	const copyText = async (text) => {
@@ -1275,6 +1987,9 @@ export function init(ctx) {
 	abortRetryRow.ctl.append(retryBtn);
 	secQuick.append(abortRetryRow.row);
 
+	// 初始分区：通用（不抢焦点，等用户自己 Tab 进导航）
+	selectPane("general", false);
+
 	gear.onclick = (e) => {
 		e.preventDefault();
 		e.stopPropagation();
@@ -1313,7 +2028,7 @@ export function init(ctx) {
 	window.__piSettingsDemo = () => {
 		if (overlay.hidden) return openDialog().then(() => true);
 		menuSeq++;
-		return Promise.allSettled([loadState(), fetchStats()]).then(() => true);
+		return Promise.allSettled([loadState(), fetchStats(), loadExtensions(false), loadAppInfo(), loadProviders(false)]).then(() => true);
 	};
 
 	render();

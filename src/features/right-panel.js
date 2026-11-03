@@ -25,12 +25,27 @@ const MAX_ERR = 140;
 const DEMO_MS = 8000; // 演示钩子兜底：取不到数据也不阻塞
 const FLASH_MS = 3000;
 
+// 落盘范围：只有「当前 tab」和「抽屉宽度」。面板开合、全屏状态都不持久化。
+const LS_TAB = "pi-mini.rpTab";
+const LS_WIDTH = "pi-mini.rpWidth";
+const DEFAULT_W = 300;
+const MIN_W = 260;
+const MAX_W = 560;
+
 const PANEL_ICON =
 	'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.2" y="3" width="11.6" height="10" rx="1.6"/><path d="M9.6 3v10"/></svg>';
 const CHEV_ICON =
 	'<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.6 1.8 7 5l-3.4 3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const CLOSE_ICON =
 	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.7 2.7 9.3 9.3M9.3 2.7 2.7 9.3"/></svg>';
+// 「+」和「⤢」同样用描边图标而不是字形：⤢(U+2922) 在多数 CJK 字体里缺码位，
+// 会退回成方框或换一个粗细不搭的字体。
+const PLUS_ICON =
+	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M6 2.4v7.2M2.4 6h7.2"/></svg>';
+const EXPAND_ICON =
+	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 2.4h2.4v2.4M4.8 9.6H2.4V7.2M9.6 2.4 6.6 5.4M2.4 9.6l3-3"/></svg>';
+const SHRINK_ICON =
+	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 2.4H2.4v2.4M7.2 9.6h2.4V7.2M2.4 2.4 5.4 5.4M9.6 9.6 6.6 6.6"/></svg>';
 
 // 文件树图标：16px 线性、单色（STYLE §3 不做彩色填充，所以类型只靠形状区分）
 const ICONS = {
@@ -129,6 +144,18 @@ body.rp-open #composer { margin-right: var(--rp-w); }
 /* transition 挂在元素本体：只写在打开态的话，关闭时声明被撤掉，收起会瞬移。 */
 #stream,
 #composer { transition: margin-right 120ms ease; }
+
+/* 全屏覆盖：inset 0 连顶栏一起盖掉，宽度 100%，主区让位归零。
+   让位规则和 body.rp-open 的优先级相同（都是一类一 id），所以必须排在其后。 */
+.rp-panel.rp-is-full {
+	top: 0;
+	left: 0;
+	width: 100%;
+	border-left: none;
+}
+body.rp-full #stream,
+body.rp-full #composer { margin-right: 0; }
+
 /* 275 侧栏 + 300 抽屉之后正文列不足 400px，窄窗改为覆盖式，不再挤主对话 */
 @media (max-width: 980px) {
 	body.rp-open #stream,
@@ -157,7 +184,10 @@ body.rp-open #composer { margin-right: var(--rp-w); }
 .rp-tab.rp-is-on { background: var(--sel); color: var(--text); }
 .rp-tab:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .rp-grow { flex: 1; }
-.rp-close {
+/* tab strip 末端的三个方形按钮共用一套尺寸：视图菜单 / 全屏 / 关闭 */
+.rp-close,
+.rp-plus,
+.rp-expand {
 	flex: none;
 	width: 24px;
 	height: 24px;
@@ -167,8 +197,80 @@ body.rp-open #composer { margin-right: var(--rp-w); }
 	color: var(--faint);
 	transition: background-color 120ms ease, color 120ms ease;
 }
-.rp-close:hover { background: var(--hover); color: var(--text); }
-.rp-close:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+.rp-close:hover,
+.rp-plus:hover,
+.rp-expand:hover { background: var(--hover); color: var(--text); }
+.rp-close:focus-visible,
+.rp-plus:focus-visible,
+.rp-expand:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+/* 有状态的两个按钮：开着就点亮，和 .rp-tab.rp-is-on 同一套选中色 */
+.rp-plus[aria-expanded="true"],
+.rp-expand[aria-pressed="true"] { background: var(--sel); color: var(--text); }
+
+/* 「+」的轻量视图菜单：贴着 tab strip 下沿，panel 是 fixed，absolute 直接锚在面板上 */
+.rp-menu {
+	position: absolute;
+	top: 34px;
+	right: 6px;
+	z-index: 3;
+	min-width: 116px;
+	padding: 4px;
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	box-shadow: var(--shadow-menu);
+}
+.rp-menu[hidden] { display: none; }
+.rp-menu-i {
+	display: block;
+	width: 100%;
+	height: 28px;
+	padding: 0 8px;
+	border-radius: 6px;
+	text-align: left;
+	font-size: 12.5px;
+	line-height: 1;
+	color: var(--dim);
+	transition: background-color 120ms ease, color 120ms ease;
+}
+.rp-menu-i:hover { background: var(--hover); color: var(--text); }
+.rp-menu-i:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+.rp-menu-i[aria-checked="true"] { background: var(--sel); color: var(--text); }
+
+/* 左沿拖拽手柄：热区 7px、视觉线只有 1px，跨在面板左边框上。
+   touch-action:none 才拿得到 pointermove（否则触控板拖动会被当滚动吞掉）。 */
+.rp-grip {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 7px;
+	z-index: 2;
+	transform: translateX(-50%);
+	cursor: col-resize;
+	touch-action: none;
+}
+.rp-grip[hidden] { display: none; }
+.rp-grip::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 3px;
+	width: 1px;
+	background: var(--faint);
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.rp-grip:hover::after,
+.rp-grip:focus-visible::after { opacity: 0.5; }
+.rp-grip:focus-visible { outline: none; }
+
+/* 拖拽中：让位宽度必须跟手，120ms 的 margin 过渡会拖出一段橡皮筋 */
+body.rp-resizing { cursor: col-resize; user-select: none; }
+body.rp-resizing #stream,
+body.rp-resizing #composer,
+body.rp-resizing .rp-panel { transition: none; }
 
 .rp-body { flex: 1; min-height: 0; display: flex; }
 .rp-pane {
@@ -414,6 +516,10 @@ body.rp-open #composer { margin-right: var(--rp-w); }
 	.rp-toggle,
 	.rp-tab,
 	.rp-close,
+	.rp-plus,
+	.rp-expand,
+	.rp-menu-i,
+	.rp-grip::after,
 	.rp-row,
 	.rp-chev,
 	.rp-chg,
@@ -435,6 +541,36 @@ export function init(ctx) {
 		if (cls) n.className = cls;
 		if (text != null) n.textContent = text;
 		return n;
+	};
+
+	// ---------- 偏好读写（localStorage 在 file:// / 隐私模式下可能抛，一律兜住）----------
+	const readPref = (key, fallback) => {
+		try {
+			const v = localStorage.getItem(key);
+			return v == null ? fallback : v;
+		} catch {
+			return fallback;
+		}
+	};
+	const writePref = (key, value) => {
+		try {
+			localStorage.setItem(key, String(value));
+		} catch {}
+	};
+
+	// 宽度上限 min(560px, 50vw)。窗口窄到 50vw < 260 时让 260 赢——
+	// 低于 260 面板里的文件名和 diff 都没法看了，宁可覆盖半个屏幕。
+	const maxWidth = () => Math.max(MIN_W, Math.min(MAX_W, Math.round(window.innerWidth / 2)));
+	const clampWidth = (n) => {
+		const v = Math.round(Number(n));
+		if (!Number.isFinite(v)) return DEFAULT_W;
+		return Math.min(Math.max(v, MIN_W), maxWidth());
+	};
+	// --rp-w 是 panel 宽度和主区让位宽度的唯一来源，改这一个变量两边一起走
+	const applyWidth = (n) => {
+		const px = clampWidth(n);
+		document.documentElement.style.setProperty("--rp-w", `${px}px`);
+		return px;
 	};
 
 	const brief = (err) => {
@@ -516,6 +652,11 @@ export function init(ctx) {
 	}
 
 	// ---------- 面板骨架 ----------
+	// tab 和宽度先于骨架定下来：面板一画出来就是上次的样子，不会先按默认值闪一帧
+	const savedTab = readPref(LS_TAB, "");
+	let tab = TABS.some((t) => t.key === savedTab) ? savedTab : "files";
+	let width = applyWidth(readPref(LS_WIDTH, DEFAULT_W));
+
 	const style = document.createElement("style");
 	style.textContent = CSS;
 	document.head.append(style);
@@ -543,6 +684,32 @@ export function init(ctx) {
 	}
 	tabsBar.append(el("span", "rp-grow"));
 
+	// 「+」：轻量视图菜单，只列已有的三个 tab（终端是另一个独立功能，不在这里）
+	const plusBtn = el("button", "rp-plus");
+	plusBtn.innerHTML = PLUS_ICON;
+	plusBtn.type = "button";
+	plusBtn.title = "切换视图";
+	plusBtn.setAttribute("aria-label", "切换右栏视图");
+	plusBtn.setAttribute("aria-haspopup", "menu");
+	plusBtn.setAttribute("aria-expanded", "false");
+	plusBtn.onclick = (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		setMenu(!menuOpen);
+	};
+
+	// 「⤢」：全屏覆盖 / 恢复抽屉
+	const expandBtn = el("button", "rp-expand");
+	expandBtn.innerHTML = EXPAND_ICON;
+	expandBtn.type = "button";
+	expandBtn.title = "全屏";
+	expandBtn.setAttribute("aria-label", "全屏");
+	expandBtn.setAttribute("aria-pressed", "false");
+	expandBtn.onclick = (e) => {
+		e.preventDefault();
+		setFull(!full);
+	};
+
 	const closeBtn = el("button", "rp-close");
 	closeBtn.innerHTML = CLOSE_ICON; // 用图标而不是 "×"：字形随字体回退变化，和 1.4px 描边图标也不搭
 	closeBtn.type = "button";
@@ -552,7 +719,36 @@ export function init(ctx) {
 		e.preventDefault();
 		setOpen(false);
 	};
-	tabsBar.append(closeBtn);
+	tabsBar.append(plusBtn, expandBtn, closeBtn);
+
+	const menu = el("div", "rp-menu");
+	menu.hidden = true;
+	menu.setAttribute("role", "menu");
+	menu.setAttribute("aria-label", "右栏视图");
+	const menuItem = new Map();
+	for (const t of TABS) {
+		const b = el("button", "rp-menu-i", t.label);
+		b.type = "button";
+		b.setAttribute("role", "menuitemradio");
+		b.setAttribute("aria-checked", "false");
+		b.onclick = () => {
+			setTab(t.key);
+			setMenu(false, true);
+		};
+		menu.append(b);
+		menuItem.set(t.key, b);
+	}
+
+	// 左沿拖拽手柄：热区跨在面板边框上，所以是 absolute + translateX(-50%)
+	const grip = el("div", "rp-grip");
+	grip.setAttribute("role", "separator");
+	grip.setAttribute("aria-orientation", "vertical");
+	grip.setAttribute("aria-label", "调整右栏宽度");
+	grip.setAttribute("aria-valuemin", String(MIN_W));
+	grip.setAttribute("aria-valuemax", String(maxWidth()));
+	grip.setAttribute("aria-valuenow", String(width));
+	grip.tabIndex = 0;
+	grip.title = "拖动调整宽度";
 
 	const body = el("div", "rp-body");
 	const pane = new Map();
@@ -561,17 +757,18 @@ export function init(ctx) {
 		p.id = `rp-pane-${t.key}`;
 		p.setAttribute("role", "tabpanel");
 		p.setAttribute("aria-labelledby", `rp-tab-${t.key}`);
-		p.hidden = t.key !== "files";
+		p.hidden = t.key !== tab;
 		body.append(p);
 		pane.set(t.key, p);
 	}
 
-	panel.append(tabsBar, body);
+	panel.append(tabsBar, menu, body, grip);
 	document.body.append(panel);
 
-	// ---------- 模块状态（不落 localStorage）----------
+	// ---------- 模块状态（tab / 宽度已在上面恢复；开合与全屏只在内存里）----------
 	let open = false;
-	let tab = "files";
+	let full = false;
+	let menuOpen = false;
 	let actionErr = "";
 	let actionTimer = 0;
 
@@ -1054,6 +1251,9 @@ export function init(ctx) {
 			b.setAttribute("aria-selected", on ? "true" : "false");
 			b.tabIndex = on ? 0 : -1; // roving tabindex：Tab 只停一次，剩余切换交给方向键
 			pane.get(t.key).hidden = !on;
+			const mi = menuItem.get(t.key);
+			mi.classList.toggle("rp-is-on", on);
+			mi.setAttribute("aria-checked", on ? "true" : "false");
 		}
 		if (tab === "files") renderFiles();
 		else if (tab === "changes") renderChanges();
@@ -1064,6 +1264,7 @@ export function init(ctx) {
 		if (!TABS.some((t) => t.key === key)) return;
 		if (tab !== key) {
 			tab = key;
+			writePref(LS_TAB, tab);
 			render();
 		}
 		load(key);
@@ -1071,6 +1272,11 @@ export function init(ctx) {
 
 	function setOpen(next) {
 		open = !!next;
+		// 收起时顺手退出全屏和菜单：留着的话下次打开会直接盖满整屏，很吓人
+		if (!open) {
+			setFull(false);
+			setMenu(false);
+		}
 		panel.classList.toggle("rp-is-open", open);
 		document.body.classList.toggle("rp-open", open);
 		panel.setAttribute("aria-hidden", open ? "false" : "true");
@@ -1085,6 +1291,106 @@ export function init(ctx) {
 		load(tab, true);
 		render();
 	}
+
+	// ---------- 全屏覆盖 ----------
+	// 不持久化：全屏是「现在看一眼」的状态，下次启动回到普通抽屉
+	function setFull(next) {
+		full = !!next;
+		panel.classList.toggle("rp-is-full", full);
+		document.body.classList.toggle("rp-full", full);
+		expandBtn.innerHTML = full ? SHRINK_ICON : EXPAND_ICON;
+		expandBtn.setAttribute("aria-pressed", full ? "true" : "false");
+		expandBtn.title = full ? "退出全屏" : "全屏";
+		expandBtn.setAttribute("aria-label", expandBtn.title);
+		grip.hidden = full; // 全屏宽度 100%，没有可拖的余量
+	}
+
+	// ---------- 「+」视图菜单 ----------
+	const onDocDown = (e) => {
+		if (menu.contains(e.target) || plusBtn.contains(e.target)) return;
+		setMenu(false);
+	};
+
+	function setMenu(next, refocus) {
+		const want = !!next;
+		if (menuOpen === want) return;
+		menuOpen = want;
+		menu.hidden = !menuOpen;
+		plusBtn.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+		if (menuOpen) {
+			document.addEventListener("pointerdown", onDocDown, true);
+			(menuItem.get(tab) || menuItem.get("files")).focus();
+		} else {
+			document.removeEventListener("pointerdown", onDocDown, true);
+			if (refocus) plusBtn.focus({ preventScroll: true });
+		}
+	}
+
+	// ---------- 拖拽调宽 ----------
+	let dragging = false;
+	let dragX0 = 0;
+	let dragW0 = 0;
+
+	function setWidth(n, persist) {
+		width = applyWidth(n);
+		grip.setAttribute("aria-valuenow", String(width));
+		grip.setAttribute("aria-valuemax", String(maxWidth()));
+		if (persist) writePref(LS_WIDTH, width);
+	}
+
+	grip.addEventListener("pointerdown", (e) => {
+		if (full || e.button !== 0) return;
+		e.preventDefault();
+		dragging = true;
+		dragX0 = e.clientX;
+		dragW0 = width;
+		document.body.classList.add("rp-resizing");
+		grip.focus({ preventScroll: true });
+	});
+
+	// 监听挂在 window 上：不依赖 pointer capture，指针甩出面板外也收得到 up
+	window.addEventListener("pointermove", (e) => {
+		if (!dragging) return;
+		// 用相对起点的位移换算，而不是每次累加：拖到边缘被 clamp 之后指针回来能立刻跟上
+		setWidth(dragW0 - (e.clientX - dragX0), false);
+	});
+
+	const endDrag = () => {
+		if (!dragging) return;
+		dragging = false;
+		document.body.classList.remove("rp-resizing");
+		writePref(LS_WIDTH, width); // 松手才落盘，拖拽途中不写
+	};
+
+	window.addEventListener("pointerup", endDrag);
+	window.addEventListener("pointercancel", endDrag);
+
+	// 键盘等价操作：方向键 16px 一步，Home/End 到两端（每次即落盘）
+	grip.addEventListener("keydown", (e) => {
+		let next = null;
+		if (e.key === "ArrowLeft") next = width + 16;
+		else if (e.key === "ArrowRight") next = width - 16;
+		else if (e.key === "Home") next = MIN_W;
+		else if (e.key === "End") next = maxWidth();
+		if (next == null) return;
+		e.preventDefault();
+		setWidth(next, true);
+	});
+
+	// 窗口变窄后旧宽度可能越过 50vw：只收紧不落盘，下次拖拽再定
+	window.addEventListener("resize", () => {
+		if (!full && width > maxWidth()) setWidth(width, false);
+	});
+
+	// 菜单的方向键：role="menu" 的既有语义，按当前焦点算，不按当前 tab
+	menu.addEventListener("keydown", (e) => {
+		if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+		const keys = TABS.map((t) => t.key);
+		const cur = keys.findIndex((k) => menuItem.get(k) === document.activeElement);
+		const step = e.key === "ArrowDown" ? 1 : -1;
+		e.preventDefault();
+		menuItem.get(keys[(Math.max(cur, 0) + step + keys.length) % keys.length]).focus();
+	});
 
 	// tablist 键盘导航：ARIA tabs 模式要求方向键切 tab（配合 render() 里的 roving tabindex）
 	tabsBar.addEventListener("keydown", (e) => {
@@ -1119,6 +1425,13 @@ export function init(ctx) {
 		(e) => {
 			if (!open) return;
 			if (e.key !== "Escape" || e.isComposing) return;
+			// 菜单开着时 Esc 先收菜单、面板留着：一次 Esc 只关一层，和弹层叠放的直觉一致
+			if (menuOpen) {
+				e.preventDefault();
+				e.stopPropagation();
+				setMenu(false, true);
+				return;
+			}
 			if (overlayAbove()) return;
 			// 输入框里 Esc 已经是「停止生成」（app.js:1632 的 abort）且不可撤销，流式中让它赢
 			if (ctx.state?.streaming && document.activeElement === ctx.input) return;
@@ -1134,7 +1447,7 @@ export function init(ctx) {
 	// ---------- 演示钩子（截图用；取不到数据也不阻塞）----------
 	window.__piRightPanelDemo = (which) => {
 		const key = TABS.some((t) => t.key === which) ? which : "files";
-		tab = key;
+		setTab(key); // 走 setTab 才能和手动切换一样落 localStorage
 		setOpen(true);
 		const job = load(key, true).catch(() => {});
 		return Promise.race([Promise.resolve(job), new Promise((r) => setTimeout(r, DEMO_MS))]).then(() => true);

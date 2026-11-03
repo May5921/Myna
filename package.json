@@ -1,16 +1,19 @@
 {
-  "name": "pi-mini",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "main.js",
-  "scripts": {
-    "start": "electron ."
-  },
-  "devDependencies": {
-    "electron": "^45.2.1"
-  },
-  "dependencies": {
-    "shiki": "^4.6.0"
-  }
+	"name": "pi-mini",
+	"version": "0.1.0",
+	"description": "Minimal Electron frontend for the pi CLI",
+	"license": "MIT",
+	"type": "module",
+	"main": "main.js",
+	"scripts": {
+		"start": "electron .",
+		"check": "node scripts/check-syntax.mjs",
+		"build:portable": "node scripts/build-portable.mjs"
+	},
+	"devDependencies": {
+		"electron": "^45.2.1"
+	},
+	"dependencies": {
+		"shiki": "^4.6.0"
+	}
 }

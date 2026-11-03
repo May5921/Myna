@@ -11,6 +11,38 @@ const ARM_MS = 2500;
 const SETTLE_GRACE_MS = 1500;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// ---------- 持久化 ----------
+// 队列项按会话落 localStorage：key = pi-mini.queue.<sessionFile>，新会话（还没有 sessionFile）用 _new。
+// 只存 { text, mode }，不存 id / 已发送标记——恢复出来的一律是「本地草稿」，不是 pi 的 pending。
+const STORE_PREFIX = "pi-mini.queue.";
+const STORE_NEW = `${STORE_PREFIX}_new`;
+const STORE_MAX = 50;
+const SESSION_WATCH_MS = 500;
+
+const storeKeyOf = (sessionFile) => {
+	const f = typeof sessionFile === "string" ? sessionFile.trim() : "";
+	return f ? `${STORE_PREFIX}${f}` : STORE_NEW;
+};
+
+const readQueueStore = (key) => {
+	try {
+		const raw = localStorage.getItem(key);
+		if (!raw) return [];
+		const arr = JSON.parse(raw);
+		if (!Array.isArray(arr)) return [];
+		const out = [];
+		for (const it of arr) {
+			const text = typeof it?.text === "string" ? it.text : "";
+			if (!text.trim()) continue;
+			out.push({ text, mode: it?.mode === "steer" ? "steer" : "follow_up" });
+			if (out.length >= STORE_MAX) break;
+		}
+		return out;
+	} catch {
+		return []; // 坏数据当成空队列，不打断 Dock
+	}
+};
+
 const CSS = `
 .queue-dock {
 	box-sizing: border-box;
@@ -202,8 +234,13 @@ export function init(ctx) {
 	const sendTitle = sendBtn.title || "发送";
 
 	// ---------- 本地队列镜像（pi 没有按条操作，只有整队 clear_queue）----------
-	const queue = []; // { id, text }
+	// sent=true：已经交给 pi 的（follow_up 排队），pi 计数归零时可以本地移除；
+	// sent=false：从 localStorage 恢复的本地草稿，pi 不知道它的存在，任何计数清理都不能碰。
+	const queue = []; // { id, text, mode, sent }
 	let seq = 0;
+	let storeKey = storeKeyOf(ctx.state?.sessionFile); // 当前会话对应的存储 key
+	let restoredKey = null; // 已经恢复过的 key：同一个 key 不重复覆盖本地队列
+	let settleAt = 0; // 最近一次 agent_settled：只有刚结束这一轮，_new → 真实文件的迁移才可信
 	let collapsed = true;
 	let lastPushAt = 0;
 	let pollTimer = 0;
@@ -263,16 +300,17 @@ export function init(ctx) {
 		clearBtn.textContent = "清空";
 	}
 
-	const rowEl = (text) => {
+	const rowEl = (item) => {
 		const li = document.createElement("li");
 		li.className = "queue-row";
 		const preview = document.createElement("span");
 		preview.className = "queue-preview";
-		preview.textContent = text;
-		preview.title = text;
+		preview.textContent = item.text;
+		preview.title = item.text;
 		const status = document.createElement("span");
 		status.className = "queue-status";
-		status.textContent = "已排队";
+		// 恢复出来的草稿 pi 那边没有，不能写「已排队」冒充 pendingMessageCount
+		status.textContent = item.sent ? "已排队" : "未发送";
 		li.append(preview, status);
 		return li;
 	};
@@ -294,12 +332,61 @@ export function init(ctx) {
 		chevronBtn.title = chevronLabel;
 		chevronBtn.setAttribute("aria-label", chevronLabel); // 图标按钮没有可读文本，名字必须显式同步
 		listEl.replaceChildren();
-		for (const item of queue) listEl.append(rowEl(item.text));
+		for (const item of queue) listEl.append(rowEl(item));
+	}
+
+	// ---------- 写盘 / 恢复 ----------
+	function persist() {
+		if (demo) return; // 验收钩子的假条目不落盘
+		try {
+			if (!queue.length) {
+				localStorage.removeItem(storeKey);
+				return;
+			}
+			const rows = queue.slice(-STORE_MAX).map((it) => ({ text: it.text, mode: it.mode === "steer" ? "steer" : "follow_up" }));
+			localStorage.setItem(storeKey, JSON.stringify(rows));
+		} catch (err) {
+			console.warn("[queue] 持久化失败", err?.message || err);
+		}
 	}
 
 	function clearLocal() {
 		queue.length = 0;
 		render();
+		persist();
+	}
+
+	// 只清「已经交给 pi 的」条目；恢复出来的本地草稿留着，pi 的 pendingMessageCount 管不到它们
+	function clearSent() {
+		let hit = false;
+		for (let i = queue.length - 1; i >= 0; i--) {
+			if (queue[i].sent) {
+				queue.splice(i, 1);
+				hit = true;
+			}
+		}
+		if (!hit) return;
+		render();
+		persist();
+	}
+
+	// 会话变了就把 Dock 换成那个会话的队列；sessionFile 还没出来时挂在 _new 上
+	function restore() {
+		const nextKey = storeKeyOf(ctx.state?.sessionFile);
+		if (nextKey === restoredKey) return;
+		// 新会话第一轮结束才有 sessionFile：刚 settle 完的这一下，把没发出去的草稿带到正式 key 上，别丢。
+		// 手动切会话不算（那是别的会话，草稿留在 _new 里等下次新会话）。
+		const settled = Date.now() - settleAt < 5000;
+		const carry = restoredKey === STORE_NEW && nextKey !== STORE_NEW && settled ? queue.filter((it) => !it.sent) : [];
+		restoredKey = nextKey;
+		storeKey = nextKey;
+		demo = false;
+		queue.length = 0;
+		for (const it of readQueueStore(nextKey)) queue.push({ id: ++seq, text: it.text, mode: it.mode, sent: false });
+		for (const it of carry) queue.push({ id: ++seq, text: it.text, mode: it.mode, sent: false });
+		render();
+		syncSend();
+		if (carry.length) persist();
 	}
 
 	// ---------- 发送键在运行中：草稿有内容显示 Send（排队），空则保持 Stop ----------
@@ -359,9 +446,10 @@ export function init(ctx) {
 		try {
 			await ctx.pi.command({ type: "follow_up", message: draft.text });
 			demo = false;
-			queue.push({ id: ++seq, text: draft.text });
+			queue.push({ id: ++seq, text: draft.text, mode: "follow_up", sent: true });
 			lastPushAt = Date.now();
 			render();
+			persist();
 			startPoll();
 		} catch (err) {
 			console.warn("[queue] follow_up 失败", err?.message || err);
@@ -393,11 +481,13 @@ export function init(ctx) {
 			const s = await ctx.pi.command({ type: "get_state" });
 			if (s?.isStreaming === false) {
 				stopPoll();
-				if (!demo) clearLocal();
+				if (!demo) clearSent();
 				return;
 			}
-			if (!demo && s?.pendingMessageCount === 0 && queue.length && Date.now() - lastPushAt > SETTLE_GRACE_MS) {
-				clearLocal();
+			// pi 的计数只描述它自己的队列，只能用来清「已交给 pi」的条目
+			const hasSent = queue.some((it) => it.sent);
+			if (!demo && hasSent && s?.pendingMessageCount === 0 && Date.now() - lastPushAt > SETTLE_GRACE_MS) {
+				clearSent();
 			}
 		} catch {
 			// 查询失败不打扰用户，等下一轮
@@ -480,22 +570,24 @@ export function init(ctx) {
 
 	window.__piQueueDemo = (n = 2) => {
 		const count = Math.trunc(Number(n));
+		demo = true; // 先立旗：清空 / 塞假条目都不写 localStorage
 		queue.length = 0;
 		if (!Number.isFinite(count) || count <= 0) {
 			demo = false;
 			render();
 			return 0;
 		}
-		for (let i = 0; i < count; i++) queue.push({ id: ++seq, text: demoText(i) });
-		demo = true;
+		for (let i = 0; i < count; i++) queue.push({ id: ++seq, text: demoText(i), mode: "follow_up", sent: true });
 		lastPushAt = Date.now();
 		render();
 		return queue.length;
 	};
 
 	window.__piQueueDemoClear = () => {
+		// demo 期间不落盘：清掉的只是假条目，磁盘上那份真实队列不能被顺手删了
+		queue.length = 0;
+		render();
 		demo = false;
-		clearLocal();
 	};
 
 	// ---------- 挂载 ----------
@@ -511,8 +603,13 @@ export function init(ctx) {
 				syncSend();
 			} else if (ev?.type === "agent_settled") {
 				stopPoll();
-				if (!demo) clearLocal();
+				if (!demo) clearSent();
 				syncSend();
+				settleAt = Date.now();
+				restore(); // 新会话第一轮结束才有 sessionFile，这里补一次
+			} else if (ev?.type === "session_info_changed") {
+				settleAt = 0; // 会话被换掉了，不是「刚结束一轮」的迁移
+				restore();
 			}
 		});
 	} catch {}
@@ -521,6 +618,12 @@ export function init(ctx) {
 		if (!document.hidden && ctx.state?.streaming) poll();
 	});
 
+	// app.js 的 refreshState 不广播事件：轮询 sessionFile 变化兜底（只是读一个字符串）
+	setInterval(() => {
+		if (storeKeyOf(ctx.state?.sessionFile) !== restoredKey) restore();
+	}, SESSION_WATCH_MS);
+
+	restore();
 	render();
 	syncSend();
 	if (ctx.state?.streaming) {

@@ -18,6 +18,12 @@ const state = {
 	collapsed: new Set(),
 	archived: new Set(),
 	archivedOpen: false,
+	searchResults: [],
+	searchQuery: "",
+	searchBusy: false,
+	searchTruncated: false,
+	searchSeq: 0,
+	searchTimer: 0,
 	projects: [],
 	projectsSeeded: false,
 	live: null, // 正在流式的 assistant 行
@@ -909,7 +915,27 @@ const PEN_ICON =
 const COLLAPSE_KEY = "pi-mini.collapsed";
 const PROJECTS_KEY = "pi-mini.projects";
 const LAST_SESSION_KEY = "pi-mini.lastSession";
+const RESTORE_KEY = "pi-mini.restore-session";
+const PAGE_KEY = "pi-mini.page-size";
 let sessionBootDone = false;
+
+function readPref(key, fallback) {
+	try {
+		const v = localStorage.getItem(key);
+		return v == null ? fallback : v;
+	} catch {
+		return fallback;
+	}
+}
+
+function restoreAllowed() {
+	return readPref(RESTORE_KEY, "1") !== "0";
+}
+
+function readPageSize() {
+	const n = Number(readPref(PAGE_KEY, 20));
+	return [20, 40, 60, 100].includes(n) ? n : 20;
+}
 
 function loadLastSession() {
 	try {
@@ -1040,6 +1066,84 @@ function sessionRow(s) {
 	return row;
 }
 
+// ---------- 会话内容搜索 ----------
+function scheduleContentSearch(value) {
+	clearTimeout(state.searchTimer);
+	const text = String(value || "").trim();
+	if (text.length < 2) {
+		state.searchQuery = "";
+		state.searchResults = [];
+		state.searchBusy = false;
+		state.searchTruncated = false;
+		paintSearchResults();
+		return;
+	}
+	state.searchQuery = text;
+	state.searchBusy = true;
+	paintSearchResults();
+	const seq = ++state.searchSeq;
+	state.searchTimer = setTimeout(async () => {
+		try {
+			const r = await window.pi.searchSessions({ cwd: state.cwd, query: text });
+			if (seq !== state.searchSeq) return;
+			state.searchResults = Array.isArray(r?.results) ? r.results : [];
+			state.searchTruncated = !!r?.truncated;
+		} catch {
+			if (seq !== state.searchSeq) return;
+			state.searchResults = [];
+		}
+		state.searchBusy = false;
+		paintSearchResults();
+	}, 240);
+}
+
+function paintSearchResults() {
+	const host = $("list");
+	if (!host) return;
+	let box = host.querySelector(".side-hits");
+	if (!state.searchQuery) {
+		if (box) box.remove();
+		return;
+	}
+	if (!box) {
+		box = document.createElement("div");
+		box.className = "side-hits";
+		const search = host.querySelector(".side-search");
+		if (search && search.nextSibling) host.insertBefore(box, search.nextSibling);
+		else host.append(box);
+	}
+	box.innerHTML = "";
+	const head = document.createElement("div");
+	head.className = "hits-head";
+	head.textContent = state.searchBusy
+		? "搜索中…"
+		: `内容匹配 ${state.searchResults.length}${state.searchTruncated ? "+" : ""}`;
+	box.append(head);
+	for (const hit of state.searchResults) {
+		const row = document.createElement("button");
+		row.type = "button";
+		row.className = "hit";
+		row.title = hit.snippet || "";
+		const t = document.createElement("span");
+		t.className = "hit-title";
+		t.textContent = hit.name || hit.title || String(hit.path).split(/[\\/]/).pop();
+		const s = document.createElement("span");
+		s.className = "hit-snippet";
+		s.textContent = hit.snippet || "";
+		row.append(t, s);
+		row.onclick = async () => {
+			state.sideSearch = false;
+			state.sideQuery = "";
+			state.sideCaret = 0;
+			state.searchQuery = "";
+			state.searchResults = [];
+			await pickSession(hit.path, hit.cwd);
+			renderSessions();
+		};
+		box.append(row);
+	}
+}
+
 function renderSessions() {
 	const list = $("list");
 	list.innerHTML = "";
@@ -1078,6 +1182,10 @@ function renderSessions() {
 		if (!state.sideSearch) {
 			state.sideQuery = "";
 			state.sideCaret = 0;
+			state.searchQuery = "";
+			state.searchResults = [];
+			state.searchBusy = false;
+			clearTimeout(state.searchTimer);
 		}
 		renderSessions();
 	};
@@ -1102,6 +1210,7 @@ function renderSessions() {
 		inp.oninput = () => {
 			state.sideQuery = inp.value;
 			state.sideCaret = inp.selectionStart ?? inp.value.length;
+			scheduleContentSearch(inp.value);
 			// 中文输入法组合期间不重建列表，否则 IME 会被打断
 			if (inp.dataset.composing === "1") return;
 			renderSessions();
@@ -1120,6 +1229,10 @@ function renderSessions() {
 				state.sideSearch = false;
 				state.sideQuery = "";
 				state.sideCaret = 0;
+				state.searchQuery = "";
+				state.searchResults = [];
+				state.searchBusy = false;
+				clearTimeout(state.searchTimer);
 				renderSessions();
 			}
 		};
@@ -1347,6 +1460,8 @@ function renderSessions() {
 			list.append(box);
 		}
 	}
+
+	paintSearchResults();
 }
 
 document.addEventListener("click", () => {
@@ -1465,7 +1580,7 @@ async function bindWorkspace(cwd) {
 		state.sessions = r.sessions ?? [];
 		state.sessionFile = null;
 		state.sessionName = null;
-		state.sessionPage = 20;
+		state.sessionPage = readPageSize();
 		state.collapsed.delete(cwd);
 		saveProjects();
 		saveCollapsed();
@@ -1667,7 +1782,7 @@ window.pi.onEvent((ev) => {
 			refreshState().catch(() => {});
 			break;
 		case "session_info_changed":
-			window.pi.sessions({ perCwd: state.sessionPage || 20 }).then((s) => {
+			window.pi.sessions({ perCwd: state.sessionPage || readPageSize() }).then((s) => {
 				state.sessions = s;
 				renderSessions();
 			});
@@ -1970,8 +2085,9 @@ window.__selftest = () => {
 	updateSend();
 	await loadModels();
 	const last = loadLastSession();
+	const restore = restoreAllowed();
 	await refreshState();
-	if (boot.restore) {
+	if (restore && boot.restore) {
 		const r = await window.pi.switchSession(boot.restore).catch(() => null);
 		if (r && !r.cancelled) {
 			renderHistory(r.messages ?? []);
@@ -1983,7 +2099,7 @@ window.__selftest = () => {
 		}
 	}
 	// 重启后回到上次会话；找不到就按新会话处理
-	if (last && last.cwd === boot.cwd) {
+	if (restore && last && last.cwd === boot.cwd) {
 		const r = await window.pi.switchSession(last.path).catch(() => null);
 		if (r && !r.cancelled) {
 			loading.remove();
@@ -2025,7 +2141,7 @@ export const ctx = {
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js"];
+const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js"];
 
 for (const f of FEATURES) {
 	try {

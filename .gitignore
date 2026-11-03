@@ -1,4 +1,5 @@
 node_modules/
+dist/
 *.png
 shot.request
 .probe.in
