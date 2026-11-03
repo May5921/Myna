@@ -1619,39 +1619,6 @@ function startDevWatch() {
 						log("[dev] toolfold failed", e.message);
 					}
 				}
-				if (want.includes("bigrender")) {
-					try {
-						const st = await win.webContents.executeJavaScript(`(async () => {
-							const msgs = [];
-							const now = Date.now();
-							for (let i = 0; i < 300; i++) {
-								const ts = new Date(now - (300 - i) * 3600e3).toISOString();
-								msgs.push({ role: "user", timestamp: ts, content: [{ type: "text", text: "问题 " + i + "：检查一下这个模块的实现和边界条件，顺便看看表格渲染。" }] });
-								msgs.push({ role: "assistant", timestamp: ts, content: [
-									{ type: "text", text: "回答 **" + i + "**\\n\\n| 项目 | 值 |\\n|---|---|\\n| rows | " + i + " |\\n\\n- 第一项\\n- 第二项" },
-									{ type: "toolCall", id: "t" + i, name: "bash", arguments: { command: "echo " + i } },
-								] });
-								msgs.push({ role: "toolResult", toolCallId: "t" + i, content: [{ type: "text", text: "ok " + i }] });
-							}
-							const t0 = performance.now();
-							window.__piRenderHistory(msgs);
-							const ms = performance.now() - t0;
-							const more = document.querySelector(".history-more");
-							const info = { ms: Math.round(ms), rows: document.querySelectorAll(".row").length, more: more ? more.textContent : "", msgs: msgs.length };
-							if (more) {
-								more.click();
-								await new Promise((r) => setTimeout(r, 150));
-								info.afterRows = document.querySelectorAll(".row").length;
-								info.afterMore = document.querySelector(".history-more")?.textContent || "";
-								info.scrollTop = Math.round(document.getElementById("stream").scrollTop);
-							}
-							return JSON.stringify(info);
-						})()`);
-						log("[dev] bigrender", st);
-					} catch (e) {
-						log("[dev] bigrender failed", e.message);
-					}
-				}
 				if (want.includes("live") && !want.includes("livetool")) {
 					try {
 						await win.webContents.executeJavaScript(`(() => {

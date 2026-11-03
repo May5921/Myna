@@ -1159,7 +1159,6 @@ function paintHistory(keepAnchor) {
 }
 
 // 开发/截图钩子：用合成消息压测历史渲染与分页
-window.__piRenderHistory = renderHistory;
 const FOLDER_ICON =
 	'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.6c0-.6.5-1 1-1h3l1.4 1.6H13c.6 0 1 .5 1 1v5.8c0 .6-.4 1-1 1H3c-.5 0-1-.4-1-1V4.6Z" stroke-linejoin="round"/></svg>';
 const PLUS_ICON =
