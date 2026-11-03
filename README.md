@@ -44,7 +44,18 @@ npm run build:portable   # dist/pi-mini 便携目录
 npm run build:zip        # dist/pi-mini-win64.zip（约 153 MB）
 ```
 
-便携版不需要安装：解压后双击 `pi-mini/electron.exe`，要求 PATH 里有 `pi` 命令。还没做安装包与自动更新。
+便携版不需要安装：解压后双击 `pi-mini/electron.exe`，要求 PATH 里有 `pi` 命令。
+
+也可以用一个 PowerShell 脚本“安装”到用户目录（复制文件 + 开始菜单/桌面快捷方式 + 卸载入口，不需要管理员权限）：
+
+```powershell
+npm run build:portable
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+# 卸载
+powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
+```
+
+脚本不签名，也没有自动更新；升级等于重新跑一次 `build:portable` 和 `install.ps1`。
 
 ## 结构
 
