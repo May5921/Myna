@@ -177,10 +177,15 @@ body.rp-full #composer { margin-right: 0; }
 }
 .rp-tab {
 	height: 24px;
+	min-width: 0;
+	flex: 0 1 auto;
 	padding: 0 8px;
 	border-radius: 6px;
 	font-size: 12.5px;
 	line-height: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	color: var(--faint);
 	transition: background-color 120ms ease, color 120ms ease;
 }
@@ -620,16 +625,8 @@ body.rp-resizing .rp-panel { transition: none; }
 .rp-bview webview { width: 100%; height: 100%; border: 0; display: inline-flex; }
 .rp-bempty { margin: auto; padding: 24px; text-align: center; font-size: 12px; color: var(--faint); }
 
-/* 侧边对话 tab */
+/* 侧边对话 tab：面板没有自己的标题行（与 DSH 一致），状态与清空放在输入区下方 */
 .rp-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--bg); }
-.rp-chat-head { flex: none; height: 38px; display: flex; align-items: center; gap: 7px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); }
-.rp-chat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; transition: background 120ms; }
-.rp-chat-dot.busy { background: #d9a53b; }
-.rp-chat-dot.err { background: var(--err); }
-.rp-chat-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
-.rp-chat-state { flex: 1; min-width: 0; font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-chat-reset { width: 26px; height: 26px; flex: none; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
-.rp-chat-reset:hover { background: var(--hover); color: var(--text); }
 .rp-chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px; }
 .rp-msg { max-width: 100%; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .rp-msg.user { align-self: flex-end; max-width: 84%; background: var(--user-bubble, #edf3fe); color: var(--text); padding: 7px 12px; border-radius: 14px; white-space: pre-wrap; }
@@ -662,6 +659,10 @@ body.rp-resizing .rp-panel { transition: none; }
 .rp-chat-send.stop { background: var(--err); }
 .rp-chat-foot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 10.5px; color: var(--faint); }
 .rp-chat-foot .grow { flex: 1; }
+.rp-chat-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-chat-state.err { color: var(--err); }
+.rp-chat-reset { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 5px; font-size: 10.5px; color: var(--faint); }
+.rp-chat-reset:hover { background: var(--hover); color: var(--text); }
 `;
 
 export function init(ctx) {
@@ -1697,8 +1698,7 @@ export function init(ctx) {
 	function chatSetState(text, kind) {
 		if (!chat) return;
 		chat.state.textContent = text || "";
-		chat.dot.classList.toggle("busy", kind === "busy");
-		chat.dot.classList.toggle("err", kind === "err");
+		chat.state.classList.toggle("err", kind === "err");
 	}
 
 	function chatRow(cls, text) {
@@ -1849,16 +1849,6 @@ export function init(ctx) {
 		const host = pane.get("chat");
 		host.textContent = "";
 		const wrap = el("div", "rp-chat");
-		const head = el("div", "rp-chat-head");
-		const dot = el("span", "rp-chat-dot");
-		dot.setAttribute("aria-hidden", "true");
-		const title = el("span", "rp-chat-title", "侧边对话");
-		const state = el("span", "rp-chat-state", "独立会话");
-		state.setAttribute("aria-live", "polite");
-		const reset = el("button", "rp-chat-reset", "↺");
-		reset.title = "清空侧边会话";
-		reset.setAttribute("aria-label", "清空侧边会话");
-		head.append(dot, title, state, reset);
 		const log = el("div", "rp-chat-log");
 		log.setAttribute("role", "log");
 		log.setAttribute("aria-live", "polite");
@@ -1875,13 +1865,17 @@ export function init(ctx) {
 		send.disabled = true;
 		box.append(input, send);
 		const foot = el("div", "rp-chat-foot");
-		const hint = el("span", "", "Enter 发送 · Shift+Enter 换行");
-		foot.append(hint);
+		const state = el("span", "rp-chat-state", "独立会话");
+		state.setAttribute("aria-live", "polite");
+		const reset = el("button", "rp-chat-reset", "↺ 清空");
+		reset.title = "清空侧边会话";
+		reset.setAttribute("aria-label", "清空侧边会话");
+		foot.append(state, reset);
 		bar.append(box, foot);
-		wrap.append(head, log, bar);
+		wrap.append(log, bar);
 		host.append(wrap);
 		chat = {
-			wrap, head, dot, state, log, bar, input, send, reset,
+			wrap, state, log, bar, input, send, reset,
 			messages: [], empty: null, live: null, liveMd: null, liveText: "", streaming: false,
 		};
 		chat.empty = chatEmptyHint();
@@ -1934,15 +1928,9 @@ export function init(ctx) {
 		if (tab !== key) {
 			tab = key;
 			writePref(LS_TAB, tab);
-			if (tab === "chat") ensureChatWidth();
 			render();
 		}
 		if (LOADABLE.has(key)) load(key);
-	}
-
-	// 对话塞在 300px 抽屉里没法用：切到对话时至少给到 420px，用户仍可拖宽
-	function ensureChatWidth() {
-		if (width < 380) setWidth(420, false);
 	}
 
 	function setOpen(next) {
@@ -1964,7 +1952,6 @@ export function init(ctx) {
 		// 先 load 后 render：load 在 await 前就同步置 busy 并画出「读取中…」，
 		// 反过来会先闪一帧「还没加载」
 		load(tab, true);
-		if (tab === "chat") ensureChatWidth();
 		render();
 	}
 
