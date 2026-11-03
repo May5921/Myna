@@ -2,8 +2,7 @@
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen, Tray, Menu, Notification, nativeImage } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, mkdirSync, copyFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, copyFileSync } from "node:fs";
 import { join, sep, resolve, extname, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -180,7 +179,6 @@ function onData(chunk) {
 
 function startPi(cwd, sessionFile = null) {
 	stopPi();
-	stopSide();
 	const cli = resolvePiCli();
 	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
 	const resume = sessionFile && existsSync(sessionFile) ? sessionFile : null;
@@ -964,149 +962,6 @@ ipcMain.handle("pi:term-kill", async (_e, runIdRaw) => {
 	return { ok: true };
 });
 
-// ---------- 侧边对话：第二个 pi RPC 子进程，独立 session，不干扰主对话 ----------
-let sideChild = null;
-let sideBuffer = "";
-let sideSeq = 0;
-const sideWaiting = new Map();
-
-function sideSessionPath() {
-	const hash = createHash("sha1").update(String(currentCwd)).digest("hex").slice(0, 12);
-	return join(app.getPath("userData"), "side", `side-${hash}.jsonl`);
-}
-
-function stopSide() {
-	const proc = sideChild;
-	sideChild = null;
-	sideBuffer = "";
-	for (const w of sideWaiting.values()) {
-		try {
-			w.reject(new Error("侧边对话已停止"));
-		} catch {}
-	}
-	sideWaiting.clear();
-	if (proc) {
-		try {
-			proc.kill();
-		} catch {}
-	}
-}
-
-function ensureSide() {
-	if (sideChild) return;
-	const cli = resolvePiCli();
-	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
-	const file = sideSessionPath();
-	try {
-		mkdirSync(dirname(file), { recursive: true });
-	} catch {}
-	const args = [cli, "--mode", "rpc"];
-	const resume = existsSync(file);
-	if (resume) args.push("--session", file);
-	const proc = spawn("node", args, {
-		cwd: currentCwd,
-		stdio: ["pipe", "pipe", "pipe"],
-		windowsHide: true,
-		env: { ...process.env },
-	});
-	sideChild = proc;
-	sideBuffer = "";
-	log("[side] spawn", resume ? "resume" : "new", file);
-	proc.stdout.setEncoding("utf8");
-	proc.stdin.on("error", () => {});
-	proc.stdout.on("data", (chunk) => {
-		if (sideChild !== proc) return;
-		sideBuffer += chunk;
-		let i;
-		while ((i = sideBuffer.indexOf("\n")) >= 0) {
-			let line = sideBuffer.slice(0, i);
-			sideBuffer = sideBuffer.slice(i + 1);
-			if (line.endsWith("\r")) line = line.slice(0, -1);
-			if (!line.trim()) continue;
-			let rec;
-			try {
-				rec = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (rec.type === "response") {
-				const w = sideWaiting.get(rec.id);
-				if (!w) continue;
-				sideWaiting.delete(rec.id);
-				if (rec.success) w.resolve(rec.data ?? {});
-				else w.reject(new Error(rec.error || "命令失败"));
-			} else {
-				send("pi:side-event", rec);
-			}
-		}
-	});
-	proc.stderr.setEncoding("utf8");
-	proc.stderr.on("data", (d) => log("[side stderr]", String(d).trim()));
-	proc.on("error", (err) => {
-		log("[side error]", err.message);
-		// 不清指针的话，后续命令会一直写进这个已经死掉的进程
-		if (sideChild === proc) sideChild = null;
-	});
-	proc.on("exit", (code) => {
-		// 旧进程的 exit 可能晚于 side-reset 后的新进程：只处理自己的退出
-		if (sideChild !== proc) return;
-		sideChild = null;
-		for (const w of sideWaiting.values()) {
-			try {
-				w.reject(new Error("侧边对话已退出"));
-			} catch {}
-		}
-		sideWaiting.clear();
-		send("pi:side-event", { type: "side_exit", code: Number.isFinite(code) ? code : null });
-	});
-}
-
-function sideCommand(cmd, timeoutMs = 120000) {
-	ensureSide();
-	const id = `s${++sideSeq}`;
-	const proc = sideChild;
-	return new Promise((resolveCmd, reject) => {
-		// timeoutMs <= 0：不设超时（prompt 的 response 要等整轮结束，长回合不能判死）
-		const timer = timeoutMs > 0
-			? setTimeout(() => {
-				sideWaiting.delete(id);
-				reject(new Error("侧边对话超时"));
-			}, timeoutMs)
-			: null;
-		sideWaiting.set(id, {
-			resolve: (v) => {
-				if (timer) clearTimeout(timer);
-				resolveCmd(v);
-			},
-			reject: (e) => {
-				if (timer) clearTimeout(timer);
-				reject(e);
-			},
-		});
-		try {
-			proc.stdin.write(JSON.stringify({ id, ...cmd }) + "\n");
-		} catch {
-			sideWaiting.delete(id);
-			if (timer) clearTimeout(timer);
-			reject(new Error("侧边对话未就绪"));
-		}
-	});
-}
-
-ipcMain.handle("pi:side-command", async (_e, cmd) => {
-	if (!cmd || typeof cmd !== "object") return false;
-	// prompt 的 response 要等整轮结束才回，先 ack，正文走 pi:side-event
-	sideCommand(cmd, cmd.type === "prompt" ? 0 : 120000).catch((e) => send("pi:side-event", { type: "side_error", message: e.message }));
-	return true;
-});
-
-ipcMain.handle("pi:side-reset", async () => {
-	stopSide();
-	try {
-		unlinkSync(sideSessionPath());
-	} catch {}
-	return true;
-});
 
 // ---------- IPC ----------
 let restorePending = process.env.PI_MINI_SESSION || null;
@@ -1474,7 +1329,6 @@ function startDevWatch() {
 				log("[dev] main.js changed -> relaunch");
 				// app.exit(0) 不触发 before-quit：子进程和托盘必须在这里显式收掉
 				stopPi();
-				stopSide();
 				destroyTray();
 				app.relaunch();
 				app.exit(0);
@@ -1998,71 +1852,6 @@ function startDevWatch() {
 						log("[dev] browsertab", r);
 					} catch (e) {
 						log("[dev] browsertab failed", e.message);
-					}
-				}
-				if (want.includes("sidestream")) {
-					try {
-						const r = await win.webContents.executeJavaScript(
-							`(async () => {
-								const toggle = document.getElementById("rp-toggle");
-								if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
-								document.getElementById("rp-tab-chat")?.click();
-								await new Promise(r => setTimeout(r, 200));
-								const input = document.querySelector(".rp-chat-input");
-								const send = document.querySelector(".rp-chat-send");
-								if (!input || !send) return JSON.stringify({ err: "no chat ui" });
-								input.value = "请用中文写一段 150 字左右的海洋介绍，不要调用工具。";
-								input.dispatchEvent(new Event("input", { bubbles: true }));
-								await new Promise(r => setTimeout(r, 80));
-								send.click();
-								const samples = [];
-								const t0 = Date.now();
-								while (Date.now() - t0 < 20000) {
-									const bot = [...document.querySelectorAll(".rp-chat-log .rp-msg.bot")].pop();
-									const st = document.querySelector(".rp-chat-state")?.textContent || "";
-									samples.push([Date.now() - t0, (bot?.innerText || "").length, st]);
-									if (st === "就绪" && bot?.innerText) break;
-									await new Promise(r => setTimeout(r, 200));
-								}
-								return JSON.stringify({ samples: samples.filter((s, i) => i % 2 === 0 || i === samples.length - 1) });
-							})()`,
-						);
-						log("[dev] sidestream", r);
-					} catch (e) {
-						log("[dev] sidestream failed", e.message);
-					}
-				}
-				if (want.includes("sidechat")) {
-					try {
-						const r = await win.webContents.executeJavaScript(
-							`(async () => {
-								const toggle = document.getElementById("rp-toggle");
-								if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
-								document.getElementById("rp-tab-chat")?.click();
-								await new Promise(r => setTimeout(r, 150));
-								const input = document.querySelector(".rp-chat-input");
-								const send = document.querySelector(".rp-chat-send");
-								if (!input || !send) return JSON.stringify({ err: "no chat ui" });
-								input.value = "只回复两个字：你好";
-								input.dispatchEvent(new Event("input", { bubbles: true }));
-								await new Promise(r => setTimeout(r, 80));
-								send.click();
-								const t0 = Date.now();
-								while (Date.now() - t0 < 45000) {
-									const st = document.querySelector(".rp-chat-state")?.textContent || "";
-									if (st === "就绪" || st.includes("退出")) break;
-									await new Promise(r => setTimeout(r, 250));
-								}
-								return JSON.stringify({
-									state: document.querySelector(".rp-chat-state")?.textContent,
-									width: getComputedStyle(document.documentElement).getPropertyValue("--rp-w").trim(),
-									msgs: [...document.querySelectorAll(".rp-chat-log .rp-msg")].map(m => ({ cls: m.className, text: (m.innerText || "").slice(0, 120) })),
-								});
-							})()`,
-						);
-						log("[dev] sidechat", r);
-					} catch (e) {
-						log("[dev] sidechat failed", e.message);
 					}
 				}
 				if (want.includes("think")) {
@@ -2696,7 +2485,6 @@ async function beginQuit() {
 		proceed = true;
 		destroyTray();
 		stopPi();
-		stopSide();
 	} catch (e) {
 		// 清理失败也必须退出，否则进程会卡在没有窗口也没有托盘的状态
 		log("[quit] cleanup failed", e?.message || String(e));
@@ -2732,5 +2520,4 @@ app.on("session-end", () => {
 	quitting = true;
 	destroyTray();
 	stopPi();
-	stopSide();
 });

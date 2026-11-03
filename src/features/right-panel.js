@@ -22,7 +22,6 @@ const TABS = [
 	{ key: "changes", label: "变更" },
 	{ key: "tree", label: "会话" },
 	{ key: "browser", label: "浏览器" },
-	{ key: "chat", label: "对话" },
 ];
 
 const LOADABLE = new Set(["files", "changes", "tree"]);
@@ -671,53 +670,6 @@ body.rp-resizing .rp-panel { transition: none; }
 .rp-bview webview { width: 100%; height: 100%; border: 0; display: inline-flex; }
 .rp-bempty { margin: auto; padding: 24px; text-align: center; font-size: 12px; color: var(--faint); }
 
-/* 侧边对话 tab：面板没有自己的标题行（与 DSH 一致），状态与清空放在输入区下方 */
-.rp-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--bg); }
-.rp-chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px; }
-.rp-msg { max-width: 100%; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
-.rp-msg.user { align-self: flex-end; max-width: 84%; background: var(--user-bubble, #edf3fe); color: var(--text); padding: 7px 12px; border-radius: 14px; white-space: pre-wrap; }
-.rp-msg.bot { align-self: stretch; color: var(--text); }
-.rp-think { border-left: 2px solid var(--line); padding: 1px 0 1px 9px; margin: 0 0 8px; }
-.rp-think-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); text-align: left; width: 100%; }
-.rp-think-row:hover { color: var(--dim); }
-.rp-think-chev { font-size: 10px; transition: transform 120ms; }
-.rp-think[data-open="1"] .rp-think-chev { transform: rotate(90deg); }
-.rp-think-body { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--dim); white-space: pre-wrap; max-height: 160px; overflow: auto; }
-.rp-think[data-open="0"] .rp-think-body { display: none; }
-.rp-msg.bot .rp-md { font-size: 13px; line-height: 1.7; }
-.rp-md p { margin: 0 0 8px; }
-.rp-md p:last-child { margin-bottom: 0; }
-.rp-md ul, .rp-md ol { margin: 0 0 8px; padding-left: 20px; }
-.rp-md li + li { margin-top: 4px; }
-.rp-md pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg, #f7f7f8); overflow-x: auto; font: 11.5px/1.6 var(--mono); }
-.rp-md code { font-family: var(--mono); font-size: 11.5px; }
-.rp-md :not(pre) > code { background: var(--hover); padding: 1px 4px; border-radius: 4px; }
-.rp-md table { border-collapse: collapse; font-size: 12px; margin: 0 0 8px; }
-.rp-md th, .rp-md td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; }
-.rp-caret { display: inline-block; width: 7px; height: 15px; margin-left: 1px; vertical-align: -2px; background: var(--text); opacity: .75; animation: rp-blink 1s steps(2, start) infinite; }
-@keyframes rp-blink { to { opacity: 0; } }
-.rp-act { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); }
-.rp-act::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); flex: none; }
-.rp-msg.sys { font-size: 11.5px; color: var(--err); padding: 0 2px; }
-.rp-chat-empty { margin: auto; padding: 30px 22px; text-align: center; color: var(--faint); }
-.rp-chat-empty b { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--dim); }
-.rp-chat-empty span { font-size: 12px; line-height: 1.7; }
-.rp-chat-bar { flex: none; padding: 8px 12px 10px; border-top: 1px solid var(--line); }
-.rp-chat-box { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--line); border-radius: 14px; padding: 7px 7px 7px 12px; background: var(--bg); }
-.rp-chat-box:focus-within { border-color: var(--line-strong, #d9d9d9); }
-.rp-chat-input { flex: 1; min-width: 0; min-height: 22px; max-height: 120px; resize: none; border: 0; padding: 2px 0; font: 13px/1.55 var(--ui); color: var(--text); background: transparent; }
-.rp-chat-input:focus { outline: none; }
-.rp-chat-send { width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--text); color: var(--bg); }
-.rp-chat-send:disabled { opacity: .28; }
-.rp-chat-send.stop { background: var(--err); }
-.rp-chat-foot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 10.5px; color: var(--faint); }
-.rp-chat-foot .grow { flex: 1; }
-.rp-chat-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rp-chat-state.err { color: var(--err); }
-.rp-chat-reset { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 5px; font-size: 10.5px; color: var(--faint); }
-.rp-chat-reset:hover { background: var(--hover); color: var(--text); }
-
-/* 快速打开文件（Mod+P）：独立于右栏，面板收起时也能用 */
 .rp-palette-back {
 	position: fixed;
 	inset: 0;
@@ -2086,313 +2038,6 @@ export function init(ctx) {
 		});
 	}
 
-	// ---------- 侧边对话 ----------
-	const CHAT_HINT = "独立的 pi 会话，不会打断主对话。可以问问题、读文件或跑命令。";
-	const SEND_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 12.5V3.5M8 3.5 4 7.5M8 3.5l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-	const STOP_ICON = `<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>`;
-	let chat = null;
-	let chatBound = false;
-	let chatWarm = false;
-
-	function chatAutosize() {
-		if (!chat) return;
-		chat.input.style.height = "auto";
-		chat.input.style.height = `${Math.min(120, chat.input.scrollHeight)}px`;
-	}
-
-	function chatEmptyHint() {
-		const empty = el("div", "rp-chat-empty");
-		const b = el("b", "", "侧边对话");
-		const s = el("span", "", CHAT_HINT);
-		empty.append(b, s);
-		return empty;
-	}
-
-	function chatNearBottom() {
-		if (!chat) return true;
-		return chat.log.scrollHeight - chat.log.scrollTop - chat.log.clientHeight < 60;
-	}
-
-	function chatScroll(force) {
-		if (!chat) return;
-		if (force || chatNearBottom()) chat.log.scrollTop = chat.log.scrollHeight;
-	}
-
-	function chatSetState(text, kind) {
-		if (!chat) return;
-		chat.state.textContent = text || "";
-		chat.state.classList.toggle("err", kind === "err");
-	}
-
-	function chatRow(cls, text) {
-		const row = el("div", cls, text);
-		if (chat) {
-			chat.log.append(row);
-			chatScroll();
-		}
-		return row;
-	}
-
-	function chatThink() {
-		if (!chat?.live) return null;
-		if (chat.liveThink) return chat.liveThink;
-		const wrap = el("div", "rp-think");
-		wrap.dataset.open = "1";
-		const row = el("button", "rp-think-row");
-		const chev = el("span", "rp-think-chev", "›");
-		const label = el("span", "rp-think-label", "思考中…");
-		row.append(chev, label);
-		const body = el("div", "rp-think-body");
-		row.onclick = () => {
-			wrap.dataset.open = wrap.dataset.open === "1" ? "0" : "1";
-		};
-		wrap.append(row, body);
-		chat.live.insertBefore(wrap, chat.live.firstChild);
-		chat.liveThink = { wrap, body, label, done: false };
-		return chat.liveThink;
-	}
-
-	function chatCollapseThink(label) {
-		if (!chat?.liveThink) return;
-		chat.liveThink.wrap.dataset.open = "0";
-		if (label) chat.liveThink.label.textContent = label;
-	}
-
-	// 一轮里可能有多段助手消息（文本→工具→文本）。每段单独一个气泡，
-	// 否则后段正文会写在工具行上方，message_end 还会把前段覆盖掉。
-	function chatNewSegment() {
-		if (!chat) return null;
-		const bot = el("div", "rp-msg bot");
-		const md = el("div", "rp-md");
-		bot.append(md, el("span", "rp-caret"));
-		chat.log.append(bot);
-		chat.live = bot;
-		chat.liveMd = md;
-		chat.liveThink = null;
-		chat.liveText = "";
-		chat.segDeltas = 0;
-		chat.needsSegment = false;
-		return bot;
-	}
-
-	function chatIdle() {
-		if (!chat) return;
-		chat.streaming = false;
-		chat.send.classList.remove("stop");
-		chat.send.innerHTML = SEND_ICON;
-		chat.send.title = "发送";
-		chat.send.disabled = !chat.input.value.trim();
-	}
-
-	function chatActivity(text) {
-		chatRow("rp-act", text);
-	}
-
-	function chatWarmup() {
-		if (chatWarm) return;
-		chatWarm = true;
-		chatSetState("正在启动侧边会话…", "busy");
-		ctx.pi.sideCommand?.({ type: "get_state" })
-			.then(() => {
-				chatWarm = true;
-				if (chat && !chat.streaming) chatSetState("就绪", null);
-			})
-			.catch((e) => chatSetState(e?.message || "启动失败", "err"));
-	}
-
-	function chatSend() {
-		if (!chat || chat.streaming) return;
-		const text = chat.input.value.trim();
-		if (!text) return;
-		chat.input.value = "";
-		chat.input.style.height = "auto";
-		chat.empty?.remove();
-		chat.empty = null;
-		chatRow("rp-msg user", text);
-		chatNewSegment();
-		chat.streaming = true;
-		chat.send.classList.add("stop");
-		chat.send.innerHTML = STOP_ICON;
-		chat.send.title = "停止";
-		chat.send.disabled = false;
-		chatSetState("思考中…", "busy");
-		chatWarmup();
-		chatScroll(true);
-		ctx.pi.sideCommand?.({ type: "prompt", message: text }).catch((e) => {
-			chatIdle();
-			chatSetState(e?.message || "发送失败", "err");
-			chatActivity("发送失败：" + (e?.message || "未知错误"));
-		});
-	}
-
-	function chatStop() {
-		if (!chat || !chat.streaming) return;
-		chatSetState("正在停止…", "busy");
-		ctx.pi.sideCommand?.({ type: "abort" }).catch(() => {});
-	}
-
-	function chatOnEvent(ev) {
-		if (!chat || !ev || typeof ev !== "object") return;
-		const a = ev.assistantMessageEvent;
-		if (ev.type === "agent_start") {
-			chatWarm = true;
-			chatSetState("思考中…", "busy");
-		} else if (ev.type === "message_start" && ev.message?.role === "assistant") {
-			// 新消息：工具之后或没有活动气泡时开新段；上一段的思考块收尾
-			chatCollapseThink("思考过程");
-			chat.liveThink = null;
-			if (chat.needsSegment || !chat.liveMd) chatNewSegment();
-			chat.segDeltas = 0;
-		} else if (ev.type === "message_update" && a?.type === "thinking_start") {
-			chatThink();
-			chatSetState("思考中…", "busy");
-			chatScroll();
-		} else if (ev.type === "message_update" && a?.type === "thinking_delta") {
-			const t = chatThink();
-			if (t) {
-				t.body.textContent += a.delta;
-				t.label.textContent = "思考中…";
-			}
-			chatSetState("思考中…", "busy");
-			chatScroll();
-		} else if (ev.type === "message_update" && a?.type === "thinking_end") {
-			const t = chatThink();
-			if (t) {
-				if (typeof a.content === "string" && a.content) t.body.textContent = a.content;
-				t.done = true;
-			}
-			chatCollapseThink("思考过程");
-			// 同一回合的下一段思考必须建新块，否则后段会覆盖前段
-			chat.liveThink = null;
-			chatScroll();
-		} else if (ev.type === "message_update" && a?.type === "text_delta") {
-			chatCollapseThink("思考过程");
-			if (!chat.liveMd) chatNewSegment();
-			chat.liveText += a.delta;
-			chat.segDeltas += 1;
-			if (chat.liveMd) chat.liveMd.textContent = chat.liveText;
-			chatSetState("生成中…", "busy");
-			chatScroll();
-		} else if (ev.type === "tool_execution_start") {
-			// 侧边对话只关心正文：工具调用、命令输出都不在这里展开（主对话里才有）
-			chat.needsSegment = true;
-			chatSetState("处理中…", "busy");
-		} else if (ev.type === "tool_execution_end") {
-			// 同上：不显示“xx 完成”，避免工具噪音打断气泡
-		} else if (ev.type === "message_end" && ev.message) {
-			const blocks = Array.isArray(ev.message.content) ? ev.message.content : [];
-			const text = blocks
-				.filter((b) => b && b.type === "text")
-				.map((b) => b.text)
-				.join("");
-			// 有流式增量时 liveText 已经是全文；没有增量（非流式消息）才补文本。
-			if (text && !chat.segDeltas) chat.liveText += text;
-			if (chat.liveText && chat.liveMd) {
-				if (typeof ctx.md === "function") chat.liveMd.innerHTML = ctx.md(chat.liveText);
-				else chat.liveMd.textContent = chat.liveText;
-			}
-			if (chat.liveText) chat.live?.querySelector(".rp-caret")?.remove();
-			chat.segDeltas = 0;
-			chatScroll();
-		} else if (ev.type === "agent_settled") {
-			chatIdle();
-			chatSetState("就绪", null);
-			if (chat.live && !chat.liveText.trim()) chat.live.remove();
-			chat.live = null;
-			chat.liveMd = null;
-			chat.liveThink = null;
-			chat.liveText = "";
-			chat.segDeltas = 0;
-			chat.needsSegment = false;
-			chatScroll();
-		} else if (ev.type === "side_exit") {
-			chatIdle();
-			chatSetState("侧边会话已退出，下一条消息会重启", "err");
-		} else if (ev.type === "side_error") {
-			chatIdle();
-			chatSetState(ev.message || "侧边对话出错", "err");
-			chatActivity(ev.message || "侧边对话出错");
-		}
-	}
-
-	function chatReset() {
-		ctx.pi.sideReset?.().catch(() => {});
-		if (!chat) return;
-		chat.live = null;
-		chat.liveMd = null;
-		chat.liveThink = null;
-		chat.liveText = "";
-		chat.segDeltas = 0;
-		chat.needsSegment = false;
-		chat.log.textContent = "";
-		chat.empty = chatEmptyHint();
-		chat.log.append(chat.empty);
-		chatSetState("就绪", null);
-		chatIdle();
-		chatWarm = false;
-		chatWarmup();
-	}
-
-	function renderChat() {
-		if (chat) return;
-		const host = pane.get("chat");
-		host.textContent = "";
-		const wrap = el("div", "rp-chat");
-		const log = el("div", "rp-chat-log");
-		log.setAttribute("role", "log");
-		log.setAttribute("aria-live", "polite");
-		log.setAttribute("aria-label", "侧边对话消息");
-		const bar = el("div", "rp-chat-bar");
-		const box = el("div", "rp-chat-box");
-		const input = el("textarea", "rp-chat-input");
-		input.rows = 1;
-		input.placeholder = "问点什么…";
-		const send = el("button", "rp-chat-send");
-		send.innerHTML = SEND_ICON;
-		send.title = "发送";
-		send.setAttribute("aria-label", "发送");
-		send.disabled = true;
-		box.append(input, send);
-		const foot = el("div", "rp-chat-foot");
-		const state = el("span", "rp-chat-state", "独立会话");
-		state.setAttribute("aria-live", "polite");
-		const reset = el("button", "rp-chat-reset", "↺ 清空");
-		reset.title = "清空侧边会话";
-		reset.setAttribute("aria-label", "清空侧边会话");
-		foot.append(state, reset);
-		bar.append(box, foot);
-		wrap.append(log, bar);
-		host.append(wrap);
-		chat = {
-			wrap, state, log, bar, input, send, reset,
-			messages: [], empty: null, live: null, liveMd: null, liveText: "", streaming: false,
-			segDeltas: 0, needsSegment: false,
-		};
-		chat.empty = chatEmptyHint();
-		log.append(chat.empty);
-		input.addEventListener("input", () => {
-			send.disabled = !input.value.trim() || chat.streaming;
-			chatAutosize();
-		});
-		input.addEventListener("keydown", (e) => {
-			if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-				e.preventDefault();
-				chatSend();
-			}
-		});
-		send.addEventListener("click", () => {
-			if (chat.streaming) chatStop();
-			else chatSend();
-		});
-		reset.onclick = chatReset;
-		if (!chatBound) {
-			chatBound = true;
-			ctx.pi.onSideEvent?.(chatOnEvent);
-		}
-		chatAutosize();
-		chatWarmup();
-	}
-
 	// ---------- 切换 / 开关 ----------
 	function render() {
 		for (const t of TABS) {
@@ -2409,11 +2054,9 @@ export function init(ctx) {
 		if (tab === "files") renderFiles();
 		else if (tab === "changes") renderChanges();
 		else if (tab === "tree") renderTree();
-		// 关闭状态不建 webview / 侧边对话：否则应用一启动就联网或拉起第二个 pi 进程
+		// 关闭状态不建 webview：否则应用一启动就联网
 		else if (tab === "browser") {
 			if (open) renderBrowser();
-		} else if (open) {
-			renderChat();
 		}
 	}
 
@@ -2623,8 +2266,8 @@ export function init(ctx) {
 
 	render();
 
-	// 先定 tab 再开面板：反过来 setOpen 会按旧 tab（可能是侧边对话/浏览器）先渲染一帧，
-	// 甚至拉起第二个 pi 进程或 webview。
+	// 先定 tab 再开面板：反过来 setOpen 会按旧 tab（可能是浏览器）先渲染一帧，
+	// 甚至拉起 webview。
 	function showFilesTab() {
 		if (tab === "files") return;
 		if (open) setTab("files");
@@ -2921,7 +2564,7 @@ export function init(ctx) {
 		const cwd = String(paletteCache?.cwd || ctx.state?.cwd || "");
 		closePalette();
 		// 面板关着时直接把 tab 定到 files 再 setOpen：否则 setOpen 会先
-		// 按旧 tab（可能是侧边对话）渲染一帧，甚至拉起侧边 pi 进程。
+		// 按旧 tab（可能是浏览器）渲染一帧。
 		showFilesTab();
 		if (!open) setOpen(true);
 		// 等文件树就绪再开预览：loadFiles 在首次加载时会把 preview 清掉，
