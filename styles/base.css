@@ -43,7 +43,7 @@
 				--thread-inset-x: 24px;
 				--thread-inset-bottom: 32px;
 				--turn-gap: 12px;
-				--user-turn-gap: 34px;
+				--user-turn-gap: 16px;
 				--composer-control: 28px;
 				--composer-bottom-inset: 16px;
 			}
@@ -608,24 +608,30 @@
 				margin-top: var(--user-turn-gap);
 			}
 			.user {
-				max-width: 78%;
-				background: var(--side);
-				border: 1px solid var(--line);
-				border-radius: var(--radius-2xl);
-				padding: 9px 14px;
+				max-width: min(calc(var(--thread-max-width) * 0.702), 82%);
+				background: #edf3fe;
+				border: none;
+				border-radius: var(--radius-3xl);
+				padding: 10px 16px;
 				font-size: var(--text-body);
-				line-height: 1.5;
+				line-height: 22px;
+				color: var(--text);
 				white-space: pre-wrap;
 				word-break: break-word;
 			}
 			.assistant .body {
 				word-break: break-word;
+				font-size: 14px;
+				line-height: 24px;
 			}
 			.body > :first-child {
 				margin-top: 0;
 			}
+			.body > :last-child {
+				margin-bottom: 0;
+			}
 			.body p {
-				margin: 0 0 10px;
+				margin: 16px 0;
 			}
 			.body :is(h1, h2, h3, h4, h5, h6) {
 				font-size: inherit;
@@ -633,15 +639,21 @@
 			}
 			.body :is(p, h1, h2, h3, h4, h5, h6).h {
 				font-weight: 600;
-				margin: 18px 0 8px;
+				margin: 32px 0 16px;
+			}
+			.body :is(h4, h5, h6).h {
+				margin: 16px 0;
 			}
 			.body ul,
 			.body ol {
-				margin: 0 0 10px;
-				padding-left: 21px;
+				margin: 16px 0;
+				padding-left: 18px;
 			}
 			.body li {
-				margin: 2px 0;
+				margin: 0;
+			}
+			.body li + li {
+				margin-top: 6px;
 			}
 			.body code {
 				font-family: var(--mono);
@@ -657,7 +669,7 @@
 				border-radius: 8px;
 				padding: 11px 13px;
 				overflow-x: auto;
-				margin: 11px 0;
+				margin: 16px 0;
 			}
 			.body pre code {
 				background: none;
@@ -668,7 +680,7 @@
 			}
 
 			.body .table-wrap {
-				margin: 11px 0;
+				margin: 16px 0;
 				border: 1px solid var(--line);
 				border-radius: 8px;
 				overflow-x: auto;
@@ -874,6 +886,10 @@
 				justify-content: flex-start;
 				padding-top: 4px;
 				padding-bottom: 2px;
+			}
+			.row.assistant > .run-summary {
+				align-self: flex-start;
+				margin-top: 10px;
 			}
 			.run-summary {
 				display: inline-block;

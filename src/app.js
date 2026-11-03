@@ -1705,8 +1705,16 @@ function showRunSummary() {
 	pill.className = "run-summary";
 	pill.textContent = `完成 · ${seconds.toFixed(1)}s${tools ? ` · ${tools} 工具` : ""}`;
 	pill.title = pill.textContent;
-	row.append(pill);
-	stream.append(row);
+	// 优先挂在最后一条助手消息里，跟正文同属一个 flow item（DSH 的 tail slot 行为）
+	const last = [...stream.querySelectorAll(".row.assistant")].pop();
+	if (last) {
+		const acts = last.querySelector(":scope > .acts");
+		if (acts) last.insertBefore(pill, acts);
+		else last.append(pill);
+	} else {
+		row.append(pill);
+		stream.append(row);
+	}
 	follow();
 	setTimeout(() => {
 		if (!pill.isConnected) return;

@@ -89,7 +89,9 @@ export function init(ctx) {
 	.row:hover > .acts, .row > .acts:focus-within { opacity: 1; pointer-events: auto; }
 	@media (hover: none) { .row > .acts { opacity: 1; pointer-events: auto; } }
 	.row.mine { flex-wrap: wrap; }
-	.row.mine > .acts { width: 100%; justify-content: flex-end; }
+	/* 用户消息的操作条浮在气泡下方，不参与布局（否则每条用户消息后多出 34px 空白） */
+	.row.mine > .acts { position: absolute; top: 100%; right: 0; margin-top: 2px; width: auto; justify-content: flex-end; }
+	.row.assistant > .acts { margin-top: 16px; margin-left: -6px; }
 	.row > .acts button {
 		width: 28px;
 		height: 28px;
