@@ -18,6 +18,8 @@ const state = {
 	collapsed: new Set(),
 	archived: new Set(),
 	archivedOpen: false,
+	names: {},
+	pinned: new Set(),
 	searchResults: [],
 	searchQuery: "",
 	searchBusy: false,
@@ -1246,6 +1248,8 @@ function saveCollapsed() {
 }
 
 const ARCHIVE_KEY = "pi-mini.archived";
+const NAMES_KEY = "pi-mini.names";
+const PIN_KEY = "pi-mini.pinned";
 
 function loadArchived() {
 	try {
@@ -1260,6 +1264,40 @@ function saveArchived() {
 	try {
 		localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...state.archived]));
 	} catch {}
+}
+
+function loadNames() {
+	try {
+		const raw = JSON.parse(localStorage.getItem(NAMES_KEY) || "{}");
+		return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+	} catch {
+		return {};
+	}
+}
+
+function saveNames() {
+	try {
+		localStorage.setItem(NAMES_KEY, JSON.stringify(state.names));
+	} catch {}
+}
+
+function loadPinned() {
+	try {
+		const raw = JSON.parse(localStorage.getItem(PIN_KEY) || "[]");
+		return new Set(Array.isArray(raw) ? raw.filter((x) => typeof x === "string" && x) : []);
+	} catch {
+		return new Set();
+	}
+}
+
+function savePinned() {
+	try {
+		localStorage.setItem(PIN_KEY, JSON.stringify([...state.pinned]));
+	} catch {}
+}
+
+function sessionLabel(s) {
+	return state.names[s.path] || s.name || s.title || "未命名会话";
 }
 
 function toggleArchive(s) {
@@ -1292,7 +1330,7 @@ function sessionRow(s) {
 	if (s.path === state.sessionFile) b.setAttribute("aria-current", "true");
 	const name = document.createElement("span");
 	name.className = "item-title";
-	name.textContent = s.name || s.title || "未命名会话";
+	name.textContent = sessionLabel(s);
 	const time = document.createElement("span");
 	time.className = "item-time";
 	time.textContent = relTime(s.timestamp);
@@ -1309,6 +1347,24 @@ function sessionRow(s) {
 	const pop = document.createElement("div");
 	pop.className = "sess-menu";
 	pop.hidden = true;
+	const pin = document.createElement("button");
+	pin.type = "button";
+	pin.textContent = state.pinned.has(s.path) ? "取消置顶" : "置顶";
+	pin.onclick = (e) => {
+		e.stopPropagation();
+		if (state.pinned.has(s.path)) state.pinned.delete(s.path);
+		else state.pinned.add(s.path);
+		savePinned();
+		renderSessions();
+	};
+	const rename = document.createElement("button");
+	rename.type = "button";
+	rename.textContent = "重命名";
+	rename.onclick = (e) => {
+		e.stopPropagation();
+		pop.hidden = true;
+		startRename(row, s, name);
+	};
 	const arch = document.createElement("button");
 	arch.type = "button";
 	arch.textContent = state.archived.has(s.path) ? "取消归档" : "归档";
@@ -1316,7 +1372,7 @@ function sessionRow(s) {
 		e.stopPropagation();
 		toggleArchive(s);
 	};
-	pop.append(arch);
+	pop.append(pin, rename, arch);
 	actions.onclick = (e) => {
 		e.stopPropagation();
 		const wasHidden = pop.hidden;
@@ -1326,6 +1382,46 @@ function sessionRow(s) {
 	};
 	row.append(b, actions, pop);
 	return row;
+}
+
+// 行内重命名：覆盖在会话行上的小输入框，Enter 保存、Esc 取消
+function startRename(row, s, nameEl) {
+	const box = document.createElement("div");
+	box.className = "sess-rename";
+	const inp = document.createElement("input");
+	inp.type = "text";
+	inp.maxLength = 80;
+	inp.value = state.names[s.path] || s.name || s.title || "";
+	inp.setAttribute("aria-label", "会话名称");
+	box.append(inp);
+	row.append(box);
+	inp.focus();
+	inp.select();
+	let done = false;
+	const finish = (save) => {
+		if (done) return;
+		done = true;
+		if (save) {
+			const v = inp.value.trim();
+			const base = s.name || s.title || "";
+			if (v && v !== base) state.names[s.path] = v;
+			else delete state.names[s.path];
+			saveNames();
+		}
+		renderSessions();
+	};
+	inp.onkeydown = (e) => {
+		e.stopPropagation();
+		if (e.key === "Enter") {
+			e.preventDefault();
+			finish(true);
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			finish(false);
+		}
+	};
+	inp.onblur = () => finish(true);
+	inp.onclick = (e) => e.stopPropagation();
 }
 
 // ---------- 会话内容搜索 ----------
@@ -1423,6 +1519,14 @@ function renderSessions() {
 	if (!state.archivedSeeded) {
 		state.archived = loadArchived();
 		state.archivedSeeded = true;
+	}
+	if (!state.namesSeeded) {
+		state.names = loadNames();
+		state.namesSeeded = true;
+	}
+	if (!state.pinnedSeeded) {
+		state.pinned = loadPinned();
+		state.pinnedSeeded = true;
 	}
 
 	// 工作区标题行：标题 + 搜索 + 绑定新项目（DSH sidebar 结构）
@@ -1525,12 +1629,16 @@ function renderSessions() {
 	for (const s of state.sessions) {
 		const key = s.cwd || "";
 		if (q) {
-			const text = `${s.name || ""} ${s.title || ""}`.toLowerCase();
+			const text = `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase();
 			if (!text.includes(q)) continue;
 		}
 		if (state.archived.has(s.path) && s.path !== state.sessionFile) continue;
 		if (!byCwd.has(key)) byCwd.set(key, []);
 		byCwd.get(key).push(s);
+	}
+	// 置顶会话排在分组最前，其余保持列表原有顺序
+	for (const items of byCwd.values()) {
+		items.sort((a, b) => (state.pinned.has(b.path) ? 1 : 0) - (state.pinned.has(a.path) ? 1 : 0));
 	}
 
 	const ordered = [];
@@ -1694,7 +1802,7 @@ function renderSessions() {
 
 	const archivedItems = state.sessions
 		.filter((s) => state.archived.has(s.path) && s.path !== state.sessionFile)
-		.filter((s) => !q || `${s.name || ""} ${s.title || ""}`.toLowerCase().includes(q))
+		.filter((s) => !q || `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase().includes(q))
 		.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
 	// 无可见会话时的空态（含搜索无匹配）
