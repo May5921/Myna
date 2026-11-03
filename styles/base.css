@@ -868,6 +868,29 @@
 					background-position: -200% 0;
 				}
 			}
+			/* 一轮结束的状态条 */
+			.run-summary-row {
+				display: flex;
+				justify-content: flex-start;
+				padding-top: 4px;
+				padding-bottom: 2px;
+			}
+			.run-summary {
+				display: inline-block;
+				padding: 2px 8px;
+				border-radius: 999px;
+				border: 1px solid var(--line);
+				background: var(--bg);
+				color: var(--dim);
+				font-size: 11.5px;
+				line-height: 18px;
+				cursor: pointer;
+				transition: opacity 160ms ease, padding 160ms ease;
+			}
+			.run-summary.mini {
+				padding: 2px 5px;
+				color: var(--faint);
+			}
 			/* 流式新增行的入场 */
 			.fresh {
 				animation: rowIn 120ms ease-out;

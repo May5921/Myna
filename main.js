@@ -1118,6 +1118,24 @@ function startDevWatch() {
 						log("[dev] search failed", e.message);
 					}
 				}
+				if (want.includes("cmdk")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true, cancelable: true }));
+							await new Promise((r) => setTimeout(r, 500));
+							const panel = document.querySelector(".cmdk-panel");
+							return JSON.stringify({
+								open: !!panel && panel.offsetParent !== null,
+								items: document.querySelectorAll(".cmdk-item").length,
+								title: document.querySelector(".cmdk-title")?.textContent || "",
+							});
+						})()`);
+						log("[dev] cmdk", st);
+						await new Promise((r) => setTimeout(r, 300));
+					} catch (e) {
+						log("[dev] cmdk failed", e.message);
+					}
+				}
 				if (want.includes("term")) {
 					try {
 						const st = await win.webContents.executeJavaScript(`(async () => {

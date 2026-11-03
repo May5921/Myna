@@ -36,6 +36,8 @@ const state = {
 	liveTps: null, // 流式速度指示（tokens / tok/s）
 	liveTokens: 0, // 已接收文本的增量 token 估算
 	tpsTimer: 0,
+	runStart: 0,
+	runTools: 0,
 	tools: new Map(),
 };
 
@@ -1690,6 +1692,33 @@ function setStreaming(on) {
 	updateSend();
 }
 
+// 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后收成小圆点，点击可展开
+function showRunSummary() {
+	if (!state.runStart) return;
+	const seconds = (performance.now() - state.runStart) / 1000;
+	const tools = state.runTools;
+	state.runStart = 0;
+	state.runTools = 0;
+	const row = document.createElement("div");
+	row.className = "row run-summary-row";
+	const pill = document.createElement("span");
+	pill.className = "run-summary";
+	pill.textContent = `完成 · ${seconds.toFixed(1)}s${tools ? ` · ${tools} 工具` : ""}`;
+	pill.title = pill.textContent;
+	row.append(pill);
+	stream.append(row);
+	follow();
+	setTimeout(() => {
+		if (!pill.isConnected) return;
+		pill.classList.add("mini");
+		pill.textContent = "✓";
+	}, 3000);
+	pill.onclick = () => {
+		pill.classList.remove("mini");
+		pill.textContent = pill.title;
+	};
+}
+
 function autosize() {
 	input.style.height = "auto";
 	input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
@@ -1738,6 +1767,7 @@ window.pi.onEvent((ev) => {
 			break;
 		}
 		case "tool_execution_start": {
+			state.runTools += 1;
 			const el = buildToolRow({ name: ev.toolName, args: ev.args });
 			el.classList.add("running", "fresh");
 			// 纯工具消息不会有文本：别让「等待首个 token」一直挂着
@@ -1775,9 +1805,13 @@ window.pi.onEvent((ev) => {
 		}
 		case "agent_start":
 			setStreaming(true);
+			state.runStart = performance.now();
+			state.runTools = 0;
+			stream.querySelector(".run-summary-row")?.remove();
 			break;
 		case "agent_settled":
 			setStreaming(false);
+			showRunSummary();
 			// 新会话的第一轮结束后 sessionFile 才有值，刷新一次便于下次启动恢复
 			refreshState().catch(() => {});
 			break;
