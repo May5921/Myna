@@ -25,7 +25,7 @@ rmSync(join(outApp, "resources", "default_app.asar"), { force: true });
 console.log("复制应用文件 …");
 const appDir = join(outApp, "resources", "app");
 mkdirSync(appDir, { recursive: true });
-for (const name of ["main.js", "preload.cjs", "index.html", "src", "styles"]) {
+for (const name of ["main.js", "preload.cjs", "index.html", "src", "styles", "assets"]) {
 	cpSync(join(root, name), join(appDir, name), { recursive: true });
 }
 

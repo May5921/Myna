@@ -1567,6 +1567,7 @@ function createWindow() {
 		minHeight: 480,
 		backgroundColor: "#FFFFFF",
 		title: "pi",
+		icon: join(import.meta.dirname, "assets", "icon.ico"),
 		show: false,
 		autoHideMenuBar: true,
 		webPreferences: {
@@ -1628,6 +1629,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+	// 任务栏归组与图标（Windows）：与 packaged exe 的 AppUserModelID 无关，仅影响进程分组/通知
+	if (process.platform === "win32") app.setAppUserModelId("com.may5921.pi-mini");
 	log("[perf] app ready", Date.now() - T0, "ms");
 	const ROOT = import.meta.dirname;
 	protocol.handle("app", async (request) => {

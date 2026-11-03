@@ -51,6 +51,7 @@ index.html       单页骨架（CSP script-src 'self'）
 styles/base.css  Codex 风格 token 与全局样式
 src/app.js       状态、渲染、事件、启动；导出 ctx 给功能模块
 src/features/     每个文件 export function init(ctx)，自带 CSS
+assets/          应用图标（icon.ico / icon.png）
 docs/            STYLE.md / ARCHITECTURE.md / RPC-MATRIX.md / PERF.md
 ```
 
