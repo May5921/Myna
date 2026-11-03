@@ -96,7 +96,8 @@ DSH：视口内才高亮、虚拟行。pi-mini：`IntersectionObserver` + shiki 
 | React + slots + Cordis | 零构建约束 |
 | session 引用 | pi RPC 无协议 |
 | popupSelect 命令 | RPC 无命令 UI 描述 |
-| 右栏 Browser/Terminal | 与 Codex 极简冲突；只保留文件/变更/会话三个按需抽屉（`features/right-panel.js`） |
+| 右栏 Browser 选项卡 | 与 Codex 极简冲突；右栏只保留文件/变更/会话三个抽屉（`features/right-panel.js`） |
+| 右侧 Terminal 选项卡 | 改为底部抽屉（`features/terminal.js`），非 PTY，一次一条命令 |
 | 深色模式 | 用户明确不做 |
 
 附件/图片与设置页已实现：`features/attachments.js`、`features/settings.js`。
@@ -113,3 +114,8 @@ DSH：视口内才高亮、虚拟行。pi-mini：`IntersectionObserver` + shiki 
 | `ui-primitives/DisclosureRow` | `buildToolRow` + `toggleDisclosure` |
 | `ui-primitives/highlight` | 主进程 shiki + `applyHighlight` |
 | `ui-sidebar` | `app.js` `renderSessions` + `features/right-panel.js` |
+| `ui-settings` 分栏外壳 | `features/settings.js`（左导航 + pane，188px 网格） |
+| `ui-settings-models` | `features/settings.js` 提供商分区（write-only key、最小字段保存、写前备份） |
+| 终端 | `features/terminal.js` + main.js `pi:term-run`（`powershell -Command`，非 PTY） |
+| 命令面板 | `features/shortcuts.js`（`Ctrl+K`，命令列举 + 可用性） |
+| 会话搜索 | main.js `pi:search-sessions` + `app.js` 侧栏检索 |
