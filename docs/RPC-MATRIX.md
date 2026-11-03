@@ -17,7 +17,7 @@
 | `get_messages` | 读历史 | ✅ | `main.js` `pi:switch-session` | 切会话后重放 |
 | `get_state` | 会话状态 | ✅ | `app.js` `refreshState()` | 启动、切会话、档位同步 |
 | `set_session_name` | 重命名会话 | ✅ | `features/settings.js` | 设置弹窗「会话名」，Enter 提交 |
-| `get_entries` | 会话条目 | ❌ | — | 需要时间线 UI |
+| `get_entries` | 会话条目 | ✅ | `features/message-fork.js` / `features/right-panel.js` | 扁平条目；大会话 `get_tree` 爆栈时用来自己建树 |
 | `get_tree` | 会话树 | ✅ | `features/right-panel.js` | 右栏「会话」tab，显示角色/摘要/leaf |
 | `get_last_assistant_text` | 最后回复 | ✅ | `features/settings.js` | 快捷操作「复制上一条回复」 |
 | `fork` | 在某条消息分支 | ✅ | `features/message-fork.js` | 用户消息 hover 分支按钮 |
@@ -30,9 +30,9 @@
 |---|---|---|---|---|
 | `prompt` | 发送消息 | ✅ | `app.js` `submit()` | 纯文本 + `images`（features/attachments.js） |
 | `steer` | 流式中插话 | ✅ | `features/queue.js` | 「插话」模式 |
-| `follow_up` | 流式中排队 | ✅ | `features/queue.js` | 「排队」模式（默认） |
+| `follow_up` | 流式中排队 | 🟡 | `features/queue.js` | 队列在本地排队，空闲后自动 `prompt`；没有发这条 RPC |
 | `abort` | 中止 | ✅ | `app.js` `setStreaming` + Esc | 流式中发送键变停止 |
-| `clear_queue` | 清空队列 | ✅ | `features/queue.js` | 计数菜单内确认 |
+| `clear_queue` | 清空队列 | 🟡 | `features/queue.js` | 本地队列逐条删除，没有发这条 RPC |
 | `bash` | 直接跑命令 | ⛔ | — | 不做终端面板，交给 pi 的工具调用 |
 | `abort_bash` | 中止命令 | ⛔ | — | 同上 |
 
@@ -94,13 +94,13 @@
 ## 3. 汇总
 
 - 命令总数 **33**（`rpc-types.d.ts` 的 36 个 type 去掉 `response` 与两个 `extension_ui_*`）
-- ✅ 完整支持 **29**：new_session / switch_session / get_messages / get_state / set_session_name / abort / get_available_models / set_model / get_available_thinking_levels / set_thinking_level / compact / set_auto_compaction / set_steering_mode / set_follow_up_mode / get_session_stats / get_commands / steer / follow_up / clear_queue / export_html / fork / get_fork_messages / prompt（含 images）/ get_tree / get_last_assistant_text / clone / cycle_model / cycle_thinking_level / abort_retry
-- 🟡 部分 **1**：set_auto_retry（pi 无读回字段，仅本地记录）
+- ✅ 完整支持 **28**：new_session / switch_session / get_messages / get_state / set_session_name / get_entries / abort / get_available_models / set_model / get_available_thinking_levels / set_thinking_level / compact / set_auto_compaction / set_steering_mode / set_follow_up_mode / get_session_stats / get_commands / steer / export_html / fork / get_fork_messages / prompt（含 images）/ get_tree / get_last_assistant_text / clone / cycle_model / cycle_thinking_level / abort_retry
+- 🟡 部分 **3**：set_auto_retry（pi 无读回字段，仅本地记录）；follow_up / clear_queue（队列完全本地，只用到 steer）
 - 🚧 开发中 **0**
-- ❌ 未支持 **1**：get_entries（需要时间线 UI，暂不做）
+- ❌ 未支持 **0**
 - ⛔ 明确不做 **2**：bash / abort_bash
 
-覆盖率（完整 + 部分）：**30 / 33 ≈ 91%**。
+覆盖率（完整 + 部分）：**31 / 33 ≈ 94%**。
 扩展 UI 的 `extension_ui_request/response` 不在这 34 条命令内，已单独实现（见第 1 节「扩展 UI」）。
 
 ## 4. 补全优先级
@@ -111,7 +111,7 @@
 | P1 | ~~`steer` / `follow_up` / `clear_queue`~~ 已完成 | — |
 | P1 | ~~`export_html`~~ / ~~`fork`~~ / ~~`get_fork_messages`~~ 已完成 | — |
 | P2 | ~~`compact`~~ / ~~`set_auto_compaction`~~ / `set_auto_retry`（部分） | 设置入口已完成 |
-| P3 | ~~`get_tree`~~ / ~~`get_last_assistant_text`~~ / ~~`clone`~~ / ~~`cycle_*`~~ / ~~`abort_retry`~~ 已完成；`get_entries` 暂不做 | 时间线视图 |
+| P3 | ~~`get_tree`~~ / ~~`get_last_assistant_text`~~ / ~~`clone`~~ / ~~`cycle_*`~~ / ~~`abort_retry`~~ / ~~`get_entries`~~ 已完成 | — |
 | ⛔ | `bash` / `abort_bash` | 不打算做终端 |
 
 ## 5. 如何复核

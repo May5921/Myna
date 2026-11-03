@@ -1,6 +1,11 @@
-# pi-mini 交接文档
+# myna（原 pi-mini）交接文档
 
 给接手这个项目的 agent 看。读完这份不用再问任何问题就能开工。
+
+> 2026-11-04 改名 myna：显示名、窗口标题、图标（`assets/icon.ico` / `icon.png`，由
+> `scripts/make-icon.py` 生成）都已换。仓库目录、环境变量 `PI_MINI_*`、localStorage
+> 键名保持不变；`userData` 继续指向旧的 `%APPDATA%/pi-mini`，状态文件首次启动从
+> `~/.pi-mini.json` 复制到 `~/.myna.json`（旧文件保留作备份）。
 
 ---
 
@@ -186,7 +191,102 @@ cd C:/Users/Luke/projects/pi-mini && printf 'diff' > shot.request
 5. 不新增运行时依赖（shiki 之外）
 6. 不改 `styles/base.css` 以外的方式污染全局样式（功能模块自带 CSS）
 
-## 11. 统计
+## 11. 2026-11-04 当前范围与稳定性
+
+当前产品只做 pi GUI。OpenCode 后端、后端切换、OMP 专属面板不属于运行范围；下面只保留 pi 相关说明。
+
+### pi 运行路径
+
+- pi 继续走 `main.js` 的直连 JSONL 桥，不能同一会话起第二个 pi 进程。
+
+### 稳定性硬约束
+
+- **单实例锁**：第二个进程直接退出，避免两个 pi 写同一个 session 文件。
+- 渲染进程崩溃：自动 reload，60s 内最多 3 次；主进程未捕获异常/未处理 rejection 写日志。
+- dev 改 `main.js`：等 300ms 文件稳定再 relaunch，并先 `stopPi/stopSide`。
+- pi 子进程：有 `error` 监听；旧进程 exit 不再清空新进程的 JSONL buffer；side 进程按代际隔离。
+- 切会话/工作区期间 `state.switching = true`，发送键禁用，避免消息落到错误会话。
+- 历史「加载更早」会用 `get_messages` 重拉，避免旧快照把刚结束的一轮抹掉。
+
+### 吐字仪表（口径对齐 DSH）
+
+- 速度 = 输出 token ÷ 纯解码时间（首 token → `message_end`）；TTFT = `message_start` → 首 token。
+- 流式期用字符估算；`message_end` 后优先用 pi 的 `usage.output` 校正。
+- 卡片：本轮（当前/平均/峰值/首字/输出/解码/用时）+ 本会话（本地均速/首字/步数 + pi 输出/缓存/费用）。
+- 会话级统计按 `sessionFile` 存 `localStorage`：`pi-mini.metrics.<file>`；新会话的 `_new` 在拿到文件路径后合并迁移。
+- 合成验收钩子：`window.__piTpsDemo(ms)` / `__piTpsDemoClear()`（不调用模型）；截图探针 `meterdemo [metercard]`。
+
+### 排队 / 插话
+
+- 队列完全在本地（`pi-mini.queue.<sessionFile>`），不塞进 pi 的 `follow_up` 队列。
+- 流式中 Enter 入队；`Ctrl/Cmd+Enter` 插话；设置 → 行为可互换（与 DSH 的
+  `resolveSubmitMode` 一致：不在运行/不支持 steer 时一律排队）。
+- Dock 结构照 DSH `QueueDock`：空队列不渲染；1 条直接显示一行；多条折叠成
+  「N 条排队」（默认收起）；行内编辑（勾/叉确认）、删除、插话（仅运行中可用）；
+  发送中条目保留并禁用操作，失败恢复可操作。
+- 空闲且队列非空会自动投递下一条（等价 DSH host 队列自动投递）；投递失败按
+  5s → 10s → 20s → 40s 退避，避免看门狗重试风暴。
+- 图片随条目入队（内存），发送时走同一条 `prompt.images`；图片不落 localStorage。
+- 限制：localStorage 只存文本，重启后带图条目丢图；pending 期间崩溃可能重复投递
+  一次（at-least-once，不是 exactly-once）。
+
+### 其他
+
+- 会话树点击按活动分支定位主对话并闪烁；跨分支/生成中明确提示。
+- 界面缩放：`Ctrl/Cmd + =/-/0`，设置 → 通用；持久化到 `~/.pi-mini.json` 的 `zoom`。
+- 一轮结束自动折叠工具卡、命令输出、思考块。
+- 用户消息的操作条（复制/回填/重试/分支）浮在气泡下方，行尾留出 28px，
+  不再压住下一行的思考块或正文（2026-11-04 修）。
+- 设置 → 扩展只列扩展/提示命令；技能只在「技能与 MCP」出现，避免同一批技能看两遍。
+- 设置 → 提供商：常用供应商预填（DeepSeek / OpenAI / Anthropic / Gemini / OpenRouter /
+  Groq / xAI / Moonshot / Z.ai / Mistral / Together / Qwen），字段取自 DSH 的 provider 目录；
+  默认折叠，点「展开」才显示。「从 API 获取」走主进程请求（避开 CORS），按 api 类型带
+  Bearer / x-api-key / key 参数，自动把返回的模型合并进表单（只新增不覆盖）。
+- 模型上限：API 元数据里的 context_length / inputTokenLimit / max_completion_tokens 优先；
+  缺失时按模型家族补保守默认值（claude/gpt/gemini/deepseek/glm/kimi/grok/qwen…，
+  兜底 128000 / 8192）。打开旧配置时空值也会补上，保存即落盘。
+- 模型列表用 `<details>` 折叠，summary 显示「模型 · N 个」；几十条时不再铺满整页。
+- 侧栏工作区不再用常驻灰框标记：会话列表用 grid `0fr↔1fr` 展开/收起，切工作区时新分组
+  再放一次展开动画；当前工作区靠加粗标签和更深的文件夹图标表达。
+
+### 已知限制
+
+- pi RPC 没有切换 leaf/分支的命令，会话树只能定位活动分支。
+- pi 不持久化每步 TTFT/解码时间；会话均速只统计本工具记录的步骤。
+- fork 已改为「活动分支 + 从末尾数第几条」对齐，重复文本不再命中较早的一条；
+  纯图片消息也能按位置 fork。**不用 `get_tree`**：实测 6.7MB / 3767 条条目的会话上
+  pi 的 `get_tree` 直接 `Maximum call stack size exceeded`（72ms 失败），
+  改用扁平 `get_entries`（394ms，162/162 活动链 id 与 fork 列表一致）自建树；
+  右栏会话树也做了同样的降级。
+
+### 真实验证记录（2026-11-03）
+
+- 小会话（57KB / 12 条用户消息）：`get_tree` 与 `get_fork_messages` 的 12 个 id 全部一致；
+  同一句「只回复 OK，不要调用工具。」重复 6 次，旧逻辑命中第一条 `16aaca93`，
+  新逻辑对第 2 次出现返回 `4ec182c2`。
+- 大会话（6.7MB / 3767 条条目 / 162 条用户消息）：`get_tree` 爆栈；`get_entries` 正常，
+  活动链 162 条用户消息的 id 全部能在 fork 列表中命中。
+- 验证方式：复制会话到临时目录，用 `pi --mode rpc` 只读查询，不调用模型、不改原文件。
+
+### 2026-11-03 复审修复（两轮只读审计后）
+
+- 队列：`_new` 草稿搬到正式会话后删除源 key（否则下次新会话会幽灵重发）；
+  补全打开时按 Enter 不再同时入队（检查 `defaultPrevented`）；排队期间挂着的图片
+  不自动附着（`attachments` 非空就不自动接力）；`submit()` 返回布尔，切会话早退时
+  把队首放回而不是静默丢弃；dock「发送」可越过中断闩锁。
+- 指标：`_new` 桶带 epoch，只并入所属会话，切走/崩溃后残留直接丢弃；
+  localStorage 配额失败不删源桶；会话均速与本轮结算阈值统一为 `decodeMs > 0`。
+- 状态机：`refreshState` 的 `get_state` 回包带 `streamSeq` 校验，过期的
+  `isStreaming:false` 不再覆盖队列刚点亮的流式态；晚到的 `agent_settled` 不会清掉
+  中断闩锁；IR 路径没有 `message_start` 时 TTFT 退化为「行创建→首 token」。
+- `usage` 归属：pi 适配器在 `text.done` 前发 `usage`，不把上一轮数据贴给下一条消息。
+- 仪表：峰值改用瞬时值；纯工具消息不再亮 0 tok/s；最后一轮结束后保留仪表最终读数，
+  点击仍可看本轮/会话统计（更早回合的仪表在下一轮结算时清掉）。
+- 主进程：`pick-folder` 失败同时回滚 cwd 并重启旧 pi；`taskkill` 失败回退 `proc.kill()`。
+- 仍已知：渲染层中途 reload 接上流式回合时，provider 的 output token 与
+  「接上之后」的解码时间不匹配，这一轮可能偏乐观（未做跳过，低频且难以区分 IR 路径）。
+
+## 12. 统计
 
 - 代码 2396 行（重构前），现拆分为 `src/app.js` + `src/features/*`
 - 运行时依赖：electron 45.2.1、shiki 4.x

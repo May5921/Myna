@@ -1,9 +1,9 @@
-// pi-mini —— pi 的极简 Electron 前端
+// myna —— pi 的极简 Electron 前端
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen, Tray, Menu, Notification, nativeImage } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, mkdirSync, copyFileSync } from "node:fs";
 import { join, sep, resolve, extname, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -19,6 +19,11 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
+// 改名 myna 后继续用旧的 userData：localStorage 里的草稿、队列、统计、偏好都在里面
+try {
+	const legacyData = join(app.getPath("appData"), "pi-mini");
+	app.setPath("userData", existsSync(legacyData) ? legacyData : join(app.getPath("appData"), "myna"));
+} catch {}
 const LOG_FILE = join(homedir(), "AppData", "Local", "Temp", "pi-mini.log");
 // 右栏文件预览的限制：文本只读前 512KB，图片上限 12MB
 const PREVIEW_TEXT_MAX = 512 * 1024;
@@ -34,7 +39,15 @@ const PREVIEW_IMAGE_MIME = {
 	".ico": "image/x-icon",
 	".avif": "image/avif",
 };
-const STATE_FILE = join(homedir(), ".pi-mini.json");
+// 应用状态改名 myna；首次启动从旧文件复制（旧文件保留作备份）
+let STATE_FILE = join(homedir(), ".myna.json");
+const STATE_LEGACY = join(homedir(), ".pi-mini.json");
+if (!existsSync(STATE_FILE) && existsSync(STATE_LEGACY)) {
+	try {
+		copyFileSync(STATE_LEGACY, STATE_FILE);
+	} catch {}
+}
+if (!existsSync(STATE_FILE) && existsSync(STATE_LEGACY)) STATE_FILE = STATE_LEGACY;
 
 function log(...args) {
 	const line = args
@@ -47,6 +60,21 @@ function log(...args) {
 }
 
 let win = null;
+let tray = null;
+// 真正退出中：窗口 close 放行、window-all-closed 不再兜底
+let quitting = false;
+// 流式回合已确认「仍然退出」：避免 before-quit 反复弹窗
+let quitConfirmed = false;
+// 正在确认退出：挡住并发的 app.quit() 重入
+let quitPending = false;
+
+// 单实例：两个实例同时跑 pi 会写同一个 session 文件，直接拒绝第二个进程
+if (!app.requestSingleInstanceLock()) {
+	app.exit(0);
+} else {
+	// 第二个实例直接把隐藏到托盘的窗口拉回来
+	app.on("second-instance", () => showMainWindow());
+}
 let child = null;
 let piReady = false;
 let buffer = "";
@@ -70,6 +98,11 @@ function saveState(patch) {
 let currentCwd = (() => {
 	const saved = loadState().cwd;
 	return typeof saved === "string" && saved && existsSync(saved) ? saved : homedir();
+})();
+// 界面缩放：0.7–1.6，持久化到 ~/.pi-mini.json
+let zoomFactor = (() => {
+	const saved = Number(loadState().zoom);
+	return Number.isFinite(saved) && saved >= 0.7 && saved <= 1.6 ? saved : 1;
 })();
 // 渲染层当前打开的会话文件：持久化到 ~/.pi-mini.json，主进程重启也能续上
 // （否则 relaunch 后 startPi 会开新会话，renderer 又把 lastSession 覆盖成空会话）
@@ -173,6 +206,16 @@ function startPi(cwd, sessionFile = null) {
 	proc.stderr.on("data", (d) => send("pi:stderr", String(d)));
 	// 没有 'error' 监听时，写已关闭的 stdin 会抛 EPIPE 直接崩主进程
 	proc.stdin.on("error", () => {});
+	proc.on("error", (error) => {
+		// 没有 error 监听时，spawn 失败会直接掀掉主进程（Electron 里就是整个窗口消失）。
+		const wasCurrent = child === proc;
+		if (wasCurrent) {
+			child = null;
+			piReady = false;
+		}
+		log("[pi] spawn error", error.message);
+		if (wasCurrent) send("pi:event", { type: "error", message: `pi 启动失败：${error.message}` });
+	});
 	proc.on("exit", (code) => {
 		// 死进程必须及时让位：否则后续命令会写进已关闭的 stdin（EPIPE/「pi 进程已停止」）
 		const wasCurrent = child === proc;
@@ -186,7 +229,8 @@ function startPi(cwd, sessionFile = null) {
 			w.reject(new Error("pi 进程已停止"));
 			waiting.delete(id);
 		}
-		buffer = "";
+		// 旧进程的 exit 可能晚于新进程的 spawn；无条件清 buffer 会吃掉新进程的首包。
+		if (wasCurrent) buffer = "";
 		// 让渲染层能收掉流式光标并提示（下一条命令会经 ensureReady 自动重启）
 		if (wasCurrent) send("pi:event", { type: "process_exit", code: Number.isFinite(code) ? code : null });
 	});
@@ -213,7 +257,15 @@ function command(cmd, timeoutMs = 60000) {
 			},
 		});
 		try {
-			proc.stdin.write(`${JSON.stringify({ id, ...cmd })}\n`);
+			// write 回调能快速暴露 EPIPE，不要只等 60s 超时
+			proc.stdin.write(`${JSON.stringify({ id, ...cmd })}\n`, (err) => {
+				if (!err) return;
+				const w = waiting.get(id);
+				if (!w) return;
+				waiting.delete(id);
+				clearTimeout(timer);
+				w.reject(new Error("pi 进程已停止"));
+			});
 		} catch {
 			waiting.delete(id);
 			clearTimeout(timer);
@@ -237,6 +289,8 @@ function ensureReady() {
 				piReady = true;
 				return;
 			} catch {}
+			// 进程活着但一直不响应：中途重启一次，别把全部 24 次都耗在死进程上
+			if (i === 12 && child) stopPi();
 			await new Promise((r) => setTimeout(r, 100));
 		}
 		throw new Error("pi 未就绪");
@@ -447,6 +501,22 @@ ipcMain.handle("pi:perf", async () => {
 	return { uptime: Date.now() - T0, rss: m.rss, heapUsed: m.heapUsed, external: m.external, pid: process.pid };
 });
 
+// 界面缩放：Ctrl+= / Ctrl+- / Ctrl+0 和设置里共用
+ipcMain.handle("pi:get-zoom", () => ({ factor: zoomFactor }));
+ipcMain.handle("pi:set-zoom", (_e, raw) => {
+	const wanted = Number(raw);
+	if (Number.isFinite(wanted)) {
+		zoomFactor = Math.round(Math.min(1.6, Math.max(0.7, wanted)) * 100) / 100;
+		saveState({ zoom: zoomFactor });
+		if (win && !win.isDestroyed()) {
+			try {
+				win.webContents.setZoomFactor(zoomFactor);
+			} catch {}
+		}
+	}
+	return { factor: zoomFactor };
+});
+
 // 设置「关于/扩展」用的只读信息：版本、路径、pi 全局包与本地扩展
 ipcMain.handle("pi:app-info", async () => {
 	const pi = resolvePiCli();
@@ -558,6 +628,77 @@ function cleanProviderModels(list, previous, allowEmpty = false) {
 	return out;
 }
 
+// 从服务商 API 拉模型列表（主进程请求，避开渲染层 CORS；密钥不落日志）
+function resolveProviderKey(opts) {
+	let key = String(opts?.apiKey || "").trim();
+	if (!key && opts?.providerKey) {
+		const { raw } = readModelsFile();
+		key = String(raw.providers?.[opts.providerKey]?.apiKey || "").trim();
+	}
+	if (key.startsWith("$")) return process.env[key.slice(1)] || "";
+	if (key.startsWith("!")) throw new Error("不支持 !command 形式的密钥，请直接填入或改用 $ENV");
+	return key;
+}
+
+ipcMain.handle("pi:fetch-models", async (_e, opts = {}) => {
+	const base = String(opts.baseUrl || "").trim().replace(/\/+$/, "");
+	if (!/^https?:\/\//i.test(base)) throw new Error("先在 Base URL 里填入服务地址（https://…）");
+	const api = String(opts.api || "");
+	const key = resolveProviderKey(opts);
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 12000);
+	try {
+		let url = `${base}/models`;
+		const headers = {};
+		if (api === "anthropic-messages") {
+			if (key) headers["x-api-key"] = key;
+			headers["anthropic-version"] = "2023-06-01";
+		} else if (api === "google-generative-ai") {
+			if (key) url += `?key=${encodeURIComponent(key)}`;
+		} else if (key) {
+			headers.authorization = `Bearer ${key}`;
+		}
+		const res = await fetch(url, { headers, signal: controller.signal });
+		const text = await res.text();
+		if (!res.ok) throw new Error(`HTTP ${res.status}：${text.slice(0, 160)}`);
+		let data = null;
+		try {
+			data = JSON.parse(text);
+		} catch {
+			throw new Error("返回内容不是 JSON");
+		}
+		const list = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+		const seen = new Set();
+		const models = [];
+		const num = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : 0);
+		for (const item of list) {
+			let id = String(item?.id || item?.name || "").trim();
+			if (id.startsWith("models/")) id = id.slice(7);
+			if (!id || seen.has(id)) continue;
+			seen.add(id);
+			const name = String(item?.display_name || item?.displayName || item?.name || "").trim();
+			// OpenRouter / Google / Anthropic 等会在列表里带上下文与输出上限
+			const top = item?.top_provider || item?.topProvider || {};
+			const contextWindow = num(
+				item?.context_length ?? item?.context_window ?? item?.contextWindow ?? item?.inputTokenLimit ??
+					item?.max_input_tokens ?? item?.maxContextLength ?? top?.context_length,
+			);
+			const maxTokens = num(
+				item?.max_completion_tokens ?? top?.max_completion_tokens ?? item?.max_output_tokens ??
+					item?.outputTokenLimit ?? item?.max_tokens ?? item?.maxTokens,
+			);
+			models.push({ id, name: name && name !== id ? name : "", contextWindow, maxTokens });
+			if (models.length >= 300) break;
+		}
+		return { models, count: models.length, path: `${url.split("?")[0]}` };
+	} catch (e) {
+		if (e?.name === "AbortError") throw new Error("请求超时（12s）");
+		throw e;
+	} finally {
+		clearTimeout(timer);
+	}
+});
+
 ipcMain.handle("pi:providers", async () => {
 	const { raw } = readModelsFile();
 	return {
@@ -598,7 +739,7 @@ ipcMain.handle("pi:save-provider", async (_e, input) => {
 		if (!/^https?:\/\//i.test(baseUrl)) throw new Error("Base URL 必须以 http:// 或 https:// 开头");
 		if (!API_TYPES.has(api)) throw new Error("不支持的 API 类型");
 	} else {
-		// 内置路由（如 opencode-go）可能没有 baseUrl/api，更新时只校验填了的字段
+		// 内置路由可能没有 baseUrl/api，更新时只校验填了的字段
 		if (baseUrl && !/^https?:\/\//i.test(baseUrl)) throw new Error("Base URL 必须以 http:// 或 https:// 开头");
 		if (api && !API_TYPES.has(api)) throw new Error("不支持的 API 类型");
 	}
@@ -901,9 +1042,15 @@ function ensureSide() {
 	});
 	proc.stderr.setEncoding("utf8");
 	proc.stderr.on("data", (d) => log("[side stderr]", String(d).trim()));
-	proc.on("error", (err) => log("[side error]", err.message));
-	proc.on("exit", (code) => {
+	proc.on("error", (err) => {
+		log("[side error]", err.message);
+		// 不清指针的话，后续命令会一直写进这个已经死掉的进程
 		if (sideChild === proc) sideChild = null;
+	});
+	proc.on("exit", (code) => {
+		// 旧进程的 exit 可能晚于 side-reset 后的新进程：只处理自己的退出
+		if (sideChild !== proc) return;
+		sideChild = null;
 		for (const w of sideWaiting.values()) {
 			try {
 				w.reject(new Error("侧边对话已退出"));
@@ -919,17 +1066,20 @@ function sideCommand(cmd, timeoutMs = 120000) {
 	const id = `s${++sideSeq}`;
 	const proc = sideChild;
 	return new Promise((resolveCmd, reject) => {
-		const timer = setTimeout(() => {
-			sideWaiting.delete(id);
-			reject(new Error("侧边对话超时"));
-		}, timeoutMs);
+		// timeoutMs <= 0：不设超时（prompt 的 response 要等整轮结束，长回合不能判死）
+		const timer = timeoutMs > 0
+			? setTimeout(() => {
+				sideWaiting.delete(id);
+				reject(new Error("侧边对话超时"));
+			}, timeoutMs)
+			: null;
 		sideWaiting.set(id, {
 			resolve: (v) => {
-				clearTimeout(timer);
+				if (timer) clearTimeout(timer);
 				resolveCmd(v);
 			},
 			reject: (e) => {
-				clearTimeout(timer);
+				if (timer) clearTimeout(timer);
 				reject(e);
 			},
 		});
@@ -937,7 +1087,7 @@ function sideCommand(cmd, timeoutMs = 120000) {
 			proc.stdin.write(JSON.stringify({ id, ...cmd }) + "\n");
 		} catch {
 			sideWaiting.delete(id);
-			clearTimeout(timer);
+			if (timer) clearTimeout(timer);
 			reject(new Error("侧边对话未就绪"));
 		}
 	});
@@ -946,7 +1096,7 @@ function sideCommand(cmd, timeoutMs = 120000) {
 ipcMain.handle("pi:side-command", async (_e, cmd) => {
 	if (!cmd || typeof cmd !== "object") return false;
 	// prompt 的 response 要等整轮结束才回，先 ack，正文走 pi:side-event
-	sideCommand(cmd).catch((e) => send("pi:side-event", { type: "side_error", message: e.message }));
+	sideCommand(cmd, cmd.type === "prompt" ? 0 : 120000).catch((e) => send("pi:side-event", { type: "side_error", message: e.message }));
 	return true;
 });
 
@@ -964,7 +1114,13 @@ let relaunching = false;
 
 ipcMain.handle("pi:boot", async () => {
 	if (!child) startPi(currentCwd, resumeSessionFile());
-	await ensureReady().catch((e) => log("[boot] pi not ready", e.message));
+	try {
+		await ensureReady();
+	} catch (e) {
+		log("[boot] pi not ready", e.message);
+		// 让渲染层看到真实失败（showBootError 有重试按钮），而不是空白可用态
+		throw e;
+	}
 	// 只在本进程第一次 boot 时恢复指定会话；renderer 热重载后直接用当前会话
 	const restore = restorePending;
 	restorePending = null;
@@ -993,21 +1149,51 @@ ipcMain.handle("pi:pick-folder", async () => {
 		defaultPath: currentCwd,
 	});
 	if (res.canceled || !res.filePaths.length) return null;
+	const previousCwd = currentCwd;
+	const previous = activeSessionFile;
 	activeSessionFile = null;
 	saveState({ sessionFile: null });
-	startPi(res.filePaths[0]);
+	try {
+		startPi(res.filePaths[0]);
+		await ensureReady();
+	} catch (error) {
+		// 新目录没起来：cwd 和会话指针都要回滚，并重启旧目录的 pi，
+		// 否则界面还显示旧工作区、git/文件/终端却按坏目录跑
+		currentCwd = previousCwd;
+		activeSessionFile = previous;
+		saveState({ cwd: previousCwd, sessionFile: previous });
+		try {
+			startPi(previousCwd, previous);
+		} catch (e) {
+			log("[cwd] rollback failed", e.message);
+		}
+		throw error;
+	}
 	return { cwd: currentCwd, sessions: listSessions() };
 });
 
 // 侧栏点其他工作区：重启 pi 子进程切换 cwd（pi 单进程模型）
 ipcMain.handle("pi:set-cwd", async (_e, cwd) => {
 	if (typeof cwd !== "string" || !cwd || !existsSync(cwd)) throw new Error("目录不存在");
+	const previousCwd = currentCwd;
+	const previousSession = activeSessionFile;
 	if (cwd !== currentCwd) {
 		activeSessionFile = null;
 		saveState({ sessionFile: null });
 		startPi(cwd);
 	}
-	await ensureReady();
+	try {
+		await ensureReady();
+	} catch (error) {
+		// 新目录没起来：把 cwd/会话指针恢复到切换前
+		if (cwd !== previousCwd) {
+			currentCwd = previousCwd;
+			activeSessionFile = previousSession;
+			saveState({ cwd: previousCwd, sessionFile: previousSession });
+			startPi(previousCwd, previousSession);
+		}
+		throw error;
+	}
 	return { cwd: currentCwd, sessions: listSessions() };
 });
 
@@ -1153,15 +1339,16 @@ async function getShiki() {
 	if (shikiInstance) return shikiInstance;
 	if (!shikiLoading) {
 		shikiLoading = import("shiki").then(async ({ createHighlighter }) => {
-			shikiInstance = await createHighlighter({ themes: ["github-light"], langs: [] });
+			shikiInstance = await createHighlighter({ themes: ["github-light", "github-dark"], langs: [] });
 			return shikiInstance;
 		});
 	}
 	return shikiLoading;
 }
 
-ipcMain.handle("pi:highlight", async (_e, items) => {
+ipcMain.handle("pi:highlight", async (_e, items, opts) => {
 	if (!Array.isArray(items) || !items.length) return [];
+	const theme = opts?.dark ? "github-dark" : "github-light";
 	const out = new Array(items.length).fill(null);
 	let hl;
 	try {
@@ -1176,7 +1363,7 @@ ipcMain.handle("pi:highlight", async (_e, items) => {
 		if (!lang || lang === "text" || lang === "txt" || lang === "plaintext") continue;
 		try {
 			if (!hl.getLoadedLanguages().includes(lang)) await hl.loadLanguage(lang);
-			out[i] = hl.codeToHtml(String(items[i].code || ""), { lang, theme: "github-light" });
+			out[i] = hl.codeToHtml(String(items[i].code || ""), { lang, theme });
 		} catch {}
 	}
 	return out;
@@ -1217,19 +1404,29 @@ ipcMain.handle("pi:read-file", async (_e, filePath) => {
 ipcMain.handle("pi:switch-session", async (_e, path) => {
 	const res = await sessionCall({ type: "switch_session", sessionPath: path });
 	if (res?.cancelled) return { cancelled: true };
-	const history = await sessionCall({ type: "get_messages" });
-	const state = await sessionCall({ type: "get_state" });
+	// 切换成功后立刻提交指针：后面的 get_messages 若失败触发 sessionCall 重试，
+	// 必须从“新会话”恢复，而不是旧会话。
 	if (typeof path === "string" && path && existsSync(path)) {
 		activeSessionFile = path;
 		saveState({ sessionFile: path });
 	}
+	const history = await sessionCall({ type: "get_messages" });
+	const state = await sessionCall({ type: "get_state" });
 	return { cancelled: false, messages: history?.messages ?? [], state };
 });
 
 ipcMain.handle("pi:new-session", async () => {
+	const previous = activeSessionFile;
 	activeSessionFile = null;
 	saveState({ sessionFile: null });
-	await sessionCall({ type: "new_session" });
+	try {
+		await sessionCall({ type: "new_session" });
+	} catch (error) {
+		// 新建失败就退回原会话指针，别让下一次重启莫名其妙开新会话
+		activeSessionFile = previous;
+		saveState({ sessionFile: previous });
+		throw error;
+	}
 	return { sessions: listSessions() };
 });
 
@@ -1254,10 +1451,31 @@ function startDevWatch() {
 			const name = String(file || "").split(String.fromCharCode(92)).join("/");
 			// dist/ 是构建产物，监听它只会造成打包时反复 reload
 			if (/(^|\/)(node_modules|\.git|dist)\//.test(name)) return;
+			// 静默开发：.dev-quiet 存在时只保留自截屏，编辑文件不再重载/重启，避免打断正在用的会话
+			if (name !== "shot.request" && existsSync(join(dir, ".dev-quiet"))) return;
 			if (name === "main.js") {
 				if (relaunching) return;
 				relaunching = true;
+				// 编辑器保存常分多次写：等 300ms 内大小/mtime 不再变化再重启，
+				// 否则会加载写了一半的 main.js（boot 直接 ReferenceError）。
+				let prev = null;
+				let stable = 0;
+				for (let i = 0; i < 20 && stable < 3; i++) {
+					let sig = "";
+					try {
+						const st = statSync(join(dir, "main.js"));
+						sig = `${st.size}:${st.mtimeMs}`;
+					} catch {}
+					if (sig && sig === prev) stable++;
+					else stable = 0;
+					prev = sig;
+					await new Promise((r) => setTimeout(r, 100));
+				}
 				log("[dev] main.js changed -> relaunch");
+				// app.exit(0) 不触发 before-quit：子进程和托盘必须在这里显式收掉
+				stopPi();
+				stopSide();
+				destroyTray();
 				app.relaunch();
 				app.exit(0);
 				return;
@@ -1378,7 +1596,7 @@ function startDevWatch() {
 						if (window.__piAttachClear) window.__piAttachClear();
 						const t = document.getElementById("rp-toggle");
 						if (t && t.getAttribute("aria-expanded") === "true") t.click();
-						if (window.__piTermAPI?.isOpen && window.__piTermAPI.isOpen()) window.__piTermToggle?.();
+						if (window.__piTermAPI?.isOpen) window.__piTermToggle?.();
 					})()`);
 				} catch {}
 				if (want.includes("old")) {
@@ -1574,6 +1792,16 @@ function startDevWatch() {
 						log("[dev] queue demo failed", e.message);
 					}
 				}
+				if (want.includes("theme-dark") || want.includes("theme-light") || want.includes("theme-system")) {
+					try {
+						const mode = want.includes("theme-dark") ? "dark" : want.includes("theme-system") ? "system" : "light";
+						const res = await win.webContents.executeJavaScript(`window.__mynaSetTheme && window.__mynaSetTheme(${JSON.stringify(mode)})`);
+						log("[dev] theme demo", JSON.stringify(res));
+						await new Promise((r) => setTimeout(r, 500));
+					} catch (e) {
+						log("[dev] theme demo failed", e.message);
+					}
+				}
 				if (want.includes("settings")) {
 					try {
 						await win.webContents.executeJavaScript("window.__piSettingsDemo && window.__piSettingsDemo()");
@@ -1589,6 +1817,14 @@ function startDevWatch() {
 						if (want.includes("provadd")) {
 							await new Promise((r) => setTimeout(r, 300));
 							await win.webContents.executeJavaScript(`document.querySelector('.settings-add button')?.click()`);
+						}
+						if (want.includes("provpreset")) {
+							await new Promise((r) => setTimeout(r, 300));
+							await win.webContents.executeJavaScript(`document.querySelector('.prov-preset')?.click()`);
+						}
+						if (want.includes("provmodel")) {
+							await new Promise((r) => setTimeout(r, 300));
+							await win.webContents.executeJavaScript(`document.querySelector('.prov-model-add')?.click()`);
 						}
 						await new Promise((r) => setTimeout(r, 900));
 					} catch (e) {
@@ -1762,6 +1998,38 @@ function startDevWatch() {
 						log("[dev] browsertab", r);
 					} catch (e) {
 						log("[dev] browsertab failed", e.message);
+					}
+				}
+				if (want.includes("sidestream")) {
+					try {
+						const r = await win.webContents.executeJavaScript(
+							`(async () => {
+								const toggle = document.getElementById("rp-toggle");
+								if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+								document.getElementById("rp-tab-chat")?.click();
+								await new Promise(r => setTimeout(r, 200));
+								const input = document.querySelector(".rp-chat-input");
+								const send = document.querySelector(".rp-chat-send");
+								if (!input || !send) return JSON.stringify({ err: "no chat ui" });
+								input.value = "请用中文写一段 150 字左右的海洋介绍，不要调用工具。";
+								input.dispatchEvent(new Event("input", { bubbles: true }));
+								await new Promise(r => setTimeout(r, 80));
+								send.click();
+								const samples = [];
+								const t0 = Date.now();
+								while (Date.now() - t0 < 20000) {
+									const bot = [...document.querySelectorAll(".rp-chat-log .rp-msg.bot")].pop();
+									const st = document.querySelector(".rp-chat-state")?.textContent || "";
+									samples.push([Date.now() - t0, (bot?.innerText || "").length, st]);
+									if (st === "就绪" && bot?.innerText) break;
+									await new Promise(r => setTimeout(r, 200));
+								}
+								return JSON.stringify({ samples: samples.filter((s, i) => i % 2 === 0 || i === samples.length - 1) });
+							})()`,
+						);
+						log("[dev] sidestream", r);
+					} catch (e) {
+						log("[dev] sidestream failed", e.message);
 					}
 				}
 				if (want.includes("sidechat")) {
@@ -1998,6 +2266,52 @@ function startDevWatch() {
 						log("[dev] lasttext failed", e.message);
 					}
 				}
+				if (want.includes("streamparagraphs")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "用三段话介绍海洋。每段之间空一行，不要调用工具，不要写标题。";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+							return true;
+						})()`);
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							let frozen = 0, tailLen = 0, streaming = false;
+							for (let i = 0; i < 400; i++) {
+								streaming = !!window.__piui?.state?.streaming;
+								frozen = document.querySelectorAll(".live-frozen .live-block").length;
+								tailLen = (document.querySelector(".live-tail")?.textContent || "").length;
+								if (frozen >= 1) break;
+								if (!streaming && frozen === 0 && i > 20) break;
+								await new Promise((r) => setTimeout(r, 100));
+							}
+							return JSON.stringify({ frozen, tailLen, streaming });
+						})()`);
+						log("[dev] streamparagraphs", st);
+						await new Promise((r) => setTimeout(r, 300));
+					} catch (e) {
+						log("[dev] streamparagraphs failed", e.message);
+					}
+				}
+				if (want.includes("meterdemo")) {
+					try {
+						const started = await win.webContents.executeJavaScript(`!!(window.__piTpsDemo && window.__piTpsDemo(6000))`);
+						log("[dev] meterdemo", String(started));
+						if (started) {
+							await new Promise((r) => setTimeout(r, 2200));
+							if (want.includes("metercard")) {
+								await win.webContents.executeJavaScript(`document.querySelector(".tps-gauge")?.click()`);
+								await new Promise((r) => setTimeout(r, 300));
+							}
+							setTimeout(() => {
+								if (win && !win.isDestroyed()) win.webContents.executeJavaScript("window.__piTpsDemoClear?.()").catch(() => {});
+							}, 7000);
+						}
+					} catch (e) {
+						log("[dev] meterdemo failed", e.message);
+					}
+				}
 				if (want.includes("empty")) {
 					try {
 						await win.webContents.executeJavaScript("document.querySelector('.newchat')?.click()");
@@ -2084,6 +2398,121 @@ function startDevWatch() {
 	log("[dev] watching for changes");
 }
 
+// ---------- 托盘与退出 ----------
+const TRAY_ICON = join(import.meta.dirname, "assets", "icon.ico");
+
+function showMainWindow() {
+	if (!win || win.isDestroyed()) return;
+	if (win.isMinimized()) win.restore();
+	if (!win.isVisible()) win.show();
+	win.focus();
+}
+
+function destroyTray() {
+	if (!tray) return;
+	try {
+		tray.destroy();
+	} catch {}
+	tray = null;
+}
+
+function createTray() {
+	if (process.platform !== "win32" || tray) return;
+	if (!existsSync(TRAY_ICON)) {
+		log("[tray] icon missing", TRAY_ICON);
+		return;
+	}
+	try {
+		tray = new Tray(TRAY_ICON);
+	} catch (e) {
+		log("[tray] create failed", e.message);
+		tray = null;
+		return;
+	}
+	tray.setToolTip("myna");
+	tray.setContextMenu(
+		Menu.buildFromTemplate([
+			{ label: "显示主窗口", click: () => showMainWindow() },
+			{ type: "separator" },
+			{ label: "退出", click: () => app.quit() },
+		]),
+	);
+	// 单击/双击托盘图标都把窗口拉回来
+	tray.on("click", () => showMainWindow());
+	tray.on("double-click", () => showMainWindow());
+	log("[tray] ready");
+}
+
+// 首次收进托盘只提示一次：标记落 ~/.myna.json，之后不再打扰
+let trayHintShown = loadState().trayHintShown === true;
+
+function notifyHiddenToTray() {
+	if (trayHintShown) return;
+	trayHintShown = true;
+	saveState({ trayHintShown: true });
+	const title = "myna";
+	const body = "myna 仍在后台运行，可从托盘恢复";
+	try {
+		if (Notification.isSupported()) {
+			const note = new Notification({ title, body, icon: nativeImage.createFromPath(TRAY_ICON) });
+			note.on("click", () => showMainWindow());
+			note.show();
+			return;
+		}
+	} catch (e) {
+		log("[tray] notification failed", e.message);
+	}
+	try {
+		tray?.displayBalloon({ title, content: body });
+	} catch {}
+}
+
+// 渲染层是否还在生成回复；窗口/渲染进程已销毁时按「没有流式」处理，直接放行退出
+function rendererIsStreaming() {
+	return new Promise((resolve) => {
+		if (!win || win.isDestroyed() || !win.webContents || win.webContents.isDestroyed()) return resolve(false);
+		let done = false;
+		let timer = 0;
+		const finish = (v) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			resolve(v);
+		};
+		// 渲染层卡死时别把退出流程一直挂着
+		timer = setTimeout(() => finish(false), 1500);
+		try {
+			win.webContents.executeJavaScript("window.__piStreaming === true").then(
+				(v) => finish(v === true),
+				() => finish(false),
+			);
+		} catch {
+			finish(false);
+		}
+	});
+}
+
+async function confirmQuitWhileStreaming() {
+	if (!(await rendererIsStreaming())) return true;
+	try {
+		const options = {
+			type: "warning",
+			buttons: ["取消", "仍然退出"],
+			defaultId: 0,
+			cancelId: 0,
+			noLink: true,
+			title: "myna",
+			message: "当前回合还在生成中",
+			detail: "退出会中断正在生成的回复，确定要退出吗？",
+		};
+		// 窗口藏在托盘里时不要把对话框挂到隐藏窗口上，否则用户看不到
+		const res = win && !win.isDestroyed() && win.isVisible() ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+		return res.response === 1;
+	} catch {
+		return true;
+	}
+}
+
 function createWindow() {
 	// 窗口位置/大小随上次会话恢复；working area 变了也要保证至少露出一角
 	const savedWin = loadState().window;
@@ -2101,7 +2530,7 @@ function createWindow() {
 		minWidth: 720,
 		minHeight: 480,
 		backgroundColor: "#FFFFFF",
-		title: "pi",
+		title: "myna",
 		icon: join(import.meta.dirname, "assets", "icon.ico"),
 		show: false,
 		autoHideMenuBar: true,
@@ -2113,6 +2542,15 @@ function createWindow() {
 			webviewTag: true, // 右栏浏览器用 <webview>，只允许 http(s)
 		},
 	});
+	// 缩放要在每次导航后重设，否则 did-finish-load 会把 factor 重置回 1
+	const applyZoom = () => {
+		if (!win || win.isDestroyed()) return;
+		try {
+			win.webContents.setZoomFactor(zoomFactor);
+		} catch {}
+	};
+	applyZoom();
+	win.webContents.on("did-finish-load", applyZoom);
 	// 记住窗口几何（拖动/缩放/最大化后 400ms 落盘）
 	let boundsTimer = 0;
 	const persistBounds = () => {
@@ -2135,6 +2573,15 @@ function createWindow() {
 		win.show();
 		if (savedWin?.maximized) win.maximize();
 	});
+	// 关窗收进托盘（Windows 主场景）；真退出时放行。
+	// 托盘没建起来时保持原行为（关窗即退出），否则窗口隐藏后用户无法恢复。
+	win.on("close", (e) => {
+		if (quitting) return;
+		if (process.platform !== "win32" || !tray) return;
+		e.preventDefault();
+		win.hide();
+		notifyHiddenToTray();
+	});
 	if (process.env.PI_MINI_DEV) startDevWatch();
 
 	win.webContents.on("console-message", (event) => {
@@ -2142,7 +2589,29 @@ function createWindow() {
 		if (level === "error" || level === "warning") log(`[renderer:${level}] ${message} (${sourceId}:${lineNumber})`);
 	});
 	win.webContents.on("preload-error", (_e, path, error) => log("[preload-error]", path, error.message));
-	win.webContents.on("render-process-gone", (_e, details) => log("[renderer-gone]", JSON.stringify(details)));
+	let rendererReloads = 0;
+	let rendererReloadTimer = 0;
+	win.webContents.on("render-process-gone", (_e, details) => {
+		log("[renderer-gone]", JSON.stringify(details));
+		if (details.reason === "clean-exit" || !win || win.isDestroyed()) return;
+		// 渲染进程偶尔会被 OOM/GPU 杀掉：自动重载一次，频繁崩溃则停止恢复并留日志
+		if (rendererReloads >= 3) {
+			log("[renderer-gone] 连续重载 3 次，停止自动恢复");
+			return;
+		}
+		rendererReloads++;
+		setTimeout(() => {
+			if (win && !win.isDestroyed()) win.reload();
+		}, 400);
+		clearTimeout(rendererReloadTimer);
+		rendererReloadTimer = setTimeout(() => {
+			rendererReloads = 0;
+		}, 60000);
+	});
+	win.webContents.on("did-fail-load", (_e, code, description, url, isMainFrame) => {
+		if (!isMainFrame || code === -3) return;
+		log("[did-fail-load]", code, description, url);
+	});
 
 
 	if (process.env.PI_MINI_PROBE) {
@@ -2180,6 +2649,13 @@ function createWindow() {
 	}
 }
 
+process.on("uncaughtException", (err) => {
+	log("[main:uncaught]", err?.stack || err?.message || String(err));
+});
+process.on("unhandledRejection", (reason) => {
+	log("[main:rejection]", reason?.stack || reason?.message || String(reason));
+});
+
 app.whenReady().then(() => {
 	// 任务栏归组与图标（Windows）：与 packaged exe 的 AppUserModelID 无关，仅影响进程分组/通知
 	if (process.platform === "win32") app.setAppUserModelId("com.may5921.pi-mini");
@@ -2198,9 +2674,63 @@ app.whenReady().then(() => {
 		return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 	});
 	createWindow();
+	// 托盘必须在窗口之后建：close-to-hide 依赖 tray 存在，建不起来就退回「关窗即退出」
+	createTray();
 });
+
+// 真退出（托盘「退出」/ app.quit / 系统关机）：先按需确认流式回合，再放行关闭并清理子进程。
+async function beginQuit() {
+	quitPending = true;
+	let proceed = false;
+	try {
+		if (!quitConfirmed) {
+			// 渲染层已销毁时 rendererIsStreaming() 直接返回 false，等于放行
+			const ok = await confirmQuitWhileStreaming();
+			if (!ok) {
+				log("[quit] cancelled while streaming");
+				return;
+			}
+			quitConfirmed = true;
+		}
+		quitting = true;
+		proceed = true;
+		destroyTray();
+		stopPi();
+		stopSide();
+	} catch (e) {
+		// 清理失败也必须退出，否则进程会卡在没有窗口也没有托盘的状态
+		log("[quit] cleanup failed", e?.message || String(e));
+		quitting = true;
+		proceed = true;
+	} finally {
+		quitPending = false;
+		if (proceed) app.quit();
+	}
+}
+
+app.on("before-quit", (e) => {
+	// 已放行：第二次 app.quit() 进来时不再拦截，窗口 close 也随之放行
+	if (quitting) return;
+	e.preventDefault();
+	// 确认框/清理进行中：挡住重复的 app.quit()，避免叠出多个对话框
+	if (quitPending) return;
+	void beginQuit();
+});
+
 app.on("window-all-closed", () => {
-	stopPi();
+	// 托盘常驻：即使窗口真被关掉也保持进程（正常关窗会在 close 里被拦成收进托盘）
+	if (process.platform === "win32" && tray) return;
+	if (quitting) return;
+	// 其余情况沿用原行为：走统一退出流程（含流式确认与子进程清理）
 	app.quit();
 });
-app.on("before-quit", stopPi);
+
+app.on("will-quit", () => destroyTray());
+
+// Windows 关机/注销不会触发 before-quit：至少把托盘和子进程钩掉
+app.on("session-end", () => {
+	quitting = true;
+	destroyTray();
+	stopPi();
+	stopSide();
+});

@@ -4,6 +4,14 @@
 //      set_thinking_level / set_auto_compaction / set_auto_retry（读不回，仅本地记录）/
 //      set_steering_mode / set_follow_up_mode / set_session_name / compact / export_html /
 //      get_session_stats
+import {
+	getFontFamilies,
+	getFontSizes,
+	getThemePref,
+	setFontFamily,
+	setFontSize,
+	setThemePref,
+} from "../theme.js";
 
 const RETRY_KEY = "pi-mini.auto-retry";
 const ERR_MS = 3000;
@@ -271,13 +279,25 @@ const CSS = `
 .prov-del:hover { background: var(--hover); color: var(--err); }
 .prov-model-add { align-self: flex-start; font-size: 12px; color: var(--dim); padding: 4px 6px; border-radius: 6px; }
 .prov-model-add:hover { background: var(--hover); color: var(--text); }
+.prov-model-add:disabled { opacity: 0.5; cursor: default; }
+.prov-model-tools { display: flex; align-items: center; gap: 4px; align-self: flex-start; }
+.prov-presets { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 4px; }
+.prov-preset { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--dim); }
+.prov-preset:hover { background: var(--hover); color: var(--text); border-color: var(--line-strong); }
+/* 模型列表折叠：几十条时只占一行 */
+.prov-fold { border-top: 1px solid var(--line); padding-top: 6px; margin-top: 2px; }
+.prov-fold > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; font-size: 12.5px; color: var(--dim); padding: 4px 0; user-select: none; }
+.prov-fold > summary::-webkit-details-marker { display: none; }
+.prov-fold > summary::before { content: "›"; display: inline-block; color: var(--faint); transition: transform 0.15s; }
+.prov-fold[open] > summary::before { transform: rotate(90deg); }
+.prov-fold > summary:hover { color: var(--text); }
 .prov-model-empty { padding: 2px 0; font-size: 12px; color: var(--faint); }
 .prov-foot { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
 .prov-foot-spacer { flex: 1; }
 .prov-btn { height: 28px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--line); font-size: 12.5px; color: var(--text); }
 .prov-btn:hover { background: var(--hover); }
-.prov-btn.primary { background: var(--send-bg, #1a1c1f); border-color: transparent; color: #fff; }
-.prov-btn.primary:hover { background: #333; }
+.prov-btn.primary { background: var(--send-bg, #1a1c1f); border-color: transparent; color: var(--bg); }
+.prov-btn.primary:hover { background: var(--text); }
 .prov-danger { height: 28px; padding: 0 10px; border-radius: 7px; font-size: 12.5px; color: var(--err); }
 .prov-danger:hover, .prov-danger.armed { background: #fdeceb; }
 .prov-empty {
@@ -463,6 +483,15 @@ const CSS = `
 }
 .settings-input::placeholder { color: var(--faint); }
 .settings-input:focus { border-color: var(--line-strong); }
+.settings-range { display: flex; align-items: center; gap: 10px; }
+.settings-range input[type="range"] {
+	width: 132px;
+	height: 4px;
+	accent-color: var(--text);
+	cursor: pointer;
+}
+.settings-range-val { min-width: 42px; text-align: right; font: 12px/1 var(--mono); color: var(--dim); }
+.settings-font { width: 168px; }
 
 .settings-switch {
 	position: relative;
@@ -581,6 +610,12 @@ const CSS = `
 .settings-toast.is-openable { cursor: pointer; }
 .settings-toast.is-openable:hover { border-color: var(--line-strong); }
 
+:root[data-theme="dark"] .settings-nav-item.is-on { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .settings-nav-item:hover { background: var(--hover); }
+:root[data-theme="dark"] .prov-chip[aria-pressed="true"] { background: rgba(78, 201, 120, 0.16); border-color: rgba(78, 201, 120, 0.35); color: #7fd39a; }
+:root[data-theme="dark"] .prov-danger:hover,
+:root[data-theme="dark"] .prov-danger.armed { background: rgba(255, 111, 102, 0.14); }
+
 @media (prefers-reduced-motion: reduce) {
 	.settings-gear,
 	.settings-close,
@@ -698,7 +733,7 @@ export function init(ctx) {
 	nav.setAttribute("role", "tablist");
 	nav.setAttribute("aria-label", "设置分区");
 	nav.setAttribute("aria-orientation", "vertical");
-	const navFoot = el("div", "settings-version", "pi-mini");
+	const navFoot = el("div", "settings-version", "myna");
 	nav.append(navFoot);
 
 	const panelBody = el("div", "settings-body");
@@ -982,6 +1017,71 @@ export function init(ctx) {
 	};
 
 	pane("general", "通用");
+	const secLook = section("外观");
+	const themeRow = makeRow("主题", "跟随系统时随 Windows 明暗模式切换");
+	const themeSel = makeSelect(
+		{ light: "浅色", dark: "深色", system: "跟随系统" }[getThemePref()],
+		(anchor) =>
+			openMenu(
+				anchor,
+				[
+					{ key: "system", label: "跟随系统" },
+					{ key: "light", label: "浅色" },
+					{ key: "dark", label: "深色" },
+				],
+				getThemePref(),
+				(item) => {
+					setThemePref(item.key);
+					themeSel.text.textContent = item.label;
+				},
+			),
+	);
+	themeRow.ctl.append(themeSel.btn);
+	secLook.append(themeRow.row);
+
+	const addSizeRow = (label, sub, kind, min, max, step = 0.5) => {
+		const row = makeRow(label, sub);
+		const wrap = el("div", "settings-range");
+		const range = document.createElement("input");
+		range.type = "range";
+		range.min = String(min);
+		range.max = String(max);
+		range.step = String(step);
+		range.value = String(getFontSizes()[kind]);
+		range.setAttribute("aria-label", label);
+		const val = el("span", "settings-range-val", `${getFontSizes()[kind]}px`);
+		range.oninput = () => {
+			const size = setFontSize(kind, range.value).size[kind];
+			val.textContent = `${size}px`;
+		};
+		wrap.append(range, val);
+		row.ctl.append(wrap);
+		secLook.append(row.row);
+	};
+	addSizeRow("正文字号", "对话正文与输入框，10–22px", "body", 10, 22);
+	addSizeRow("代码字号", "对话内代码块，9–20px", "code", 9, 20);
+	addSizeRow("终端字号", "底部终端输出，9–20px", "term", 9, 20);
+
+	const fonts = getFontFamilies();
+	const addFontRow = (label, sub, kind, placeholder) => {
+		const row = makeRow(label, sub);
+		const inp = document.createElement("input");
+		inp.type = "text";
+		inp.className = "settings-input settings-font";
+		inp.placeholder = placeholder;
+		inp.value = fonts[kind] || "";
+		inp.setAttribute("aria-label", label);
+		inp.addEventListener("keydown", (e) => {
+			e.stopPropagation();
+			if (e.key === "Enter") inp.blur();
+		});
+		inp.addEventListener("change", () => setFontFamily(kind, inp.value));
+		row.ctl.append(inp);
+		secLook.append(row.row);
+	};
+	addFontRow("界面字体", "留空用系统默认；可填多个，逗号分隔", "ui", "例如 Microsoft YaHei UI");
+	addFontRow("代码 / 终端字体", "留空用系统等宽字体", "mono", "例如 JetBrains Mono");
+
 	const secGeneral = section("启动与会话列表");
 
 	const restoreRow = makeRow("恢复上次会话", "启动时打开上次使用的会话");
@@ -1016,6 +1116,27 @@ export function init(ctx) {
 	pageRow.ctl.append(pageSel.btn);
 	secGeneral.append(pageRow.row);
 
+	const zoomRow = makeRow("界面缩放", "Ctrl+= 放大 · Ctrl+- 缩小 · Ctrl+0 还原");
+	const zoomSel = makeSelect("100%", (anchor) =>
+		openMenu(
+			anchor,
+			[70, 80, 90, 100, 110, 120, 130, 140, 150, 160].map((n) => ({ key: n, label: `${n}%` })),
+			Math.round(((window.__piZoomFactor || 1) * 100)),
+			(item) => {
+				window.pi.setZoom?.(item.key / 100).catch(() => {});
+				zoomSel.text.textContent = item.label;
+			},
+		),
+	);
+	zoomRow.ctl.append(zoomSel.btn);
+	secGeneral.append(zoomRow.row);
+	window.pi.getZoom?.()
+		.then((r) => {
+			window.__piZoomFactor = r?.factor || 1;
+			zoomSel.text.textContent = `${Math.round(window.__piZoomFactor * 100)}%`;
+		})
+		.catch(() => {});
+
 	// ---------- 1. 会话 ----------
 	pane("session", "会话");
 	const secSession = section("会话");
@@ -1049,7 +1170,80 @@ export function init(ctx) {
 	secSession.append(compactRow.row);
 
 	// ---------- 2. 提供商 ----------
+	// 常用供应商预填：字段来自 DSH 的 provider 目录（默认 Base URL + 环境变量名），
+	// Base URL 补到能直接请求 /models 的形态。
+	const PROVIDER_PRESETS = [
+		{ key: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", api: "openai-completions", env: "DEEPSEEK_API_KEY" },
+		{ key: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", api: "openai-completions", env: "OPENAI_API_KEY" },
+		{ key: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", api: "anthropic-messages", env: "ANTHROPIC_API_KEY" },
+		{ key: "google", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", api: "google-generative-ai", env: "GEMINI_API_KEY" },
+		{ key: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", api: "openai-completions", env: "OPENROUTER_API_KEY" },
+		{ key: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", api: "openai-completions", env: "GROQ_API_KEY" },
+		{ key: "xai", label: "xAI", baseUrl: "https://api.x.ai/v1", api: "openai-completions", env: "XAI_API_KEY" },
+		{ key: "moonshotai", label: "Moonshot", baseUrl: "https://api.moonshot.ai/v1", api: "openai-completions", env: "MOONSHOT_API_KEY" },
+		{ key: "zai", label: "Z.ai", baseUrl: "https://api.z.ai/api/coding/paas/v4", api: "openai-completions", env: "ZAI_API_KEY" },
+		{ key: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", api: "openai-completions", env: "MISTRAL_API_KEY" },
+		{ key: "together", label: "Together", baseUrl: "https://api.together.ai/v1", api: "openai-completions", env: "TOGETHER_API_KEY" },
+		{ key: "qwen", label: "Qwen", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", api: "openai-completions", env: "DASHSCOPE_API_KEY" },
+	];
+	// 模型默认上下文 / 最大输出：服务商 API 没给元数据时按家族兜底。
+	// 取保守值（宁可比真实窗口小，不要填大导致 pi 误判上下文）。
+	const MODEL_LIMITS = [
+		[/^claude/i, 200000, 32000],
+		[/^gpt-|^o[1-9]/i, 200000, 32000],
+		[/^gemini/i, 1000000, 65536],
+		[/^deepseek/i, 128000, 8192],
+		[/^glm/i, 128000, 16384],
+		[/^kimi/i, 256000, 32768],
+		[/^grok/i, 256000, 32000],
+		[/^qwen/i, 128000, 16384],
+		[/^muse/i, 128000, 8192],
+		[/^hy/i, 128000, 8192],
+	];
+	const DEFAULT_LIMITS = { contextWindow: 128000, maxTokens: 8192 };
+	const limitsFor = (id) => {
+		const value = String(id || "");
+		for (const [re, contextWindow, maxTokens] of MODEL_LIMITS) {
+			if (re.test(value)) return { contextWindow, maxTokens };
+		}
+		return { ...DEFAULT_LIMITS };
+	};
 	pane("providers", "提供商");
+
+	// 常用供应商：点一下把添加表单填好，只需要补/确认密钥。顶部默认折叠，别占一屏。
+	let presetBody = null;
+	const presetToggle = actionBtn("展开", () => {
+		if (!presetBody) return;
+		presetBody.hidden = !presetBody.hidden;
+		presetToggle.textContent = presetBody.hidden ? "展开" : "收起";
+	});
+	const secPresets = section("常用供应商", presetToggle);
+	presetBody = el("div");
+	presetBody.hidden = true;
+	secPresets.append(presetBody);
+	presetBody.append(el("div", "settings-hint", "点一个预填 Base URL / API 类型 / $ENV 密钥；模型列表用表单里的「从 API 获取」。与 pi 内置同名时会覆盖内置路由。"));
+	const presetWrap = el("div", "prov-presets");
+	for (const preset of PROVIDER_PRESETS) {
+		const b = el("button", "prov-preset", preset.label);
+		b.type = "button";
+		b.title = `${preset.baseUrl}\n密钥：$${preset.env}`;
+		b.onclick = () => {
+			const exists = (provData?.providers || []).some((p) => p.key === preset.key);
+			if (exists) {
+				openKey = preset.key;
+				renderProviders();
+				toast("已存在，已打开编辑");
+				return;
+			}
+			addOpen = true;
+			addCard.hidden = false;
+			renderAddCard(preset);
+			addCard.scrollIntoView({ block: "nearest", behavior: "smooth" });
+		};
+		presetWrap.append(b);
+	}
+	presetBody.append(presetWrap);
+
 	const provRefresh = el("button", "settings-refresh", "刷新");
 	provRefresh.type = "button";
 	provRefresh.title = "重新读取 models.json";
@@ -1149,17 +1343,33 @@ export function init(ctx) {
 		return { wrap, input };
 	};
 
-	// 模型列表：一行一个模型，字段直接写回 models.json
-	const modelsEditor = (seed) => {
+	// 模型列表：一行一个模型，字段直接写回 models.json。
+	// creds() 提供当前 Base URL / API 类型 / 密钥，用于「从 API 获取」。
+	const modelsEditor = (seed, creds) => {
 		const box = el("div", "prov-models");
+		// 模型多的时候（从 API 拉下来几十条）整块可折叠，summary 显示数量
+		const details = document.createElement("details");
+		details.className = "prov-fold";
+		details.open = true;
+		const summary = el("summary", "prov-fold-sum");
 		const list = el("div", "prov-model-list");
-		const drafts = (Array.isArray(seed) ? seed : []).map((m) => ({
-			id: String(m.id || ""),
-			name: String(m.name || ""),
-			reasoning: Boolean(m.reasoning),
-			contextWindow: Number(m.contextWindow) || 0,
-			maxTokens: Number(m.maxTokens) || 0,
-		}));
+		details.append(summary, list);
+		const drafts = (Array.isArray(seed) ? seed : []).map((m) => {
+			const id = String(m.id || "");
+			// 历史配置里没填上限的（旧版本留下的空值）打开时补默认值，保存即落盘
+			const lim = limitsFor(id);
+			return {
+				id,
+				name: String(m.name || ""),
+				reasoning: Boolean(m.reasoning),
+				contextWindow: Number(m.contextWindow) || lim.contextWindow,
+				maxTokens: Number(m.maxTokens) || lim.maxTokens,
+			};
+		});
+		const syncSummary = () => {
+			const n = drafts.filter((m) => m.id.trim()).length;
+			summary.textContent = `模型 · ${n} 个`;
+		};
 		const render = () => {
 			list.replaceChildren();
 			drafts.forEach((m, index) => {
@@ -1189,6 +1399,17 @@ export function init(ctx) {
 				};
 				id.oninput = () => {
 					m.id = id.value;
+					// 填了 ID 还没填上限：按模型家族补默认值（用户手填过的不覆盖）
+					if (!m.contextWindow) {
+						const lim = limitsFor(m.id);
+						m.contextWindow = lim.contextWindow;
+						ctx.value = String(lim.contextWindow);
+					}
+					if (!m.maxTokens) {
+						const lim = limitsFor(m.id);
+						m.maxTokens = lim.maxTokens;
+						max.value = String(lim.maxTokens);
+					}
 				};
 				name.oninput = () => {
 					m.name = name.value;
@@ -1206,15 +1427,64 @@ export function init(ctx) {
 			const add = el("button", "prov-model-add", "+ 添加模型");
 			add.type = "button";
 			add.onclick = () => {
-				drafts.push({ id: "", name: "", reasoning: false, contextWindow: 0, maxTokens: 0 });
+				const lim = limitsFor("");
+				drafts.push({ id: "", name: "", reasoning: false, contextWindow: lim.contextWindow, maxTokens: lim.maxTokens });
 				render();
 				const inputs = list.querySelectorAll(".prov-m-id");
 				if (inputs.length) inputs[inputs.length - 1].focus();
 			};
-			list.append(add);
+			const pull = el("button", "prov-model-add", "从 API 获取");
+			pull.type = "button";
+			pull.title = "用当前 Base URL 与密钥读取服务商的模型列表（带上下文/输出上限）";
+			pull.onclick = async () => {
+				const c = (typeof creds === "function" ? creds() : null) || {};
+				if (!String(c.baseUrl || "").trim()) {
+					toast("先在 Base URL 里填入服务地址");
+					return;
+				}
+				const label = pull.textContent;
+				pull.disabled = true;
+				pull.textContent = "获取中…";
+				try {
+					const r = await ctx.pi.fetchModels?.({
+						providerKey: c.providerKey,
+						baseUrl: c.baseUrl,
+						api: c.api,
+						apiKey: c.apiKey,
+					});
+					const have = new Set(drafts.map((d) => d.id.trim()).filter(Boolean));
+					let added = 0;
+					for (const m of r?.models || []) {
+						const id = String(m?.id || "").trim();
+						if (!id || have.has(id)) continue;
+						have.add(id);
+						const lim = limitsFor(id);
+						drafts.push({
+							id,
+							name: String(m?.name || ""),
+							reasoning: false,
+							contextWindow: Number(m?.contextWindow) || lim.contextWindow,
+							maxTokens: Number(m?.maxTokens) || lim.maxTokens,
+						});
+						added += 1;
+					}
+					details.open = true;
+					render();
+					toast(added ? `已添加 ${added} 个模型（已填默认上下文），记得保存` : "没有新增模型（列表已是最新）");
+				} catch (e) {
+					toast(errText(e));
+				} finally {
+					pull.disabled = false;
+					pull.textContent = label;
+				}
+			};
+			const tools = el("div", "prov-model-tools");
+			tools.append(add, pull);
+			list.append(tools);
+			syncSummary();
 		};
 		render();
-		box.append(el("div", "prov-field-label", "模型"), list);
+		box.append(details);
 		return { box, read: () => drafts.filter((m) => m.id.trim()) };
 	};
 
@@ -1273,7 +1543,7 @@ export function init(ctx) {
 		const name = mkInput("settings-input", "显示名称", p.name || "");
 		const base = mkInput("settings-input", "https://api.example.com/v1", p.baseUrl || "");
 		const api = apiSelect(p.api);
-		const models = modelsEditor(p.models);
+		const models = modelsEditor(p.models, () => ({ providerKey: p.key, baseUrl: base.value, api: api.value, apiKey: key.input.value }));
 		body.append(
 			field("显示名称", name),
 			field("Base URL", base, "留空表示沿用 pi 内置路由；自定义网关才需要填写"),
@@ -1329,16 +1599,20 @@ export function init(ctx) {
 		return box;
 	};
 
-	const renderAddCard = () => {
+	const renderAddCard = (preset = null) => {
 		addCard.replaceChildren();
 		const note = el("div", "settings-note");
 		note.hidden = true;
-		const key = mkInput("settings-input", "acme-gateway", "");
-		const name = mkInput("settings-input", "我的提供商", "");
-		const base = mkInput("settings-input", "https://api.example.com/v1", "");
-		const api = apiSelect(API_OPTIONS[0].key);
+		const key = mkInput("settings-input", "acme-gateway", preset?.key || "");
+		const name = mkInput("settings-input", "我的提供商", preset?.name || preset?.label || "");
+		const base = mkInput("settings-input", "https://api.example.com/v1", preset?.baseUrl || "");
+		const api = apiSelect(preset?.api || API_OPTIONS[0].key);
 		const secret = keyField("也支持 $ENV 或 !command 形式", "sk-…");
-		const models = modelsEditor([{ id: "", name: "", reasoning: false }]);
+		if (preset?.env) secret.input.value = `$${preset.env}`;
+		const models = modelsEditor(
+			Array.isArray(preset?.models) && preset.models.length ? preset.models : [{ id: "", name: "", reasoning: false }],
+			() => ({ baseUrl: base.value, api: api.value, apiKey: secret.input.value }),
+		);
 		const body = el("div", "prov-details-body");
 		body.append(
 			field("标识", key, "provider key，小写字母开头，可含数字、点、下划线、短横线"),
@@ -1474,6 +1748,28 @@ export function init(ctx) {
 	steerRow.ctl.append(steerSel.btn);
 	secBehavior.append(steerRow.row);
 
+	const enterRow = makeRow("流式中 Enter", "Ctrl/Cmd+Enter 自动走另一种");
+	const enterSel = makeSelect(
+		readPref("pi-mini.busyEnter", "queue") === "steer" ? "插话发送" : "排队发送",
+		(anchor) =>
+			openMenu(
+				anchor,
+				[
+					{ key: "queue", label: "排队发送" },
+					{ key: "steer", label: "插话发送" },
+				],
+				readPref("pi-mini.busyEnter", "queue"),
+				(item) => {
+					try {
+						localStorage.setItem("pi-mini.busyEnter", item.key);
+					} catch {}
+					enterSel.text.textContent = item.label;
+				},
+			),
+	);
+	enterRow.ctl.append(enterSel.btn);
+	secBehavior.append(enterRow.row);
+
 	// ---------- 4. 统计 ----------
 	pane("stats", "统计");
 	const refreshBtn = el("button", "settings-refresh", "刷新");
@@ -1514,7 +1810,7 @@ export function init(ctx) {
 	extRefresh.title = "重新读取 pi 扩展与技能";
 	extRefresh.setAttribute("aria-label", "刷新扩展");
 	extRefresh.onclick = () => loadExtensions(true);
-	const secExt = section("已加载的扩展与技能", extRefresh);
+	const secExt = section("已加载的扩展", extRefresh);
 	const extList = el("div", "settings-exts");
 	secExt.append(extList);
 	const extNote = el("div", "settings-note");
@@ -1812,9 +2108,11 @@ export function init(ctx) {
 
 	function renderExtensions() {
 		extList.replaceChildren();
-		const list = extCommands || [];
+		// 技能在「技能与 MCP」里已经有一份（含 SKILL.md 路径）；这里只留扩展与提示命令，
+		// 免得同一批技能在两个页面各看一遍。
+		const list = (extCommands || []).filter((c) => c?.source !== "skill");
 		if (!list.length) {
-			extList.append(el("div", "settings-exts-empty", "没有可用的扩展或技能"));
+			extList.append(el("div", "settings-exts-empty", "没有可用的扩展或提示"));
 			return;
 		}
 		const groups = new Map();
@@ -1867,7 +2165,7 @@ export function init(ctx) {
 			return;
 		}
 		const rows = [
-			["版本", `pi-mini ${appInfo.version || "—"}`],
+			["版本", `myna ${appInfo.version || "—"}`],
 			["Electron", appInfo.electron || "—"],
 			["Chromium", appInfo.chrome || "—"],
 			["Node", appInfo.node || "—"],
@@ -1898,7 +2196,7 @@ export function init(ctx) {
 		acts.append(
 			aboutBtn("复制诊断信息", async () => {
 				const text = [
-					`pi-mini ${appInfo.version || "?"}`,
+					`myna ${appInfo.version || "?"}`,
 					`Electron ${appInfo.electron || "?"} / Chromium ${appInfo.chrome || "?"} / Node ${appInfo.node || "?"}`,
 					`pi ${appInfo.piVersion || "?"}`,
 					`cwd ${ctx.state.cwd || "?"}`,
@@ -1917,7 +2215,7 @@ export function init(ctx) {
 		renderAbout();
 		try {
 			appInfo = await ctx.pi.appInfo();
-			if (appInfo?.version) navFoot.textContent = `pi-mini v${appInfo.version}`;
+			if (appInfo?.version) navFoot.textContent = `myna v${appInfo.version}`;
 		} catch {
 			appInfo = null;
 		}
@@ -2312,8 +2610,11 @@ export function init(ctx) {
 		try {
 			const d = await ctx.pi.command({ type: "clone" });
 			if (d?.cancelled) throw new Error("已取消");
+			// clone 已切到克隆体：重新拉历史再刷新状态，别把 undefined 交给 renderHistory
+			const history = await ctx.pi.command({ type: "get_messages" });
+			ctx.reload?.(history?.messages ?? []);
+			await ctx.refreshState?.();
 			closeDialog();
-			ctx.reload?.();
 		} catch (e) {
 			fail(cloneRow.row, e);
 		} finally {

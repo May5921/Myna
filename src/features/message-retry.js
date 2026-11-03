@@ -80,6 +80,10 @@ export function init(ctx) {
 	// 重试：回填后走 app.js 现有的 Enter 发送路径；流式中不发送
 	const retry = (row) => {
 		if (ctx.state?.streaming) return false;
+		if (row.dataset.images) {
+			hint(row, "图片消息不能重试");
+			return false;
+		}
 		if (!fill(row)) return false;
 		input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 		return true;

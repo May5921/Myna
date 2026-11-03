@@ -1,6 +1,6 @@
-# pi-mini
+# myna
 
-给 pi CLI（npm 包 `@earendil-works/pi-coding-agent`）做的极简桌面前端：Electron + 原生 ES module，零构建，运行时只依赖 `electron` 和 `shiki`。
+给 pi CLI（`@earendil-works/pi-coding-agent`）做的极简桌面 GUI：Electron + 原生 ES module，零构建，运行时只依赖 `electron` 和 `shiki`。
 
 视觉参照 Codex，交互与技术实现参照 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（MIT）与 pi TUI。
 
@@ -27,18 +27,20 @@ npm start
 - 会话：按工作区分组、手动绑定项目白名单、折叠状态与标题持久化、重启恢复上次会话、pi 崩溃后按原 session 自动续跑、分页加载、归档/取消归档、置顶、行内重命名、侧栏全文搜索
 - 输入框：`@` 文件引用、`/` 斜杠命令、图片粘贴/拖拽（`prompt.images`）、按会话持久化的草稿、`Ctrl+K` 命令面板
 - 消息：流式匀速吐字、思考（reasoning）折叠行与首行摘要、Markdown（含 GFM 表格）、shiki 懒高亮、工具卡片（运行微光/耗时，整轮结束统一折回）、diff、JSON 折叠树、工具图片缩略图与全屏预览、t/s 徽标与整轮用时、停止标记、完成摘要淡出、每回合末尾一个复制键、历史消息分页渲染（默认最近 80 条，可向上加载更早）
-- 队列：运行中 Enter 排队 / Ctrl+Enter 插话，按 pi 的 `follow_up` / `steer` 语义，草稿按会话持久化
-- 右栏：文件树（点文件在面板内只读预览，代码走 shiki、图片直接显示，可改用系统程序打开）；消息里的文件路径点击同样进右栏预览，工作区外回退系统程序；工作区变更（含 diff）、会话树；浏览器 tab（`<webview>`，仅 http/https）；侧边对话 tab（独立 pi 会话，可流式回复、停止、清空）；tab 增删、拖宽、全屏、状态持久化；默认收起，打开文件或 tab 时才展开，面板无独立标题行
+- 队列：运行中 Enter 排队 / Ctrl+Enter 插话；队列本地持久化、空闲自动发送，插话走 pi 的 `steer`，草稿按会话持久化
+- 右栏：文件树（点文件在面板内只读预览，代码走 shiki、图片直接显示，可改用系统程序打开）；消息里的文件路径点击同样进右栏预览，工作区外回退系统程序；工作区变更（含 diff）、会话树；浏览器 tab（`<webview>`，仅 http/https）；侧边对话 tab（独立 pi 会话，可流式回复、停止、清空）；五个固定 tab、拖宽、全屏、状态持久化；默认收起，打开文件或 tab 时才展开，面板无独立标题行
 - 设置：DSH 式左导航分栏（通用/会话/提供商/技能与 MCP/行为/统计/扩展/关于/快捷操作）；提供商与 MCP 编辑写前自动备份
 - 窗口：记住大小/位置/最大化状态，启动时按上次恢复
 - 内置终端：底部抽屉，ANSI 清理、可拖高度、历史持久化、停止/复制
 - 模型菜单：按供应商分组、搜索、两级面板（模型 / 思考档位）
+- 外观：浅色/深色/跟随系统，正文字号/代码字号/终端字号/字体族；首屏前应用，避免闪白
+- 快捷键：`Ctrl/Cmd+/` 打开只读快捷键总览，支持搜索
 - 扩展 UI：pi 扩展的 select/confirm/input/editor、notify、status/widget
 
 ## 开发与验证
 
 ```powershell
-npm test          # 15 项行为/契约测试
+npm test          # 行为/契约测试
 npm run check     # 全量 node --check
 npm run build:portable   # dist/pi-mini 便携目录
 npm run build:zip        # dist/pi-mini-win64.zip（约 153 MB）

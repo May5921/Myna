@@ -115,7 +115,10 @@ export function init(ctx) {
 	.row.acts-pin > .acts { opacity: 1; pointer-events: auto; }
 	@media (hover: none) { .row > .acts { opacity: 1; pointer-events: auto; } }
 	.row.mine { flex-wrap: wrap; }
-	/* 用户消息的操作条浮在气泡下方，不参与布局（否则每条用户消息后多出 34px 空白） */
+	/* 用户消息的操作条浮在气泡下方（28px + 2px），行尾必须留出这段高度，
+	   否则图标会压到下一行（思考块/正文第一行）——之前为省空白用了纯浮层，
+	   结果就是“图标叠在字上”。 */
+	.row.mine { margin-bottom: calc(var(--turn-gap) + 22px); }
 	.row.mine > .acts { position: absolute; top: 100%; right: 0; margin-top: 2px; width: auto; justify-content: flex-end; }
 	.row.assistant > .acts { margin-top: 16px; margin-left: -6px; }
 	.row > .acts button {

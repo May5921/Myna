@@ -1,3 +1,16 @@
+import {
+	addStep,
+	emptyMetrics,
+	formatTokSpeed as fmtTokSpeed,
+	mergeMetrics,
+	parseMetrics,
+	summarizeMetrics,
+} from "./core/metrics.js";
+import { imagesFromContent } from "./core/content-images.js";
+import { initTheme, isDark } from "./theme.js";
+
+initTheme();
+
 const $ = (id) => document.getElementById(id);
 const stream = $("stream");
 const input = $("input");
@@ -16,7 +29,9 @@ const state = {
 	sessionName: null,
 	streaming: false,
 	collapsed: new Set(),
+	lastRenderedCwd: "", // 切工作区后给新打开的分组放一次展开动画
 	archived: new Set(),
+	archiveFilter: "hide",
 	archivedOpen: false,
 	names: {},
 	pinned: new Set(),
@@ -29,13 +44,15 @@ const state = {
 	projects: [],
 	projectsSeeded: false,
 	live: null, // 正在流式的 assistant 行
-	liveText: null, // 流式文本节点（增量追加，不重排）
+	liveText: null, // 流式 markdown 增量渲染器（append/flush + caret）
 	liveRaw: "",
 	textPending: "", // 待吐出的文本（pi-web 式匀速吐字）
 	revealRaf: 0,
 	revealTick: 0,
 	revealFinal: null, // message_end 到达但文本还没吐完时暂存
-	liveTps: null, // 流式速度指示（tokens / tok/s）
+	liveTps: null, // 实时吐字仪表：滑动窗口 + EMA + 迷你曲线
+	runTps: 0, // 本轮平均 tok/s，结算条用
+	runSpeed: { tokens: 0, ms: 0 }, // 多段 assistant 回合的累计解码时间/ token
 	liveThink: null, // 流式思考块（thinking_delta）
 	liveThinkRaw: "",
 	liveTokens: 0, // 已接收文本的增量 token 估算
@@ -43,6 +60,17 @@ const state = {
 	runClock: null, // 运行中状态行（思考中/生成中 + 已用时间，DSH RunningStatus）
 	pendingTools: [], // 正文还没落定时先排队的工具卡，finalize 写完 innerHTML 再插入
 	aborted: false, // 用户主动中断：settle 时画“已停止”标记（DSH 的 stopped tag）
+	abortRow: null, // 被中断的那一行；只标自己，别标到上一条历史回答
+	pendingUserEcho: "", // submit 已乐观插入的用户消息，等 pi 回显时跳过
+	lastTurnAborted: false, // 上一轮是用户中断：队列不要自动接力
+	switching: false, // 正在切换会话/工作区：期间禁止发送，避免发错会话
+	paintingHistory: false, // 历史批量渲染：抑制每条消息各自 follow 造成的反复滚动
+	sessionScroll: new Map(), // 每个会话的阅读位置：切回来别总是跳到底部
+	metrics: emptyMetrics(), // 会话级吐字统计（localStorage，按 sessionFile 分桶）
+	metricsKey: "",
+	newBucketEpoch: -1, // _new 桶属于哪一次会话切换（防串桶）
+	sessionEpoch: 0,
+	streamSeq: 0, // 流式状态版本号：过期的 get_state 回包不许覆盖它
 	runStart: 0,
 	runTools: 0,
 	tools: new Map(),
@@ -64,6 +92,23 @@ function estimateTokens(text) {
 		else rest++;
 	}
 	return cjk + rest / 4;
+}
+
+// 统一记录输出 token：思考与正文都算 output（pi 的 usage.output 也包含 reasoning）。
+// firstToken 必须从第一段思考/正文开始，否则“想了很久、正文很快”会被算成 781 tok/s。
+function markOutputTokens(delta) {
+	const n = estimateTokens(delta || "");
+	if (!n) return;
+	state.liveTokens += n;
+	const st = state.liveTps;
+	if (!st) return;
+	const now = performance.now();
+	if (!st.start) st.start = st.createdAt || now;
+	if (!st.firstToken) {
+		st.firstToken = now;
+		if (st.text) st.text.textContent = "生成中…";
+	}
+	st.marks.push({ t: now, n });
 }
 
 const fmtTokens = (n) => Math.round(n).toLocaleString("en-US");
@@ -417,7 +462,28 @@ function ensureLiveThink() {
 let stickBottom = true;
 
 function follow() {
+	if (state.paintingHistory) return;
 	if (stickBottom) stream.scrollTop = stream.scrollHeight;
+}
+
+// 切换会话前记住阅读位置；切回来时恢复，而不是永远跳到底部
+function rememberScroll(key) {
+	if (!key) return;
+	const max = stream.scrollHeight - stream.clientHeight;
+	const atBottom = stickBottom || max - stream.scrollTop < 24;
+	state.sessionScroll.set(key, atBottom ? { bottom: true } : { top: stream.scrollTop });
+}
+
+function restoreScroll(key) {
+	const mem = key ? state.sessionScroll.get(key) : null;
+	if (!mem || mem.bottom) {
+		stickBottom = true;
+		follow();
+		return;
+	}
+	stickBottom = false;
+	stream.scrollTop = Math.min(mem.top, Math.max(0, stream.scrollHeight - stream.clientHeight));
+	stream.dispatchEvent(new Event("scroll"));
 }
 
 function initScroll() {
@@ -434,6 +500,12 @@ function initScroll() {
 	};
 	// 回答里的路径变成可点链接：优先在右栏预览，工作区外再交给系统程序
 	stream.addEventListener("click", async (e) => {
+		const ext = e.target.closest(".xlink");
+		if (ext && ext.dataset.url) {
+			e.preventDefault();
+			if (/^https?:\/\//i.test(ext.dataset.url)) window.pi.openExternal(ext.dataset.url);
+			return;
+		}
 		const link = e.target.closest(".flink");
 		if (!link) return;
 		e.preventDefault();
@@ -452,11 +524,18 @@ function clearStream() {
 	state.revealFinal = null;
 	state.liveThink = null;
 	state.liveThinkRaw = "";
+	state.aborted = false;
+	state.abortRow = null;
+	state.pendingUserEcho = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
 	state.runClock = null;
 	state.pendingTools = [];
 	state.liveTps = null;
+	state.runTps = 0;
+	state.runStart = 0;
+	state.runTools = 0;
+	state.runSpeed = { tokens: 0, ms: 0 };
 	state.liveTokens = 0;
 	stream.innerHTML = "";
 	state.live = null;
@@ -483,18 +562,31 @@ function emptyHint(text = "选个目录，说句话。") {
 }
 
 // ---------- 渲染 ----------
-function addUser(text) {
+function addUser(text, images = []) {
 	stream.querySelector(".empty")?.remove();
 	const row = document.createElement("div");
 	row.className = "row mine";
 	const bubble = document.createElement("div");
 	bubble.className = "user";
 	bubble.textContent = text;
+	if (images.length) {
+		const box = document.createElement("div");
+		box.className = "user-imgs";
+		for (const item of images) {
+			const img = document.createElement("img");
+			img.className = "tool-img";
+			img.src = item.url;
+			img.alt = item.name || "图片";
+			box.append(img);
+		}
+		bubble.append(box);
+	}
 	row.append(bubble);
 	stream.append(row);
 	follow();
 	return row;
 }
+
 
 function addAssistantRow() {
 	// 上一条消息还没吐完就来了新消息：先收尾，别丢尾巴
@@ -504,6 +596,8 @@ function addAssistantRow() {
 	state.revealFinal = null;
 	// 一轮里只挂一行运行状态：新行接手，旧行先收摊，别两行同时闪
 	settleRunStatus();
+	// 上一段的最终读数也让位给新行，避免一轮里并排两个仪表（结算时会被清掉）
+	for (const old of stream.querySelectorAll(".row.assistant > .meta.settled")) old.hidden = true;
 	const row = document.createElement("div");
 	row.className = "row assistant fresh";
 	// 运行中状态行（DSH ChatView .running / RunningStatus.tsx）：先「思考中」，首 token 后「生成中」+ 已用时间
@@ -521,12 +615,8 @@ function addAssistantRow() {
 	runClock.setAttribute("aria-hidden", "true");
 	runClock.textContent = "0.0s";
 	runState.append(runText, runClock);
-	const tps = document.createElement("span");
-	tps.className = "tps wait";
-	tps.setAttribute("aria-hidden", "true");
-	// 计时已经在状态行里，t/s 徽标等首 token 出来再出现，避免两个时钟
-	tps.hidden = true;
-	meta.append(runState, tps);
+	const gauge = createTpsGauge();
+	meta.append(runState, gauge.gauge, gauge.card);
 	const body = document.createElement("div");
 	body.className = "body";
 	row.append(meta, body);
@@ -535,33 +625,61 @@ function addAssistantRow() {
 	state.liveRaw = "";
 	state.liveThinkRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
-	state.liveTps = { box: meta, el: tps, text: runText, start: 0 };
+	state.liveTps = {
+		...gauge,
+		text: runText,
+		start: 0,
+		createdAt: performance.now(),
+		marks: [],
+		samples: [],
+		ema: 0,
+		peak: 0,
+	};
 	// 用时按整轮算（DSH RunningStatus 的 turn startTime），工具阶段换行也不归零
 	state.runClock = { text: runText, clock: runClock, start: state.runStart || performance.now() };
 	state.liveTokens = 0;
-	state.tpsTimer = setInterval(tpsTick, 300);
-	const tn = document.createTextNode("");
-	body.append(tn);
-	const caret = document.createElement("span");
-	caret.className = "caret";
-	body.append(caret);
-	state.liveText = { node: tn, caret };
+	state.tpsTimer = setInterval(tpsTick, 100);
+	state.liveText = createLiveMarkdown(body);
 	follow();
 	return row;
 }
 
-// 运行中状态行收尾（DSH 的 running 槽只在运行期存在）：清计时器、去掉状态文字，
-// 行里只剩 t/s 摘要时保留，什么都没有就整行藏掉
+// 运行中状态行收尾（DSH 的 running 槽只在运行期存在）：清计时器、去掉状态文字。
+// 最后一行的仪表保留最终读数，回答结束后仍能点开看本轮/会话统计；
+// 更早回合的仪表在下一轮结算时清掉，避免一屏徽标。
 function settleRunStatus() {
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
 	state.runClock = null;
-	for (const meta of stream.querySelectorAll(".row.assistant > .meta.running")) {
-		meta.querySelector(":scope > .run-state")?.remove();
-		meta.classList.remove("running");
-		const tps = meta.querySelector(":scope > .tps");
-		meta.hidden = !tps || tps.hidden || !tps.textContent;
+	const st = state.liveTps;
+	state.liveTps = null;
+	for (const old of stream.querySelectorAll(".row.assistant > .meta.settled")) {
+		old.querySelector(":scope > .tps-gauge")?.remove();
+		old.querySelector(":scope > .tps-card")?.remove();
+		old.classList.remove("settled");
+		old.hidden = true;
 	}
+	const metas = [...stream.querySelectorAll(".row.assistant > .meta.running")];
+	metas.forEach((meta, i) => {
+		meta.querySelector(":scope > .run-state")?.remove();
+		const gauge = meta.querySelector(":scope > .tps-gauge");
+		const hasReading = st && (st.firstToken || st.done);
+		if (i === metas.length - 1 && gauge && hasReading) {
+			if (state.runTps > 0) {
+				const nowEl = gauge.querySelector(".tps-now");
+				if (nowEl) nowEl.textContent = fmtTokSpeed(state.runTps);
+			}
+			gauge.classList.remove("idle");
+			meta.classList.remove("running");
+			meta.classList.add("settled");
+			meta.hidden = false;
+			return;
+		}
+		meta.querySelector(":scope > .tps-card")?.remove();
+		gauge?.remove();
+		meta.classList.remove("running");
+		meta.hidden = true;
+	});
 }
 
 // 工具卡落到最新一条 assistant 的正文里；正文还在吐字/等重写时先排队，
@@ -587,6 +705,96 @@ function flushPendingTools(body) {
 	if (!body || !state.pendingTools.length) return;
 	body.append(...state.pendingTools);
 	state.pendingTools = [];
+}
+
+// ---- 流式 markdown：按空行切块，冻结已完成段落，只重渲染尾部 ----
+// 流式期间如果只往一个文本节点里 append，换行会被压成空格，整轮结束才出现自然段。
+// 这里按 DSH incremental.ts 的思路做块级增量：空行分隔的已完成块只解析一次。
+function splitLiveBlocks(source) {
+	const blocks = [];
+	let current = [];
+	let fence = null;
+	for (const line of String(source || "").split("\n")) {
+		const trimmed = line.trim();
+		const marker = /^(```+|~~~+)/.exec(trimmed);
+		if (fence) {
+			current.push(line);
+			if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+			continue;
+		}
+		if (marker) {
+			fence = marker[1];
+			current.push(line);
+			continue;
+		}
+		if (!trimmed) {
+			if (current.length) {
+				blocks.push(current.join("\n"));
+				current = [];
+			}
+			continue;
+		}
+		current.push(line);
+	}
+	if (current.length) blocks.push(current.join("\n"));
+	return blocks;
+}
+
+function createLiveMarkdown(body) {
+	const frozen = document.createElement("div");
+	frozen.className = "live-frozen";
+	const tail = document.createElement("div");
+	tail.className = "live-tail";
+	body.append(frozen, tail);
+	const caret = document.createElement("span");
+	caret.className = "caret";
+	let text = "";
+	let frozenCount = 0;
+	let lastPaint = 0;
+	let timer = 0;
+	const paint = () => {
+		const blocks = splitLiveBlocks(text);
+		const tailText = blocks.pop() ?? "";
+		for (; frozenCount < blocks.length; frozenCount++) {
+			const block = document.createElement("div");
+			block.className = "live-block";
+			block.innerHTML = md(blocks[frozenCount]);
+			frozen.append(block);
+		}
+		tail.innerHTML = tailText ? md(tailText) : "";
+		// 光标跟在最后一个字符后面，而不是另起一行
+		const last = tail.lastElementChild;
+		if (last && last.tagName !== "PRE") last.append(caret);
+		else tail.append(caret);
+	};
+	// 尾部每个字符都变，但 md() 不必每帧跑；80ms 一次肉眼仍是连续吐字
+	const schedule = () => {
+		const now = performance.now();
+		if (now - lastPaint >= 80) {
+			lastPaint = now;
+			paint();
+			return;
+		}
+		if (timer) return;
+		timer = setTimeout(() => {
+			timer = 0;
+			lastPaint = performance.now();
+			paint();
+		}, 80);
+	};
+	return {
+		append(chunk) {
+			text += chunk;
+			schedule();
+		},
+		flush() {
+			if (timer) clearTimeout(timer);
+			timer = 0;
+			lastPaint = performance.now();
+			paint();
+		},
+		caret,
+	};
 }
 
 // ---- pi-web 式吐字：delta 先进缓冲，再按稳定速率逐帧吐出 ----
@@ -618,7 +826,7 @@ function revealStep(now) {
 		let n = Math.max(1, Math.round((rate * dt) / 1000));
 		if (backlog > 240) n = Math.max(n, Math.ceil(backlog / 6));
 		n = Math.min(n, backlog);
-		state.liveText.node.appendData(state.textPending.slice(0, n));
+		state.liveText.append(state.textPending.slice(0, n));
 		state.textPending = state.textPending.slice(n);
 		follow();
 	}
@@ -631,42 +839,273 @@ function revealStep(now) {
 	}
 }
 
-// 运行中状态行 + 流式速度：每 300ms 刷一次用时，首 token 之后再补 t/s 徽标
+// 吐字仪表：数字 + 迷你曲线 + 点击展开的读数卡
+// 会话级统计：按 sessionFile 分桶存 localStorage，重启后仍在
+const METRICS_PREFIX = "pi-mini.metrics.";
+const metricsKeyOf = (file) => `${METRICS_PREFIX}${file || "_new"}`;
+
+function readMetricsStore(key) {
+	try {
+		return parseMetrics(localStorage.getItem(key) || "");
+	} catch {
+		return emptyMetrics();
+	}
+}
+
+function writeMetricsStore(key, metrics) {
+	try {
+		localStorage.setItem(key, JSON.stringify(metrics));
+		return true;
+	} catch {
+		// 配额满：返回失败，调用方不能删源桶，否则数据直接丢
+		return false;
+	}
+}
+
+function refreshSessionMetrics() {
+	const key = metricsKeyOf(state.sessionFile);
+	if (state.metricsKey === key) return;
+	const oldKey = state.metricsKey;
+	state.metricsKey = key;
+	// 新会话第一轮结束前 sessionFile 还是 null：把 _new 的统计并进正式文件。
+	// 只有 _new 仍属于「当前这次会话」时才迁移；切走后才回包的 get_state 属于别的会话，
+	// 迁过去就会污染别人的均速/首字。
+	if (oldKey && oldKey === metricsKeyOf(null) && key !== oldKey) {
+		const carried = readMetricsStore(oldKey);
+		const owned = state.newBucketEpoch === state.sessionEpoch;
+		if (carried.steps > 0 && owned) {
+			state.metrics = mergeMetrics(readMetricsStore(key), carried);
+			if (writeMetricsStore(key, state.metrics)) {
+				try {
+					localStorage.removeItem(oldKey);
+				} catch {}
+			}
+			return;
+		}
+		try {
+			localStorage.removeItem(oldKey);
+		} catch {}
+		state.newBucketEpoch = -1;
+	}
+	state.metrics = readMetricsStore(key);
+}
+
+function recordStepMetrics(step) {
+	const key = metricsKeyOf(state.sessionFile);
+	if (!state.sessionFile) {
+		// _new 是全局单桶：换了会话就先把旧内容丢掉，别并进新会话
+		if (state.newBucketEpoch !== state.sessionEpoch) {
+			try {
+				localStorage.removeItem(key);
+			} catch {}
+			state.newBucketEpoch = state.sessionEpoch;
+		}
+	}
+	const base = state.metricsKey === key ? state.metrics : readMetricsStore(key);
+	const next = addStep(base, step);
+	if (next.steps === base.steps) return;
+	state.metrics = next;
+	state.metricsKey = key;
+	writeMetricsStore(key, next);
+}
+
+function sparkPoints(samples, peak) {
+	const n = samples.length;
+	if (!n) return "";
+	// 量程留一个下限，低速时曲线不会顶满整格
+	const max = Math.max(20, peak);
+	return samples
+		.map((value, i) => {
+			const x = n <= 1 ? 0 : (i / (n - 1)) * 56;
+			const y = 15 - Math.max(0, Math.min(1, value / max)) * 13;
+			return `${x.toFixed(1)},${y.toFixed(1)}`;
+		})
+		.join(" ");
+}
+
+function createTpsGauge() {
+	const NS = "http://www.w3.org/2000/svg";
+	const gauge = document.createElement("button");
+	gauge.type = "button";
+	gauge.className = "tps-gauge";
+	gauge.hidden = true;
+	gauge.title = "实时吐字速度（点击查看详情）";
+	gauge.setAttribute("aria-label", "实时吐字速度");
+	gauge.setAttribute("aria-expanded", "false");
+	const svg = document.createElementNS(NS, "svg");
+	svg.setAttribute("viewBox", "0 0 56 16");
+	svg.setAttribute("class", "tps-spark");
+	svg.setAttribute("aria-hidden", "true");
+	const line = document.createElementNS(NS, "polyline");
+	line.setAttribute("fill", "none");
+	line.setAttribute("stroke", "currentColor");
+	line.setAttribute("stroke-width", "1.2");
+	line.setAttribute("stroke-linecap", "round");
+	line.setAttribute("stroke-linejoin", "round");
+	svg.append(line);
+	const nowEl = document.createElement("span");
+	nowEl.className = "tps-now";
+	nowEl.textContent = "0";
+	const unit = document.createElement("span");
+	unit.className = "tps-unit";
+	unit.textContent = "tok/s";
+	gauge.append(svg, nowEl, unit);
+
+	const card = document.createElement("div");
+	card.className = "tps-card";
+	card.hidden = true;
+	const refs = {};
+	const addRow = (key, label) => {
+		const row = document.createElement("div");
+		row.className = "tps-line";
+		const k = document.createElement("span");
+		k.className = "tps-k";
+		k.textContent = label;
+		const v = document.createElement("span");
+		v.className = "tps-v";
+		v.textContent = "—";
+		row.append(k, v);
+		card.append(row);
+		refs[key] = v;
+	};
+	for (const [key, label] of [
+		["current", "当前"],
+		["avg", "平均"],
+		["peak", "峰值"],
+		["ttft", "首字"],
+		["tokens", "输出"],
+		["decode", "解码"],
+		["time", "用时"],
+	]) addRow(key, label);
+
+	const addSection = (title, pairs) => {
+		const sep = document.createElement("div");
+		sep.className = "tps-sep";
+		const sub = document.createElement("div");
+		sub.className = "tps-sub";
+		sub.textContent = title;
+		card.append(sep, sub);
+		for (const [key, label] of pairs) addRow(key, label);
+	};
+	addSection("本会话 · 本地", [
+		["sessTps", "均速"],
+		["sessTtft", "首字"],
+		["sessSteps", "步数"],
+	]);
+	addSection("本会话 · pi", [
+		["sessOut", "输出"],
+		["sessCache", "缓存"],
+		["sessCost", "费用"],
+	]);
+
+	const loadStats = async () => {
+		// 本地累计先填，pi 的总量异步补
+		const sum = summarizeMetrics(state.metrics);
+		refs.sessTps.textContent = sum.avgTps > 0 ? `${fmtTokSpeed(sum.avgTps)} tok/s` : "—";
+		refs.sessTtft.textContent = sum.avgTtftMs > 0 ? `${(sum.avgTtftMs / 1000).toFixed(2)}s` : "—";
+		refs.sessSteps.textContent = sum.steps > 0 ? String(sum.steps) : "—";
+		if (refs.statsAt && Date.now() - refs.statsAt < 5000) return;
+		try {
+			const s = await window.pi.command({ type: "get_session_stats" });
+			const tk = s?.tokens && typeof s.tokens === "object" ? s.tokens : {};
+			const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+			const billed = num(tk.input) + num(tk.cacheRead) + num(tk.cacheWrite);
+			refs.sessOut.textContent = fmtTokens(num(tk.output));
+			refs.sessCache.textContent = billed > 0 ? `${Math.round((num(tk.cacheRead) / billed) * 100)}%` : "—";
+			refs.sessCost.textContent = Number.isFinite(s?.cost) ? `$${s.cost.toFixed(s.cost > 0 && s.cost < 1 ? 4 : 2)}` : "—";
+			refs.statsAt = Date.now();
+		} catch {
+			refs.sessOut.textContent = "—";
+			refs.sessCache.textContent = "—";
+			refs.sessCost.textContent = "—";
+		}
+	};
+
+	gauge.onclick = (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		card.hidden = !card.hidden;
+		gauge.setAttribute("aria-expanded", String(!card.hidden));
+		if (!card.hidden) void loadStats();
+	};
+	return { gauge, card, line, nowEl, refs };
+}
+
+// 运行中状态行 + 流式速度：每 100ms 刷新；速度取最近 1.2s 的滑动窗口再平滑
 function tpsTick() {
 	if (state.runClock) {
 		const used = (performance.now() - state.runClock.start) / 1000;
 		state.runClock.clock.textContent = `${used.toFixed(1)}s`;
 	}
 	const st = state.liveTps;
-	if (!st || !state.liveText || !st.start) return;
-	const elapsed = (performance.now() - st.start) / 1000;
+	if (!st || !st.start) return;
+	const now = performance.now();
+	const elapsed = (now - st.start) / 1000;
 	if (elapsed < 0.5) return;
-	const speed = state.liveTokens / elapsed;
-	st.el.hidden = false;
-	st.el.className = "tps";
-	st.el.textContent = `↓ ${fmtTokens(state.liveTokens)} · ${speed.toFixed(1)} tok/s`;
-	st.el.style.background =
-		speed >= 50 ? "#53b3cb" : speed >= 30 ? "#9bc53d" : speed >= 15 ? "#f9c22e" : "#e01a4f";
+	// 最近 1.2s 的 token 增量 / 窗口秒数 = 瞬时速度；再和上一帧做 EMA
+	const cutoff = now - 1200;
+	while (st.marks.length && st.marks[0].t < cutoff) st.marks.shift();
+	let sum = 0;
+	for (const mark of st.marks) sum += mark.n;
+	// 至少按 0.5s 计：首包/短回答整段到达时，除以几十毫秒会算出几百 tok/s 的假速度
+	const windowSec = Math.max(0.5, Math.min(1.2, elapsed));
+	const inst = sum / windowSec;
+	st.ema = st.ema ? st.ema * 0.72 + inst * 0.28 : inst;
+	const speed = st.ema;
+	st.peak = Math.max(st.peak, inst); // 峰值用瞬时值，不用 EMA（EMA 会系统性压低峰值）
+	st.samples.push(speed);
+	if (st.samples.length > 56) st.samples.shift();
+	// 纯工具消息没有正文：别亮一个 0 tok/s 的仪表，看起来像卡死。
+	// 首个 token 后先攒 0.8s / 12 token，避免短回答闪出一个失真的高速度。
+	if (!st.firstToken && !st.done) return;
+	if (!st.done && elapsed < 0.8 && state.liveTokens < 12) return;
+	st.gauge.hidden = false;
+	st.gauge.classList.toggle("idle", speed < 1);
+	st.nowEl.textContent = fmtTokSpeed(speed);
+	st.line.setAttribute("points", sparkPoints(st.samples, st.peak));
+	st.refs.current.textContent = `${fmtTokSpeed(speed)} tok/s`;
+	const decodeSec = st.firstToken ? (now - st.firstToken) / 1000 : 0;
+	const avg = st.done && st.avg ? st.avg : decodeSec > 0 ? state.liveTokens / decodeSec : 0;
+	const tokens = st.done && Number.isFinite(st.total) ? st.total : state.liveTokens;
+	st.refs.avg.textContent = `${fmtTokSpeed(avg)} tok/s`;
+	st.refs.peak.textContent = `${fmtTokSpeed(st.peak)} tok/s`;
+	st.refs.ttft.textContent = st.firstToken && st.start ? `${((st.firstToken - st.start) / 1000).toFixed(2)}s` : "—";
+	st.refs.tokens.textContent = fmtTokens(tokens);
+	const decodeNow = st.done && st.decodeMs ? st.decodeMs / 1000 : decodeSec;
+	st.refs.decode.textContent = decodeNow > 0 ? `${decodeNow.toFixed(1)}s` : "—";
+	st.refs.time.textContent = `${elapsed.toFixed(1)}s`;
 }
 
 function finalizeAssistant(message) {
+	// 幂等：多条 assistant 消息/中断/进程退出可能重复调用，统计副作用只能算一次
+	if (!state.live) return;
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
 	// 计时器不在这里停：正文定型后运行中状态行还要继续走到 agent_settled
 	const st = state.liveTps;
-	state.liveTps = null;
-	const total = Math.max(state.liveTokens, Number(message?.usage?.output) || 0);
-	const elapsed = st?.start ? (performance.now() - st.start) / 1000 : 0;
-	if (st?.el && total > 0 && elapsed > 0.5) {
-		st.el.className = "tps done";
-		st.el.style.background = "";
-		st.el.hidden = false;
-		st.el.textContent = `${fmtTokens(total)} tokens · 平均 ${(total / elapsed).toFixed(1)} tok/s`;
-	} else if (st?.el) {
-		st.el.hidden = true;
+	// 优先用 pi 上报的 output tokens；流式期只有估算
+	const reported = Number(message?.usage?.output);
+	const total = Number.isFinite(reported) && reported > 0 ? reported : state.liveTokens;
+	const endAt = st?.endAt || performance.now();
+	const decodeMs = st?.firstToken ? Math.max(1, endAt - st.firstToken) : 0;
+	const ttftMs = st?.start && st.firstToken ? Math.max(0, st.firstToken - st.start) : 0;
+	if (st) {
+		// 正文结束：仪表继续跑，速度自然衰减到 0（工具阶段不该停在最后一个读数）
+		st.done = true;
+		st.total = total;
+		st.decodeMs = decodeMs;
+		st.ttftMs = ttftMs;
+		st.avg = decodeMs > 0 ? total / (decodeMs / 1000) : 0;
 	}
-	if (!state.live) return;
+	// 平均速度只算解码时间（首 token → 完成），与 DSH 的口径一致；阈值与 addStep 一致
+	if (total > 0 && decodeMs > 0) {
+		state.runSpeed.tokens += total;
+		state.runSpeed.ms += decodeMs;
+	}
+	state.runTps = state.runSpeed.ms > 0 ? state.runSpeed.tokens / (state.runSpeed.ms / 1000) : 0;
+	recordStepMetrics({ tokens: total, decodeMs, ttftMs });
+	if (st?.card) st.card.hidden = true;
 	const body = state.live.body;
 	const think = thinkText(message);
 	const lt = state.liveThink;
@@ -687,6 +1126,20 @@ function finalizeAssistant(message) {
 	flushPendingTools(body);
 	applyHighlight(body);
 	follow();
+	// 窗口在后台时给系统通知（Electron 渲染层 HTML5 Notification）
+	if (document.hidden && !state.aborted && text.trim() && Date.now() - lastDoneNotice > 6000) {
+		lastDoneNotice = Date.now();
+		try {
+			const n = new Notification("myna", {
+				body: text.replace(/\s+/g, " ").slice(0, 140),
+				icon: new URL("./assets/icon.png", location.href).href,
+			});
+			n.onclick = () => {
+				window.focus();
+				n.close();
+			};
+		} catch {}
+	}
 }
 
 // ---------- 视口内懒高亮（对齐 useViewportHighlighting）----------
@@ -705,7 +1158,7 @@ function applyHighlight(root) {
 					lang: pre.dataset.lang || "",
 				}));
 				window.pi
-					.highlight(items)
+					.highlight(items, { dark: isDark() })
 					.then((htmls) => {
 						htmls.forEach((html, i) => {
 							if (!html) return;
@@ -731,6 +1184,19 @@ function applyHighlight(root) {
 		hlObserver.observe(pre);
 	}
 }
+
+// 主题切换后重高亮已渲染代码块（shiki 主题色是内联的，CSS 覆盖不了）
+window.addEventListener("myna:theme", () => {
+	if (!hlObserver) return;
+	for (const pre of stream.querySelectorAll("pre.shiki")) {
+		const code = pre.querySelector("code");
+		if (!code) continue;
+		code.textContent = code.textContent;
+		pre.classList.remove("shiki");
+		pre.dataset.hl = "1";
+		hlObserver.observe(pre);
+	}
+});
 
 // ---------- 工具调用卡片 ----------
 const ICON_TERMINAL =
@@ -809,6 +1275,14 @@ function bindDisclosure(root) {
 		e.preventDefault();
 		toggleDisclosure(root);
 	});
+}
+
+// 一轮结束：工具卡、命令输出、思考块统一折回去（用户展开过的也收）
+function collapseTurnBlocks() {
+	for (const el of stream.querySelectorAll('.tool[data-open="1"]')) toggleDisclosure(el, false);
+	for (const el of stream.querySelectorAll('.think[data-open="1"]')) {
+		el.querySelector(".think-row")?.click();
+	}
 }
 
 function buildToolRow({ name, args, output, diff, isError, durationMs }) {
@@ -1087,6 +1561,35 @@ function renderHistory(messages) {
 	paintHistory(false);
 }
 
+// 右栏会话树点击：把主对话滚到对应消息并闪一下。
+// index 是「user/assistant 消息」里的序号，和树的活动分支过滤后一一对应。
+function focusMessage(index) {
+	// 流式中重绘历史会把 live 行摘掉，等这轮结束再定位
+	if (state.streaming) return false;
+	const all = state.historyAll || [];
+	const chatIdx = [];
+	for (let i = 0; i < all.length; i++) {
+		if (all[i].role === "user" || all[i].role === "assistant") chatIdx.push(i);
+	}
+	const target = chatIdx[index];
+	if (target == null) return false;
+	// 分页状态下也必须把目标行渲染出来，否则序号对不上
+	if (!state.historyShown || state.historyShown < all.length) {
+		state.historyShown = all.length;
+		paintHistory(false);
+	}
+	const rows = [...stream.querySelectorAll(".row.mine, .row.assistant")];
+	const row = rows[index];
+	if (!row) return false;
+	row.scrollIntoView({ block: "center", behavior: "smooth" });
+	row.classList.remove("flash");
+	void row.offsetWidth;
+	row.classList.add("flash");
+	setTimeout(() => row.classList.remove("flash"), 1500);
+	row.focus?.({ preventScroll: true });
+	return true;
+}
+
 function paintHistory(keepAnchor) {
 	const all = state.historyAll || [];
 	if (!all.length) {
@@ -1106,15 +1609,25 @@ function paintHistory(keepAnchor) {
 		more.type = "button";
 		more.className = "history-more";
 		more.textContent = `加载更早的消息（还有 ${from} 条）`;
-		more.addEventListener("click", () => {
-			state.historyShown = all.length - from + HISTORY_PAGE;
+		more.addEventListener("click", async () => {
+			if (state.streaming || state.switching) return;
+			// historyAll 可能是本轮之前的快照：分页前重拉一次，否则会把刚结束的一轮抹掉
+			let list = state.historyAll || [];
+			try {
+				const h = await window.pi.command({ type: "get_messages" });
+				if (Array.isArray(h?.messages)) list = h.messages.filter((m) => m.role !== "system");
+				state.historyAll = list;
+			} catch {}
+			state.historyShown = Math.min(list.length, (state.historyShown || HISTORY_PAGE) + HISTORY_PAGE);
 			paintHistory(true);
 		});
 		stream.append(more);
 	}
 	const toolRows = new Map();
 	let lastTs = 0;
-	for (const m of all.slice(from)) {
+	state.paintingHistory = true;
+	try {
+		for (const m of all.slice(from)) {
 		if (m.role === "user" && m.timestamp) {
 			// 超过 10 分钟或跨天就插一条时间分隔
 			if (!lastTs || Math.abs(new Date(m.timestamp) - new Date(lastTs)) > 600000) {
@@ -1124,7 +1637,7 @@ function paintHistory(keepAnchor) {
 			lastTs = m.timestamp;
 		}
 		if (m.role === "user") {
-			addUser(blockText(m.content));
+			addUser(blockText(m.content), imagesFromContent(m.content));
 		} else if (m.role === "assistant") {
 			const row = document.createElement("div");
 			row.className = "row assistant";
@@ -1158,6 +1671,9 @@ function paintHistory(keepAnchor) {
 				appendToolImages(el, m.content);
 			}
 		}
+		}
+	} finally {
+		state.paintingHistory = false;
 	}
 	if (keepAnchor) {
 		stickBottom = false;
@@ -1257,6 +1773,7 @@ function saveCollapsed() {
 }
 
 const ARCHIVE_KEY = "pi-mini.archived";
+const ARCHIVE_FILTER_KEY = "pi-mini.archive-filter";
 const NAMES_KEY = "pi-mini.names";
 const PIN_KEY = "pi-mini.pinned";
 
@@ -1310,14 +1827,61 @@ function sessionLabel(s) {
 }
 
 function toggleArchive(s) {
-	if (state.archived.has(s.path)) state.archived.delete(s.path);
+	const wasArchived = state.archived.has(s.path);
+	if (wasArchived) state.archived.delete(s.path);
 	else state.archived.add(s.path);
 	saveArchived();
 	renderSessions();
+	notice(wasArchived ? "已取消归档" : "已归档", {
+		label: "撤销",
+		onClick: () => {
+			if (wasArchived) state.archived.add(s.path);
+			else state.archived.delete(s.path);
+			saveArchived();
+			renderSessions();
+		},
+	});
 }
 
-function relTime(ts) {
-	const t = new Date(ts).getTime();
+// 导出当前会话为 Markdown（使用已加载的 get_messages，工具结果折叠进 details）
+async function exportMarkdown() {
+	let messages = [];
+	try {
+		const h = await window.pi.command({ type: "get_messages" });
+		messages = Array.isArray(h?.messages) ? h.messages.filter((m) => m.role !== "system") : [];
+	} catch (e) {
+		notice(`导出失败：${e.message}`);
+		return;
+	}
+	const title = sessionLabel({ path: state.sessionFile, name: state.sessionName }) || "myna 会话";
+	const lines = [`# ${title}`, ""];
+	for (const m of messages) {
+		const text = blockText(m.content).trim();
+		if (m.role === "user") {
+			if (text) lines.push("## 你", "", text, "");
+			for (const img of imagesFromContent(m.content)) lines.push("_[图片]_", "");
+		} else if (m.role === "assistant") {
+			const think = thinkText(m).trim();
+			if (think) lines.push("<details><summary>思考</summary>", "", think, "", "</details>", "");
+			if (text) lines.push("## myna", "", text, "");
+			for (const b of Array.isArray(m.content) ? m.content : []) {
+				if (b?.type === "toolCall") lines.push(`- 调用工具 \`${b.name}\``);
+			}
+			if (text || think) lines.push("");
+		}
+	}
+	const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+	const a = document.createElement("a");
+	a.href = URL.createObjectURL(blob);
+	a.download = `${String(title).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80) || "myna"}.md`;
+	document.body.append(a);
+	a.click();
+	a.remove();
+	setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+	notice("已导出 Markdown");
+}
+
+function relTime(ts) {	const t = new Date(ts).getTime();
 	if (!Number.isFinite(t)) return "";
 	const d = Date.now() - t;
 	if (d < 60_000) return "刚刚";
@@ -1374,6 +1938,32 @@ function sessionRow(s) {
 		pop.hidden = true;
 		startRename(row, s, name);
 	};
+	const copyId = document.createElement("button");
+	copyId.type = "button";
+	copyId.textContent = "复制会话 ID";
+	copyId.onclick = async (e) => {
+		e.stopPropagation();
+		pop.hidden = true;
+		const id = String(s.id || s.path || "")
+			.split(/[\\/]/)
+			.pop()
+			.replace(/\.jsonl$/i, "");
+		try {
+			await navigator.clipboard.writeText(id);
+		} catch {
+			const ta = document.createElement("textarea");
+			ta.value = id;
+			ta.style.position = "fixed";
+			ta.style.opacity = "0";
+			document.body.append(ta);
+			ta.select();
+			try {
+				document.execCommand("copy");
+			} catch {}
+			ta.remove();
+		}
+		notice("会话 ID 已复制");
+	};
 	const arch = document.createElement("button");
 	arch.type = "button";
 	arch.textContent = state.archived.has(s.path) ? "取消归档" : "归档";
@@ -1381,7 +1971,19 @@ function sessionRow(s) {
 		e.stopPropagation();
 		toggleArchive(s);
 	};
-	pop.append(pin, rename, arch);
+	const md = document.createElement("button");
+	md.type = "button";
+	md.textContent = "导出 Markdown";
+	md.onclick = (e) => {
+		e.stopPropagation();
+		pop.hidden = true;
+		if (s.path !== state.sessionFile) {
+			notice("先打开该会话再导出 Markdown");
+			return;
+		}
+		exportMarkdown();
+	};
+	pop.append(pin, rename, copyId, md, arch);
 	actions.onclick = (e) => {
 		e.stopPropagation();
 		const wasHidden = pop.hidden;
@@ -1511,8 +2113,40 @@ function paintSearchResults() {
 	}
 }
 
+let lastSessionsKey = "";
+
 function renderSessions() {
 	const list = $("list");
+	// 每轮 refreshState 都会调用这里，但模型/流式状态变化不影响侧栏。
+	// 用一份轻量签名跳过无变化的整树重建（600 个会话时省掉大量 DOM 操作）。
+	const sessionSig = state.sessions
+		.map((s) => `${s.path}\u0001${s.timestamp || ""}\u0001${s.name || ""}\u0001${s.title || ""}`)
+		.join("\u0002");
+	const key = [
+		state.cwd,
+		state.sideSearch ? 1 : 0,
+		state.sideQuery,
+		state.archiveFilter,
+		state.archivedOpen ? 1 : 0,
+		state.sessionFile,
+		state.sessionPage,
+		state.projects.join("\u0001"),
+		[...state.archived].sort().join("\u0001"),
+		[...state.pinned].sort().join("\u0001"),
+		JSON.stringify(state.names),
+		[...state.collapsed].sort().join("\u0001"),
+		[...(state.expandedGroups || [])].sort().join("\u0001"),
+		state.searchQuery,
+		state.searchResults.length,
+		state.searchResults.map((h) => h.path).join("\u0001"),
+		state.searchBusy ? 1 : 0,
+		state.searchTruncated ? 1 : 0,
+		sessionSig,
+	].join("\u0003");
+	if (key === lastSessionsKey && list.childElementCount) return;
+	lastSessionsKey = key;
+	// 每轮结束都会 refreshState → 重建侧栏；不记住 scrollTop 会跳回顶部
+	const prevTop = list.scrollTop;
 	list.innerHTML = "";
 
 	const newBtn = document.createElement("button");
@@ -1528,6 +2162,13 @@ function renderSessions() {
 	if (!state.archivedSeeded) {
 		state.archived = loadArchived();
 		state.archivedSeeded = true;
+	}
+	if (!state.archiveFilterSeeded) {
+		try {
+			const v = localStorage.getItem(ARCHIVE_FILTER_KEY);
+			if (v === "hide" || v === "all" || v === "only") state.archiveFilter = v;
+		} catch {}
+		state.archiveFilterSeeded = true;
 	}
 	if (!state.namesSeeded) {
 		state.names = loadNames();
@@ -1571,7 +2212,29 @@ function renderSessions() {
 	bind.setAttribute("aria-label", "绑定工作项目");
 	bind.innerHTML = FOLDER_PLUS_ICON;
 	bind.onclick = pifold;
-	head.append(title, grow, search, bind);
+	const arcFilter = document.createElement("button");
+	arcFilter.type = "button";
+	arcFilter.className = "side-icon";
+	const ARC_MODES = {
+		hide: ["隐藏归档", "归档会话已隐藏，点击显示"],
+		all: ["显示全部", "含归档会话，点击只看归档"],
+		only: ["仅归档", "只显示归档会话，点击恢复隐藏"],
+	};
+	const arcNow = ARC_MODES[state.archiveFilter] || ARC_MODES.hide;
+	arcFilter.title = `归档筛选：${arcNow[1]}`;
+	arcFilter.setAttribute("aria-label", `归档筛选：${arcNow[0]}`);
+	arcFilter.innerHTML =
+		'<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.2 5.2h11.6M4.3 5.2v6.2c0 .7.6 1.3 1.3 1.3h4.8c.7 0 1.3-.6 1.3-1.3V5.2M6.3 8h3.4"/><path d="M4.6 2.8h6.8l1 2.4H3.6l1-2.4Z"/></svg>';
+	arcFilter.onclick = () => {
+		const next = state.archiveFilter === "hide" ? "all" : state.archiveFilter === "all" ? "only" : "hide";
+		state.archiveFilter = next;
+		try {
+			localStorage.setItem(ARCHIVE_FILTER_KEY, next);
+		} catch {}
+		renderSessions();
+		notice(`归档筛选：${ARC_MODES[next][0]}`);
+	};
+	head.append(title, grow, search, arcFilter, bind);
 	list.append(head);
 
 	const q = String(state.sideQuery || "").trim().toLowerCase();
@@ -1641,7 +2304,9 @@ function renderSessions() {
 			const text = `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase();
 			if (!text.includes(q)) continue;
 		}
-		if (state.archived.has(s.path) && s.path !== state.sessionFile) continue;
+		const isArc = state.archived.has(s.path);
+		if (isArc && s.path !== state.sessionFile && state.archiveFilter === "hide") continue;
+		if (!isArc && s.path !== state.sessionFile && state.archiveFilter === "only") continue;
 		if (!byCwd.has(key)) byCwd.set(key, []);
 		byCwd.get(key).push(s);
 	}
@@ -1745,21 +2410,50 @@ function renderSessions() {
 		list.append(proj);
 
 		const kids = document.createElement("div");
-		kids.className = "kids";
-		kids.hidden = !open;
+		const inner = document.createElement("div");
+		inner.className = "kids-inner";
+		kids.append(inner);
+		// 切工作区后的第一次渲染：新分组用展开动画，而不是瞬间出现
+		const reveal = current && !!state.lastRenderedCwd && state.lastRenderedCwd !== cwd;
+		const cls = "kids" + (open ? " open" : "") + (reveal ? " reveal" : "");
+		kids.className = cls;
+		kids.setAttribute("aria-hidden", open ? "false" : "true");
+		inner.style.overflow = open ? "" : "hidden";
+		if (current) state.lastRenderedCwd = cwd;
+
+		const setKidsOpen = (on) => {
+			proj.classList.toggle("open", on);
+			proj.setAttribute("aria-expanded", on ? "true" : "false");
+			kids.setAttribute("aria-hidden", on ? "false" : "true");
+			clearTimeout(kids._openTimer);
+			if (on) {
+				// 展开期间必须裁剪，动画结束后恢复，否则会话菜单会被裁掉
+				inner.style.overflow = "hidden";
+				kids.classList.add("open");
+				kids._openTimer = setTimeout(() => {
+					inner.style.overflow = "";
+				}, 220);
+			} else {
+				inner.style.overflow = "hidden";
+				kids.classList.remove("open");
+			}
+		};
+
 		proj.onclick = async (e) => {
 			// 菜单项自己处理，别连带折叠分组
 			if (e.target.closest(".proj-menu")) return;
 			if (!current) {
+				// 切工作区：先展开它，让点击的反馈就是“文件夹打开”
+				state.collapsed.delete(cwd);
+				saveCollapsed();
+				setKidsOpen(true);
 				await bindWorkspace(cwd);
 				return;
 			}
 			const nowOpen = state.collapsed.has(cwd);
 			if (nowOpen) state.collapsed.delete(cwd);
 			else state.collapsed.add(cwd);
-			kids.hidden = !nowOpen;
-			proj.classList.toggle("open", nowOpen);
-			proj.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+			setKidsOpen(nowOpen);
 			saveCollapsed();
 		};
 		proj.onkeydown = (e) => {
@@ -1770,7 +2464,7 @@ function renderSessions() {
 		};
 
 		for (const s of items.slice(0, state.expandedGroups?.has(cwd) ? items.length : 6)) {
-			kids.append(sessionRow(s));
+			inner.append(sessionRow(s));
 		}
 		if (items.length > 6) {
 			const expanded = state.expandedGroups?.has(cwd);
@@ -1785,7 +2479,7 @@ function renderSessions() {
 				else state.expandedGroups.add(cwd);
 				renderSessions();
 			};
-			kids.append(more);
+			inner.append(more);
 			const page = state.sessionPage || 20;
 			if (expanded && items.length >= page && page < 200) {
 				const load = document.createElement("button");
@@ -1803,16 +2497,19 @@ function renderSessions() {
 					} catch {}
 					renderSessions();
 				};
-				kids.append(load);
+				inner.append(load);
 			}
 		}
 		list.append(kids);
 	}
 
-	const archivedItems = state.sessions
-		.filter((s) => state.archived.has(s.path) && s.path !== state.sessionFile)
-		.filter((s) => !q || `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase().includes(q))
-		.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+	const archivedItems =
+		state.archiveFilter !== "hide"
+			? []
+			: state.sessions
+					.filter((s) => state.archived.has(s.path) && s.path !== state.sessionFile)
+					.filter((s) => !q || `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase().includes(q))
+					.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
 	// 无可见会话时的空态（含搜索无匹配）
 	if (!ordered.some(([, listItems]) => listItems.length) && !archivedItems.length) {
@@ -1841,6 +2538,8 @@ function renderSessions() {
 	}
 
 	paintSearchResults();
+	// 搜索时列表整体换了内容，回到顶部；平时保持用户原来的滚动位置
+	list.scrollTop = q ? 0 : prevTop;
 }
 
 document.addEventListener("click", () => {
@@ -1914,16 +2613,19 @@ function renderTitle() {
 
 // ---------- 动作 ----------
 async function refreshState() {
+	const streamSeq = state.streamSeq;
 	try {
 		const s = await window.pi.command({ type: "get_state" });
 		state.model = s.model ?? null;
 		state.thinkingLevel = s.thinkingLevel ?? state.thinkingLevel ?? null;
 		state.sessionFile = s.sessionFile ?? null;
+		refreshSessionMetrics();
 		// 让主进程记住当前会话：pi 崩溃重启时按它续会话
 		const active = window.pi.setActiveSession?.(state.sessionFile);
 		if (active?.catch) active.catch(() => {});
 		state.sessionName = s.sessionName ?? null;
-		state.streaming = s.isStreaming ?? false;
+		// 回包期间流式态已经变过（例如 settle 后队列立刻接力），别用过期值覆盖
+		if (streamSeq === state.streamSeq) setStreaming(s.isStreaming ?? false);
 		saveLastSession();
 		renderModel();
 		renderTitle();
@@ -1949,9 +2651,12 @@ async function loadModels() {
 async function bindWorkspace(cwd) {
 	if (!cwd || cwd === state.cwd) return false;
 	if (state.streaming) {
-		showError("正在生成回答，先停止再切换工作区");
+		notice("正在生成回答，先停止再切换工作区");
 		return false;
 	}
+	state.switching = true;
+	state.sessionEpoch += 1;
+	updateSend();
 	saveDraftNow();
 	try {
 		const r = await window.pi.setCwd(cwd);
@@ -1968,6 +2673,9 @@ async function bindWorkspace(cwd) {
 		saveProjects();
 		saveCollapsed();
 		renderTitle();
+		// 右栏的文件/变更缓存按工作区失效
+		window.dispatchEvent(new Event("pi:cwd-changed"));
+		rememberScroll(state.sessionFile);
 		clearStream();
 		emptyHint();
 		await loadModels();
@@ -1977,6 +2685,9 @@ async function bindWorkspace(cwd) {
 	} catch (e) {
 		showError(e.message);
 		return false;
+	} finally {
+		state.switching = false;
+		updateSend();
 	}
 }
 
@@ -1994,47 +2705,95 @@ async function removeProject(cwd) {
 }
 
 async function pickSession(path, cwd) {
-	if (state.streaming) return;
+	if (state.streaming) {
+		notice("正在生成回答，先停止再切换会话");
+		return;
+	}
 	if (cwd && cwd !== state.cwd) {
 		const ok = await bindWorkspace(cwd);
 		if (!ok) return;
 	}
-	saveDraftNow();
+	if (state.streaming || state.switching) {
+		if (state.streaming) notice("正在生成回答，先停止再切换会话");
+		return;
+	}
+	state.switching = true;
+	state.sessionEpoch += 1;
+	updateSend();
 	try {
+		saveDraftNow();
+		rememberScroll(state.sessionFile);
 		const r = await window.pi.switchSession(path);
 		if (r.cancelled) return;
 		renderHistory(r.messages ?? []);
+		restoreScroll(path);
 		await refreshState();
 		swapDraft();
 	} catch (e) {
 		showError(e.message);
+		// 主进程可能已经提交了新的会话指针：把界面拉回来，别让下一条消息发错会话
+		await refreshState().catch(() => {});
+	} finally {
+		state.switching = false;
+		updateSend();
 	}
 }
 
 async function newSession() {
-	if (state.streaming) return;
-	saveDraftNow();
-	await window.pi.newSession();
-	clearStream();
-	emptyHint();
-	await refreshState();
-	swapDraft();
+	if (state.streaming) {
+		notice("正在生成回答，先停止再新建会话");
+		return;
+	}
+	state.switching = true;
+	state.sessionEpoch += 1;
+	updateSend();
+	try {
+		saveDraftNow();
+		await window.pi.newSession();
+		rememberScroll(state.sessionFile);
+		clearStream();
+		emptyHint();
+		await refreshState();
+		swapDraft();
+	} catch (e) {
+		showError(e.message);
+	} finally {
+		state.switching = false;
+		updateSend();
+	}
 }
 
 async function pifold() {
-	const r = await window.pi.pickFolder();
-	if (!r) return;
-	state.cwd = r.cwd;
-	state.projects = [r.cwd, ...state.projects.filter((x) => x !== r.cwd)];
-	saveProjects();
-	state.sessions = r.sessions;
-	state.sessionName = null;
-	renderTitle();
-	clearStream();
-	emptyHint();
-	await loadModels();
-	await refreshState();
-	swapDraft();
+	if (state.streaming) {
+		notice("正在生成回答，先停止再切换工作区");
+		return;
+	}
+	state.switching = true;
+	state.sessionEpoch += 1;
+	updateSend();
+	try {
+		const r = await window.pi.pickFolder();
+		if (!r) return;
+		state.cwd = r.cwd;
+		state.projects = [r.cwd, ...state.projects.filter((x) => x !== r.cwd)];
+		saveProjects();
+		state.sessions = r.sessions;
+		state.sessionFile = null;
+		state.sessionName = null;
+		renderTitle();
+		window.dispatchEvent(new Event("pi:cwd-changed"));
+		rememberScroll(state.sessionFile);
+		clearStream();
+		emptyHint();
+		await loadModels();
+		await refreshState();
+		swapDraft();
+	} catch (e) {
+		showError(e.message);
+	} finally {
+		state.switching = false;
+		updateSend();
+	}
 }
 
 function showError(msg) {
@@ -2043,6 +2802,36 @@ function showError(msg) {
 	d.textContent = msg;
 	stream.append(d);
 	follow();
+}
+
+// 轻量提示：正在生成时点了不能做的操作，用浮层说明，别往聊天记录里塞错误块
+let noticeTimer = 0;
+let lastDoneNotice = 0;
+function notice(text, action) {
+	let el = document.getElementById("pi-notice");
+	if (!el) {
+		el = document.createElement("div");
+		el.id = "pi-notice";
+		el.className = "pi-notice";
+		el.setAttribute("role", "status");
+		el.setAttribute("aria-live", "polite");
+		document.body.append(el);
+	}
+	el.textContent = "";
+	el.append(document.createTextNode(text));
+	if (action?.label && typeof action.onClick === "function") {
+		const btn = document.createElement("button");
+		btn.type = "button";
+		btn.textContent = action.label;
+		btn.onclick = () => {
+			el.classList.remove("show");
+			action.onClick();
+		};
+		el.append(btn);
+	}
+	el.classList.add("show");
+	clearTimeout(noticeTimer);
+	noticeTimer = setTimeout(() => el.classList.remove("show"), action?.label ? 5000 : 2200);
 }
 
 // ---------- 输入草稿：按会话落盘，切会话/重启都不丢 ----------
@@ -2094,19 +2883,32 @@ function swapDraft() {
 async function submit() {
 	const extra = attachments.get() || [];
 	const text = input.value.trim();
-	if ((!text && !extra.length) || state.streaming) return;
+	if ((!text && !extra.length) || state.streaming || state.switching) return false;
 	input.value = "";
 	autosize();
 	updateSend();
-	addUser(text || `[${extra.length} 张图片]`);
+	addUser(text || `[${extra.length} 张图片]`, extra);
+	state.pendingUserEcho = text;
+	state.aborted = false;
+	state.abortRow = null;
+	state.lastTurnAborted = false;
 	const row = stream.lastElementChild;
+	// 图片消息的重试不能把 “[N 张图片]” 当正文发出去
+	if (extra.length && row?.classList.contains("mine")) row.dataset.images = String(extra.length);
 	setStreaming(true);
 	try {
 		const cmd = { type: "prompt", message: text };
 		if (extra.length) cmd.images = extra;
-		await window.pi.command(cmd);
+		const res = await window.pi.command(cmd);
 		saveDraftNow();
 		attachments.clear();
+		// 扩展/输入处理器可能直接吞掉 prompt：只回 response，不发 agent 事件
+		if (res?.disposition === "handled") {
+			setStreaming(false);
+			state.pendingUserEcho = "";
+		} else {
+			watchPromptStart();
+		}
 	} catch (e) {
 		// 发送失败：回滚刚插入的“假发送”气泡，并把草稿还给用户
 		if (row?.classList.contains("mine")) row.remove();
@@ -2118,18 +2920,83 @@ async function submit() {
 		saveDraftSoon();
 		showError(e.message);
 		setStreaming(false);
+		state.pendingUserEcho = "";
 	}
+	return true;
+}
+
+// prompt 已 resolve 却一直没有 agent_start：10s 后核对 pi 状态，空闲就收掉流式态
+function watchPromptStart() {
+	setTimeout(() => {
+		if (!state.streaming || state.live) return;
+		window.pi.command({ type: "get_state" })
+			.then((s) => {
+				if (state.streaming && !state.live && s && s.isStreaming === false) {
+					setStreaming(false);
+					state.pendingUserEcho = "";
+				}
+			})
+			.catch(() => {});
+	}, 10000);
 }
 
 function abortRun() {
 	if (!state.streaming) return;
 	state.aborted = true;
-	window.pi.command({ type: "abort" }).catch(() => {});
+	// 只标本轮自己创建的行；没有 live 行就不标，别把上一条历史回答写成“已停止”
+	state.abortRow = state.live?.row || null;
+	window.pi.command({ type: "abort" })
+		.then(() => {
+			setTimeout(() => {
+				if (!state.streaming) return;
+				window.pi.command({ type: "get_state" })
+					.then((s) => {
+						// pi 已空闲但没发 agent_settled（例如 abort 时它本来就没在跑）
+						if (s && s.isStreaming === false) finishAbortedTurn();
+					})
+					.catch(() => {});
+			}, 3000);
+		})
+		.catch(() => {
+			state.aborted = false;
+			state.abortRow = null;
+		});
+}
+
+function finishAbortedTurn() {
+	if (!state.streaming) return;
+	setStreaming(false);
+	if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+	settleRunStatus();
+	collapseTurnBlocks();
+	markStopped();
+	state.aborted = false;
+	state.lastTurnAborted = true; // 队列不要在被中断后自动接力
+	state.abortRow = null;
+	state.runStart = 0;
+	state.runTools = 0;
+	state.runTps = 0;
+	state.runSpeed = { tokens: 0, ms: 0 };
+	refreshState().catch(() => {});
+}
+
+function markStopped() {
+	const row = state.abortRow;
+	const body = row?.isConnected ? row.querySelector(":scope > .body") : null;
+	if (body && !body.querySelector(":scope > .stopped")) {
+		const stop = document.createElement("span");
+		stop.className = "stopped";
+		stop.textContent = "已停止";
+		body.append(stop);
+	}
 }
 
 function setStreaming(on) {
 	state.streaming = on;
-	sendBtn.classList.toggle("stop", on);	updateSend();
+	window.__piStreaming = on;
+	state.streamSeq += 1; // 让在途的 get_state 回包知道状态已经变了
+	sendBtn.classList.toggle("stop", on);
+	updateSend();
 }
 
 // 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后收成小圆点，点击可展开
@@ -2137,13 +3004,16 @@ function showRunSummary() {
 	if (!state.runStart) return;
 	const seconds = (performance.now() - state.runStart) / 1000;
 	const tools = state.runTools;
+	const tps = state.runTps;
 	state.runStart = 0;
 	state.runTools = 0;
+	state.runTps = 0;
+	state.runSpeed = { tokens: 0, ms: 0 };
 	const row = document.createElement("div");
 	row.className = "row run-summary-row";
 	const pill = document.createElement("span");
 	pill.className = "run-summary";
-	pill.textContent = `完成 · ${seconds.toFixed(1)}s${tools ? ` · ${tools} 工具` : ""}`;
+	pill.textContent = `完成 · ${seconds.toFixed(1)}s${tools ? ` · ${tools} 工具` : ""}${tps > 0 ? ` · ${fmtTokSpeed(tps)} tok/s` : ""}`;
 	pill.title = pill.textContent;
 	// 优先挂在最后一条助手消息里，跟正文同属一个 flow item（DSH 的 tail slot 行为）
 	const last = [...stream.querySelectorAll(".row.assistant")].pop();
@@ -2175,7 +3045,7 @@ function autosize() {
 
 function updateSend() {
 	const hasImages = (attachments.get() || []).length > 0;
-	const on = state.streaming || input.value.trim().length > 0 || hasImages;
+	const on = !state.switching && (state.streaming || input.value.trim().length > 0 || hasImages);
 	sendBtn.classList.toggle("on", on);
 	// 空草稿空闲时真正禁用，避免 Tab 到无反馈的按钮；流式时是停止键，保持可用
 	sendBtn.disabled = !on;
@@ -2183,11 +3053,32 @@ function updateSend() {
 
 // ---------- 事件 ----------
 window.pi.onEvent((ev) => {
+	// 后端原生事件旁路：OMP 的 todo/ask/task/plan 等专属事件由独立模块消费
+	try {
+		window.dispatchEvent(new CustomEvent("myna:event", { detail: ev }));
+	} catch {}
 	switch (ev.type) {
 		case "message_start": {
 			const m = ev.message;
-			// agent_start 已经建过运行行时复用，别在首条消息时再多挂一行
-			if (m?.role === "assistant" && !state.live) addAssistantRow();
+			if (m?.role === "assistant") {
+				// 一轮里可能有多条 assistant 消息（文本→工具→文本）：每条各自成行。
+				// 旧行还有没吐完/没定稿的内容就先收尾，否则 msg2 的 message_end 会把 msg1 冲掉。
+				if (state.live && (state.liveRaw || state.liveThinkRaw || state.liveThink || state.textPending)) {
+					finalizeAssistant(state.revealFinal);
+				}
+				if (!state.live) addAssistantRow();
+				// 请求已发出：作为 TTFT 的起点（DSH 的 stepStartTime）
+				if (state.liveTps && !state.liveTps.start) state.liveTps.start = performance.now();
+			} else if (m?.role === "user") {
+				// 排队/插话发出的消息由 pi 回显；submit 自己插过的那条要跳过，别重复。
+				const text = blockText(m.content).trim();
+				const echo = state.pendingUserEcho.trim();
+				if (text && echo && (text === echo || text.includes(echo) || echo.includes(text))) {
+					state.pendingUserEcho = "";
+				} else if (text) {
+					addUser(text);
+				}
+			}
 			break;
 		}
 		case "message_update": {
@@ -2197,6 +3088,7 @@ window.pi.onEvent((ev) => {
 				break;
 			}
 			if (a?.type === "thinking_delta") {
+				markOutputTokens(a.delta);
 				const th = ensureLiveThink();
 				if (th) {
 					state.liveThinkRaw = (state.liveThinkRaw || "") + (a.delta || "");
@@ -2213,17 +3105,12 @@ window.pi.onEvent((ev) => {
 				}
 				break;
 			}
-			if (a?.type === "text_delta" && state.liveText) {
+			if (a?.type === "text_delta") {
+				// 行被上一段收尾后又有增量：补建一行，别把文本丢掉
+				if (!state.live) addAssistantRow();
 				state.liveRaw += a.delta;
 				state.textPending += a.delta;
-				state.liveTokens += estimateTokens(a.delta);
-				if (state.liveTps) {
-					if (!state.liveTps.start) {
-						state.liveTps.start = performance.now();
-						// 首个 token 到了：状态文字从「思考中」切「生成中」（DSH RunningStatus 的 deepDiving 阶段）
-						if (state.liveTps.text) state.liveTps.text.textContent = "生成中…";
-					}
-				}
+				markOutputTokens(a.delta);
 				scheduleReveal();
 				follow();
 			}
@@ -2231,6 +3118,8 @@ window.pi.onEvent((ev) => {
 		}
 		case "message_end": {
 			if (ev.message?.role === "assistant") {
+				// 解码结束时间要在事件到达时记，不能等吐字动画放完
+				if (state.liveTps) state.liveTps.endAt = performance.now();
 				if (state.textPending) {
 					state.revealFinal = ev.message;
 					scheduleReveal();
@@ -2266,10 +3155,14 @@ window.pi.onEvent((ev) => {
 			appendToolImages(el, ev.result?.content);
 			break;
 		}
-		case "agent_start":
-			setStreaming(true);
-			state.runStart = performance.now();
-			state.runTools = 0;
+			case "agent_start":
+				setStreaming(true);
+				// pi 的 continue 会再次发 agent_start：整轮只在第一次开始计时/计数
+				if (!state.runStart) {
+					state.runStart = performance.now();
+					state.runSpeed = { tokens: 0, ms: 0 };
+					state.runTools = 0;
+				}
 			stream.querySelector(".run-summary-row")?.remove();
 			// 不等 message_start：发送后立刻出「思考中… 0.0s」，工具阶段也有反馈
 			if (!state.live && !state.revealFinal) addAssistantRow();
@@ -2281,21 +3174,18 @@ window.pi.onEvent((ev) => {
 			if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
 			// 运行中状态行只在运行期存在，一轮结束就收掉
 			settleRunStatus();
-			// 回话结束：所有工具卡（含运行中手动展开、历史里自动展开的 read/grep）统一折回去
-			for (const el of stream.querySelectorAll('.tool[data-open="1"]')) toggleDisclosure(el, false);
+			// 队列接力要用：settle 后 state.aborted 就被清掉了。
+			// 只置真不置假——abortRun 的 3s 兜底可能已经清掉 aborted，
+			// 晚到的 settle 不能把「用户中断」的闩锁覆盖掉。
+			if (state.aborted) state.lastTurnAborted = true;
+			// 回话结束：工具卡、命令输出、思考块统一折回去
+			collapseTurnBlocks();
 			if (state.aborted) {
-				const body = [...stream.querySelectorAll(".row.assistant")]
-					.map((r) => r.querySelector(":scope > .body"))
-					.filter(Boolean)
-					.pop();
-				if (body && !body.querySelector(":scope > .stopped")) {
-					const stop = document.createElement("span");
-					stop.className = "stopped";
-					stop.textContent = "已停止";
-					body.append(stop);
-				}
+				markStopped();
 				state.aborted = false;
+				state.abortRow = null;
 			}
+			state.pendingUserEcho = "";
 			// 只思考、没正文也没工具/图片的空回合不留下空白行（例如请求被 pi 内部吞掉）
 			const lastRow = [...stream.querySelectorAll(".row.assistant")].pop();
 			const lastBody = lastRow?.querySelector(":scope > .body");
@@ -2308,7 +3198,11 @@ window.pi.onEvent((ev) => {
 			window.pi.sessions({ perCwd: state.sessionPage || readPageSize() }).then((s) => {
 				state.sessions = s;
 				renderSessions();
-			});
+			}).catch(() => {});
+			break;
+		case "error":
+			// 适配器后端（IR 投影）的可见错误；pi 直连路径不会发这个事件。
+			showError(ev.message || "发生错误");
 			break;
 		case "process_exit":
 			console.warn("[pi] process exited", ev.code);
@@ -2317,8 +3211,17 @@ window.pi.onEvent((ev) => {
 				setStreaming(false);
 				if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
 				settleRunStatus();
+				collapseTurnBlocks();
 			}
-			showError("pi 进程意外退出，下一条消息会自动重启");
+			state.aborted = false;
+			state.abortRow = null;
+			state.pendingUserEcho = "";
+			state.lastTurnAborted = true; // 进程死了，队列先停，别自动乱发
+			state.runStart = 0;
+			state.runTools = 0;
+			state.runTps = 0;
+			state.runSpeed = { tokens: 0, ms: 0 };
+			showError(ev.message || "pi 进程意外退出，下一条消息会自动重启");
 			follow();
 			break;
 	}
@@ -2335,7 +3238,7 @@ input.addEventListener("input", () => {
 	saveDraftSoon();
 });
 input.addEventListener("keydown", (e) => {
-	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+	if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
 		e.preventDefault();
 		submit();
 	}
@@ -2533,6 +3436,57 @@ new MutationObserver(() => {
 }).observe(menu, { attributes: true, attributeFilter: ["hidden"] });
 
 // ---------- 开发自检 ----------
+// 吐字仪表验收：不调用模型，按 text_delta 的真实路径喂合成增量
+window.__piTpsDemo = (durationMs = 4000) => {
+	if (state.streaming || state.live) return false;
+	addAssistantRow();
+	stream.scrollTop = stream.scrollHeight;
+	// 模拟 0.8s 的首字延迟，让 TTFT 读数可见
+	if (state.liveTps) state.liveTps.start = performance.now() - 800;
+	const end = performance.now() + Math.max(800, durationMs);
+	let i = 0;
+	const timer = setInterval(() => {
+		if (performance.now() > end) {
+			clearInterval(timer);
+			return;
+		}
+		const delta = "这是一段用于验证实时吐字仪表的示例文本，速度会自然起伏。".slice(0, 10 + (i % 20));
+		i++;
+		state.liveRaw += delta;
+		state.textPending += delta;
+		const n = estimateTokens(delta);
+		state.liveTokens += n;
+		const st = state.liveTps;
+		if (st) {
+			const now = performance.now();
+			if (!st.start) st.start = now;
+			if (!st.firstToken) {
+				st.firstToken = now;
+				if (st.text) st.text.textContent = "生成中…";
+			}
+			st.marks.push({ t: now, n });
+		}
+		scheduleReveal();
+	}, 60);
+	return true;
+};
+window.__piTpsDemoClear = () => {
+	clearInterval(state.tpsTimer);
+	state.tpsTimer = 0;
+	state.live?.row?.remove();
+	state.live = null;
+	state.liveText = null;
+	state.liveRaw = "";
+	state.textPending = "";
+	state.revealFinal = null;
+	state.liveTokens = 0;
+	state.liveTps = null;
+	state.runStart = 0;
+	state.runSpeed = { tokens: 0, ms: 0 };
+	state.runTps = 0;
+	settleRunStatus();
+};
+
 window.__selftest = () => {
 	const BS = String.fromCharCode(92);
 	const sample = [" 1 line1", "-2 line2", "+2 line2 changed", " 3 line3", " 4 line4", "+6 line6"].join(String.fromCharCode(10));
@@ -2637,7 +3591,8 @@ async function bootApp() {
 	if (booting) return;
 	booting = true;
 	stream.querySelectorAll(".empty").forEach((n) => n.remove());
-	const loading = emptyHint("正在连接 pi…");
+	const loading = emptyHint("正在连接…");
+	input.placeholder = "使用 pi";
 	try {
 		const boot = await window.pi.boot();
 		state.cwd = boot.cwd;
@@ -2693,6 +3648,15 @@ async function bootApp() {
 // 开发/截图用：手动重跑启动流程 / 渲染启动失败态
 window.__piBoot = bootApp;
 window.__piBootError = (msg) => showBootError(new Error(msg || "未知错误"));
+// 渲染层最后的兜底：错误进主进程日志（console-message 会转发），不让故障静默
+window.addEventListener("error", (e) => {
+	console.error("[renderer:error]", e.message, e.filename, e.lineno);
+});
+window.addEventListener("unhandledrejection", (e) => {
+	const reason = e.reason;
+	console.error("[renderer:rejection]", reason?.stack || reason?.message || String(reason));
+});
+
 initScroll();
 window.addEventListener("beforeunload", saveDraftNow);
 bootApp();
@@ -2714,12 +3678,13 @@ export const ctx = {
 	attachments,
 	reload: renderHistory,
 	refreshState,
+	focusMessage,
 	ICON: { terminal: ICON_TERMINAL, doc: ICON_DOC, pencil: ICON_PENCIL, search: ICON_SEARCH, grid: ICON_GRID, dot: ICON_DOT },
 };
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js"];
+const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/turn-rail.js"];
 
 for (const f of FEATURES) {
 	try {

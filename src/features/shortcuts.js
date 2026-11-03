@@ -1,6 +1,13 @@
-// Ctrl+K 命令面板 + 快捷键帮助。
+// Ctrl/Cmd+K 命令面板 + Ctrl/Cmd+/ 快捷键参考。
 // 自注入样式与 DOM，不改 index.html / app.js / base.css / 其他 feature。
-// 接入：在 app.js 的 FEATURES 里加 "./features/shortcuts.js"（本次不改），或手动 init(ctx)。
+// 接入：app.js 的 FEATURES 已登记 "./features/shortcuts.js"。
+//
+// 快捷键参考（Mod+/；也接受 Shift+/ 即 "?"，但只在输入框外生效）：
+//   - 只登记在源码里真实存在的按键，逐条核对过 app.js / queue.js / terminal.js /
+//     input-trigger.js / settings.js / 本文件的实现；不写“应该存在”的快捷键。
+//   - 搜索过滤覆盖动作名、分组、按键与关键词（大小写不敏感）；↑/↓ 移动，Enter 关闭，
+//     Esc / 点遮罩关闭，Tab 焦点陷阱，关闭后焦点回到打开前的元素。
+//   - 已经有设置 / 命令面板 / 其他 dialog 时直接忽略，不叠层。
 //
 // 命令可用性每次渲染都重查：顶栏按钮由 settings.js / right-panel.js / export-html.js
 // 异步插入，取不到就禁用并在行尾写原因，不静默失败。
@@ -146,6 +153,263 @@ const CSS = `
 .cmdk-toast.is-err { color: var(--err); }
 `;
 
+// ---------- 快捷键参考：常量与数据 ----------
+const HELP_ID = "kb-dialog";
+const HELP_LIST_ID = "kb-list";
+const HELP_INPUT_ID = "kb-input";
+
+const NAV = typeof navigator === "undefined" ? {} : navigator;
+const IS_MAC = /mac|iphone|ipad/i.test(NAV.platform || "") || /mac os x/i.test(NAV.userAgent || "");
+const MOD_LABEL = IS_MAC ? "Cmd" : "Ctrl"; // 显示用：macOS 显示 Cmd，其余显示 Ctrl
+const MOD_ALIAS = "mod ctrl cmd command control ⌘"; // 搜索用
+
+const HELP_CSS = `
+.kb-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 1250;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	background: var(--kb-scrim, rgba(0, 0, 0, 0.18));
+}
+.kb-overlay[hidden] { display: none; }
+.kb-dialog {
+	display: flex;
+	flex-direction: column;
+	width: min(620px, calc(100vw - 48px));
+	max-height: min(78vh, 720px);
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-menu);
+	overflow: hidden;
+	font-family: var(--ui);
+	animation: kb-in 110ms ease-out;
+}
+@keyframes kb-in {
+	from { opacity: 0; transform: translateY(4px) scale(0.985); }
+	to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.kb-dialog { animation: none; }
+}
+.kb-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 12px 14px 0;
+}
+.kb-title { font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text); }
+.kb-close {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	border-radius: var(--radius-sm);
+	color: var(--faint);
+}
+.kb-close:hover { background: var(--hover); color: var(--text); }
+.kb-close:focus-visible { outline: 2px solid var(--line-strong); outline-offset: 1px; }
+.kb-search {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 14px 0;
+	padding: 7px 10px;
+	background: var(--surface-2);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-md);
+}
+.kb-search:focus-within { border-color: var(--dim); }
+.kb-search-icon { flex: none; display: grid; place-items: center; color: var(--faint); }
+.kb-input {
+	flex: 1;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	outline: 0;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	font-size: 14px;
+	line-height: 20px;
+}
+.kb-input::placeholder { color: var(--faint); }
+.kb-list {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 4px 8px 12px;
+}
+.kb-group { padding: 10px 6px 2px; font-size: 12px; line-height: 18px; color: var(--faint); }
+.kb-row {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-height: 32px;
+	padding: 0 6px;
+	border-radius: var(--radius-md);
+}
+.kb-row.is-on { background: var(--sel); }
+.kb-name { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; color: var(--text); }
+.kb-scope {
+	flex: none;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--faint);
+}
+.kb-keys { flex: none; display: flex; align-items: center; gap: 4px; }
+.kb-sep { font-size: 11px; color: var(--faint); padding: 0 2px; }
+.kb-key {
+	display: inline-block;
+	min-width: 18px;
+	padding: 0 4px;
+	text-align: center;
+	font-family: var(--mono);
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--dim);
+	background: var(--surface-2);
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-xs);
+}
+.kb-empty { padding: 28px 12px; text-align: center; font-size: 12.5px; color: var(--faint); }
+.kb-foot {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 14px;
+	border-top: 1px solid var(--line);
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--faint);
+}
+.kb-note {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--dim);
+}
+.kb-foothint { flex: none; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+`;
+
+// 每条快捷键都在源码里核对过实现位置（见行尾注释），不写不存在的组合键。
+// 新会话没有全局快捷键（app.js 只有 #newchat / 项目行按钮），因此不收录。
+const SHORTCUT_GROUPS = [
+	{
+		id: "chat",
+		label: "会话",
+		items: [
+			// 本文件 toggleKey（Ctrl/Cmd+K）
+			{ label: "打开命令面板", keys: [["MOD", "K"]], hint: "全局", keywords: ["command", "palette", "命令", "命令面板", "面板"] },
+			// 本文件 isSlashChord
+			{
+				label: "打开 / 关闭快捷键参考",
+				keys: [["MOD", "/"]],
+				hint: "也接受 Shift+/",
+				keywords: ["shortcuts", "help", "keyboard", "/", "?", "斜杠", "问号", "快捷键", "帮助"],
+			},
+		],
+	},
+	{
+		id: "input",
+		label: "输入",
+		items: [
+			// app.js:3208-3213 —— 输入框 keydown，Enter 且非 Shift 才 submit
+			{ label: "发送消息", keys: [["Enter"]], hint: "输入框内", keywords: ["send", "submit", "发送", "提交"] },
+			// app.js 同一处理器：Shift+Enter 不拦截，走 textarea 默认换行
+			{ label: "换行（不发送）", keys: [["Shift", "Enter"]], hint: "输入框内", keywords: ["newline", "linebreak", "换行"] },
+			// queue.js:674-685 —— 仅流式中且有草稿；默认 Enter 排队
+			{ label: "排队发送", keys: [["Enter"]], hint: "流式回答中", keywords: ["queue", "busy", "排队", "流式"] },
+			// queue.js:680 —— Ctrl/Cmd 反转 busyEnter，默认 Enter 排队时它就是插话
+			{ label: "插话发送", keys: [["MOD", "Enter"]], hint: "流式回答中", keywords: ["steer", "busy", "插话", "流式"] },
+			// app.js:3214-3228 —— 生成中 Esc = abortRun；模型菜单开着时先收菜单
+			{
+				label: "停止生成",
+				keys: [["Esc"]],
+				hint: "流式回答中；菜单打开时先关菜单",
+				keywords: ["stop", "abort", "cancel", "停止", "中断"],
+			},
+		],
+	},
+	{
+		id: "panel",
+		label: "面板",
+		items: [
+			// terminal.js:669-682 —— 全局 Ctrl/Cmd+` 开关抽屉
+			{ label: "显示 / 隐藏终端", keys: [["MOD", "`"]], hint: "全局", keywords: ["terminal", "toggle", "终端", "抽屉"] },
+		],
+	},
+	{
+		id: "view",
+		label: "视图",
+		items: [
+			// 本文件 onKey；main.js:504-520 负责 clamp 0.7–1.6
+			{ label: "放大界面", keys: [["MOD", "="]], hint: "每次 10%", keywords: ["zoom", "in", "放大"] },
+			{ label: "缩小界面", keys: [["MOD", "-"]], hint: "每次 10%", keywords: ["zoom", "out", "缩小"] },
+			{ label: "还原为 100%", keys: [["MOD", "0"]], hint: "", keywords: ["zoom", "reset", "还原", "重置"] },
+		],
+	},
+	{
+		id: "menu",
+		label: "菜单",
+		items: [
+			// input-trigger.js:683-692（补全菜单）、命令面板本文件 onKey、settings.js:776-801（下拉菜单）
+			{
+				label: "高亮菜单项",
+				keys: [["↑"], ["↓"]],
+				hint: "补全菜单 / 命令面板 / 设置菜单",
+				keywords: ["navigate", "move", "menu", "移动", "选择", "高亮"],
+			},
+			// 命令面板本文件 onKey；settings.js:776-801
+			{
+				label: "跳到首 / 末项",
+				keys: [["Home"], ["End"]],
+				hint: "命令面板 / 设置菜单",
+				keywords: ["first", "last", "menu", "首个", "末尾"],
+			},
+			// input-trigger.js Enter = accept；命令面板 Enter = 执行；settings.js 菜单项是原生 button
+			{
+				label: "选择 / 执行菜单项",
+				keys: [["Enter"]],
+				hint: "补全菜单 / 命令面板 / 设置菜单",
+				keywords: ["run", "accept", "confirm", "选择", "执行", "确认"],
+			},
+			// input-trigger.js:702-716 —— 有高亮时 Tab 接受补全；命令面板里 Tab 回到搜索框
+			{
+				label: "接受补全项",
+				keys: [["Tab"]],
+				hint: "补全菜单有高亮时",
+				keywords: ["tab", "accept", "complete", "补全", "选择"],
+			},
+			// input-trigger.js / 本文件命令面板 / app.js 模型菜单 / settings.js 下拉菜单
+			{
+				label: "关闭菜单 / 面板",
+				keys: [["Esc"]],
+				hint: "菜单、命令面板、设置、终端",
+				keywords: ["close", "dismiss", "关闭", "取消"],
+			},
+		],
+	},
+];
+
+const keyTokenText = (token) => (token === "MOD" ? `${MOD_LABEL} ${MOD_ALIAS}` : token.toLowerCase());
+
 const brief = (s) => {
 	const t = String(s ?? "").replace(/\s+/g, " ").trim() || "执行失败";
 	return t.length > MAX_ERR ? `${t.slice(0, MAX_ERR)}…` : t;
@@ -173,7 +437,7 @@ export function init(ctx) {
 	// ---------- 样式 ----------
 	const style = doc.createElement("style");
 	style.id = "cmdk-style";
-	style.textContent = CSS;
+	style.textContent = CSS + HELP_CSS;
 	doc.head.append(style);
 
 	// ---------- 命令表 ----------
@@ -531,8 +795,28 @@ export function init(ctx) {
 	const toggleKey = (e) =>
 		(e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.code === "KeyK" || e.key === "k" || e.key === "K");
 
+	const zoomTo = async (delta) => {
+		try {
+			const cur = (await window.pi.getZoom?.())?.factor || 1;
+			const next = delta == null ? 1 : cur + delta;
+			await window.pi.setZoom?.(next);
+		} catch {}
+	};
+
 	const onKey = (e) => {
 		if (composing(e)) return; // 输入法组合中一律不抢
+		// Ctrl/Cmd + = / - / 0：整体界面缩放
+		if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+			const zoomIn = e.key === "=" || e.key === "+" || e.code === "Equal" || e.code === "NumpadAdd";
+			const zoomOut = e.key === "-" || e.code === "Minus" || e.code === "NumpadSubtract";
+			const zoomReset = e.key === "0" || e.code === "Digit0" || e.code === "Numpad0";
+			if (zoomIn || zoomOut || zoomReset) {
+				e.preventDefault();
+				e.stopPropagation();
+				void zoomTo(zoomIn ? 0.1 : zoomOut ? -0.1 : null);
+				return;
+			}
+		}
 		if (toggleKey(e)) {
 			e.preventDefault();
 			e.stopPropagation();
@@ -612,4 +896,356 @@ export function init(ctx) {
 		if (e.target === overlay) closePanel();
 	});
 	dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+	// ======================================================================
+	// 快捷键参考（Ctrl/Cmd+/）
+	// ======================================================================
+	const CLOSE_ICON =
+		'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.6 3.6 10.4 10.4M10.4 3.6 3.6 10.4"/></svg>';
+
+	const kbdChip = (text) => {
+		const k = doc.createElement("kbd");
+		k.className = "kb-key";
+		k.textContent = text;
+		return k;
+	};
+
+	// ---------- DOM ----------
+	const helpOverlay = doc.createElement("div");
+	helpOverlay.className = "kb-overlay";
+	helpOverlay.hidden = true;
+
+	const helpDialog = doc.createElement("div");
+	helpDialog.id = HELP_ID;
+	helpDialog.className = "kb-dialog";
+	helpDialog.setAttribute("role", "dialog");
+	helpDialog.setAttribute("aria-modal", "true");
+	helpDialog.setAttribute("aria-labelledby", "kb-title");
+
+	const helpHead = doc.createElement("div");
+	helpHead.className = "kb-head";
+	const helpTitle = doc.createElement("div");
+	helpTitle.id = "kb-title";
+	helpTitle.className = "kb-title";
+	helpTitle.textContent = "键盘快捷键";
+	const helpClose = doc.createElement("button");
+	helpClose.type = "button";
+	helpClose.className = "kb-close";
+	helpClose.title = "关闭";
+	helpClose.setAttribute("aria-label", "关闭快捷键参考");
+	helpClose.innerHTML = CLOSE_ICON;
+	helpHead.append(helpTitle, helpClose);
+
+	const helpSearch = doc.createElement("div");
+	helpSearch.className = "kb-search";
+	const helpIcon = doc.createElement("span");
+	helpIcon.className = "kb-search-icon";
+	helpIcon.setAttribute("aria-hidden", "true");
+	helpIcon.innerHTML = SEARCH_ICON;
+	const helpInput = doc.createElement("input");
+	helpInput.id = HELP_INPUT_ID;
+	helpInput.className = "kb-input";
+	helpInput.type = "text";
+	helpInput.placeholder = "搜索动作或按键…";
+	helpInput.autocomplete = "off";
+	helpInput.spellcheck = false;
+	helpInput.setAttribute("role", "combobox");
+	helpInput.setAttribute("aria-expanded", "true");
+	helpInput.setAttribute("aria-controls", HELP_LIST_ID);
+	helpInput.setAttribute("aria-autocomplete", "list");
+	helpInput.setAttribute("aria-label", "搜索快捷键");
+	helpSearch.append(helpIcon, helpInput);
+
+	const helpList = doc.createElement("div");
+	helpList.id = HELP_LIST_ID;
+	helpList.className = "kb-list";
+	helpList.setAttribute("role", "listbox");
+	helpList.setAttribute("aria-label", "快捷键");
+
+	const helpFoot = doc.createElement("div");
+	helpFoot.className = "kb-foot";
+	const helpNote = doc.createElement("span");
+	helpNote.className = "kb-note";
+	helpNote.textContent = "快捷键暂为只读，后续支持自定义";
+	const helpHint = doc.createElement("span");
+	helpHint.className = "kb-foothint";
+	helpHint.append(kbdChip(MOD_LABEL), kbdChip("K"), doc.createTextNode(" 打开命令面板"));
+	helpFoot.append(helpNote, helpHint);
+
+	helpDialog.append(helpHead, helpSearch, helpList, helpFoot);
+	helpOverlay.append(helpDialog);
+	doc.body.append(helpOverlay);
+
+	// ---------- 状态 ----------
+	let helpRows = []; // 本次渲染的行（按 DOM 顺序）
+	let helpSel = -1; // 未预选：只有方向键 / 指针移动才出高亮（STYLE §2）
+	let helpOpen = false;
+	let helpLastFocus = null;
+
+	// ---------- 渲染 ----------
+	const helpHay = (group, it) => {
+		const flat = it.keys.flat().map(keyTokenText).join(" ");
+		const chords = it.keys.map((chord) => chord.map((t) => (t === "MOD" ? MOD_LABEL : t)).join("+")).join(" ");
+		return `${group.label} ${it.label} ${it.hint || ""} ${flat} ${chords} ${(it.keywords || []).join(" ")}`.toLowerCase();
+	};
+
+	const renderHelp = () => {
+		const terms = helpInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+		helpList.innerHTML = "";
+		helpRows = [];
+		helpSel = -1;
+		helpInput.removeAttribute("aria-activedescendant");
+
+		for (const group of SHORTCUT_GROUPS) {
+			const matched = group.items.filter((it) => terms.every((t) => helpHay(group, it).includes(t)));
+			if (!matched.length) continue;
+
+			const wrap = doc.createElement("div");
+			wrap.className = "kb-group-wrap";
+			wrap.setAttribute("role", "group");
+			wrap.setAttribute("aria-labelledby", `kb-g-${group.id}`);
+
+			const heading = doc.createElement("div");
+			heading.id = `kb-g-${group.id}`;
+			heading.className = "kb-group";
+			heading.setAttribute("role", "presentation");
+			heading.textContent = group.label;
+			wrap.append(heading);
+
+			for (const it of matched) {
+				const row = doc.createElement("div");
+				row.className = "kb-row";
+				row.id = `kb-opt-${helpRows.length}`;
+				row.setAttribute("role", "option");
+				row.setAttribute("aria-selected", "false");
+				const keysText = it.keys
+					.map((chord) => chord.map((t) => (t === "MOD" ? MOD_LABEL : t)).join("+"))
+					.join(" 或 ");
+				row.setAttribute("aria-label", `${keysText}，${it.label}${it.hint ? `（${it.hint}）` : ""}`);
+
+				const name = doc.createElement("span");
+				name.className = "kb-name";
+				name.textContent = it.label;
+				row.append(name);
+
+				if (it.hint) {
+					const scope = doc.createElement("span");
+					scope.className = "kb-scope";
+					scope.textContent = it.hint;
+					row.append(scope);
+				}
+
+				const keys = doc.createElement("span");
+				keys.className = "kb-keys";
+				it.keys.forEach((chord, i) => {
+					if (i) {
+						const sep = doc.createElement("span");
+						sep.className = "kb-sep";
+						sep.textContent = "/";
+						keys.append(sep);
+					}
+					for (const token of chord) keys.append(kbdChip(token === "MOD" ? MOD_LABEL : token));
+				});
+				row.append(keys);
+
+				wrap.append(row);
+				helpRows.push({ it, el: row });
+				row.addEventListener("pointermove", () => {
+					const at = helpRows.findIndex((r) => r.el === row);
+					if (at >= 0) setHelpActive(at, false);
+				});
+			}
+			helpList.append(wrap);
+		}
+
+		if (!helpRows.length) {
+			const empty = doc.createElement("div");
+			empty.className = "kb-empty";
+			empty.textContent = "没有匹配的快捷键";
+			helpList.append(empty);
+		}
+	};
+
+	const setHelpActive = (i, scroll = true) => {
+		if (!helpRows.length) {
+			helpSel = -1;
+			helpInput.removeAttribute("aria-activedescendant");
+			return;
+		}
+		const n = helpRows.length;
+		helpSel = ((i % n) + n) % n;
+		for (let k = 0; k < n; k++) {
+			const on = k === helpSel;
+			helpRows[k].el.classList.toggle("is-on", on);
+			helpRows[k].el.setAttribute("aria-selected", on ? "true" : "false");
+		}
+		const cur = helpRows[helpSel].el;
+		helpInput.setAttribute("aria-activedescendant", cur.id);
+		if (scroll) cur.scrollIntoView({ block: "nearest" });
+	};
+
+	// ---------- 开 / 关 ----------
+	// 已经有模态层（设置、命令面板、图片灯箱、模型菜单等）时不抢：避免叠两层对话框。
+	// 只查 [aria-modal] 不够：context-meter / message-fork 只有 role="dialog"。
+	const isVisible = (n) => !!n && n.getClientRects().length > 0;
+	const otherModalOpen = () =>
+		[...doc.querySelectorAll('.settings-overlay, [role="dialog"], [aria-modal="true"], #menu')].some(
+			(n) => n !== helpDialog && isVisible(n),
+		);
+
+	const openHelp = () => {
+		if (helpOpen || otherModalOpen()) return false;
+		helpOpen = true;
+		helpLastFocus = doc.activeElement;
+		helpInput.value = "";
+		helpOverlay.hidden = false;
+		renderHelp();
+		helpInput.focus({ preventScroll: true });
+		return true;
+	};
+
+	const closeHelp = () => {
+		if (!helpOpen) return;
+		helpOpen = false;
+		helpOverlay.hidden = true;
+		const back = helpLastFocus;
+		helpLastFocus = null;
+		helpSel = -1;
+		if (back && back.isConnected && back !== doc.body && typeof back.focus === "function") {
+			back.focus({ preventScroll: true });
+			return;
+		}
+		ctx?.input?.focus?.({ preventScroll: true });
+	};
+
+	// ---------- 键盘 ----------
+	// Mod+/；Shift+/（即 "?"）只在非输入区域生效，输入框里的 "/"、"?" 照常打字。
+	const isEditable = (t) =>
+		!!t && (t.isContentEditable === true || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ""));
+	const isSlashChord = (e) => {
+		if (e.altKey) return false;
+		const slashKey = e.key === "/" || e.key === "?" || e.code === "Slash" || e.code === "NumpadDivide";
+		if (!slashKey) return false;
+		if (e.ctrlKey || e.metaKey) return true; // Ctrl/Cmd+/ 或 Ctrl/Cmd+Shift+/
+		// 裸 Shift+/：只在非输入区域触发，避免用户打问号时弹层
+		return e.key === "?" && !isEditable(e.target);
+	};
+
+	const trapHelpTab = (e) => {
+		const items = [helpInput, helpClose].filter((n) => n.offsetParent !== null);
+		if (!items.length) return;
+		const at = items.indexOf(doc.activeElement);
+		let next;
+		if (e.shiftKey) next = at <= 0 ? items[items.length - 1] : items[at - 1];
+		else next = at < 0 || at === items.length - 1 ? items[0] : items[at + 1];
+		e.preventDefault();
+		e.stopPropagation();
+		next.focus();
+	};
+
+	// window 捕获：比 document 捕获更早，面板打开时能挡住 app.js / terminal.js /
+	// right-panel.js 的全局 Esc（它们都在 document 捕获或冒泡阶段）。
+	const onHelpKey = (e) => {
+		if (composing(e)) return;
+
+		if (helpOpen) {
+			switch (e.key) {
+				case "Escape":
+					e.preventDefault();
+					e.stopPropagation();
+					closeHelp();
+					return;
+				case "ArrowDown":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive(helpSel < 0 ? 0 : helpSel + 1);
+					return;
+				case "ArrowUp":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive(helpSel < 0 ? helpRows.length - 1 : helpSel - 1);
+					return;
+				case "Home":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive(0);
+					return;
+				case "End":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive(helpRows.length - 1);
+					return;
+				case "PageDown":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive((helpSel < 0 ? 0 : helpSel) + 6);
+					return;
+				case "PageUp":
+					e.preventDefault();
+					e.stopPropagation();
+					setHelpActive((helpSel < 0 ? 0 : helpSel) - 6);
+					return;
+				case "Enter":
+					// 只读参考：Enter 直接收起面板
+					e.preventDefault();
+					e.stopPropagation();
+					closeHelp();
+					return;
+				case "Tab":
+					trapHelpTab(e);
+					return;
+			}
+
+			if (isSlashChord(e)) {
+				e.preventDefault();
+				e.stopPropagation();
+				if (!e.repeat) closeHelp();
+				return;
+			}
+			if (toggleKey(e)) {
+				// Mod+K：切到命令面板（先归还焦点，命令面板再自己记一次）
+				e.preventDefault();
+				e.stopPropagation();
+				if (e.repeat) return;
+				closeHelp();
+				openPanel();
+				return;
+			}
+			return; // 其余按键交给搜索框；缩放等全局键继续冒泡给命令面板的处理器
+		}
+
+		if (e.repeat) return;
+		if (!isSlashChord(e)) return;
+		if (!openHelp()) return; // 已有设置 / 命令面板 / 其他模态层时不叠加
+		e.preventDefault();
+		e.stopPropagation();
+	};
+	window.addEventListener("keydown", onHelpKey, true);
+
+	// 焦点陷阱兜底：即使有元素在面板外拿到焦点，也拉回搜索框
+	doc.addEventListener("focusin", (e) => {
+		if (!helpOpen) return;
+		if (helpDialog.contains(e.target)) return;
+		helpInput.focus({ preventScroll: true });
+	});
+
+	// ---------- 搜索框 ----------
+	helpInput.addEventListener("compositionstart", () => {
+		helpInput.dataset.composing = "1";
+	});
+	helpInput.addEventListener("compositionend", () => {
+		delete helpInput.dataset.composing;
+		renderHelp();
+	});
+	helpInput.addEventListener("input", () => {
+		if (helpInput.dataset.composing === "1") return;
+		renderHelp();
+	});
+
+	// 点遮罩关闭；点面板内部不关
+	helpOverlay.addEventListener("pointerdown", (e) => {
+		if (e.target === helpOverlay) closeHelp();
+	});
+	helpDialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+	helpClose.addEventListener("click", () => closeHelp());
 }

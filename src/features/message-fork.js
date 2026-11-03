@@ -1,8 +1,11 @@
 // 分支：从某条用户消息 fork 出新会话（pi 的 fork），成功后重放当前会话历史。
 // 只处理 .row.mine；幂等挂载，MutationObserver 覆盖新消息与历史重绘。
 // RPC：get_fork_messages → { messages:[{ entryId, text }] }
+//      get_entries      → { entries, leafId }（fork 列表含其它分支，需还原活动链；
+//                          不用 get_tree：大会话上 pi 会递归爆栈）
 //      fork({ entryId }) → { text, cancelled }
 //      get_messages     → { messages }
+import { activeChainUserEntries, pickForkEntry } from "../core/fork-target.js";
 const CSS = `
 /* 分支按钮并入行内的 .acts 横条；按钮外观统一由 message-actions 的
    .row > .acts button 负责，这里只留浮层与 toast。 */
@@ -270,18 +273,30 @@ export function init(ctx) {
 		}
 	}
 
+	// 匹配：pi 的 fork 列表按「追加顺序」覆盖所有分支，DOM 只显示活动分支；
+	// 所以用 get_entries 还原活动链，再按「从末尾数第几条」对齐（见 core/fork-target.js）。
+
 	// ---------- 匹配 + 打开 ----------
 	async function openFor(btn, row) {
 		if (ctx.state?.streaming) return;
-		const text = (row.querySelector(":scope > .user")?.textContent ?? "").trim();
-		if (!text) return;
+		const userEl = row.querySelector(":scope > .user");
+		if (!userEl) return;
+		// 纯图片消息没有文字，只能按位置对齐（以前这种消息直接不能 fork）
+		const text = (userEl.textContent ?? "").trim();
 		closePop();
 		anchorBtn = btn;
 
 		let list;
+		let tree = null;
 		btn.dataset.busy = "1";
 		try {
-			list = await pi.command({ type: "get_fork_messages" });
+			const [forkRes, treeRes] = await Promise.allSettled([
+				pi.command({ type: "get_fork_messages" }),
+				pi.command({ type: "get_entries" }),
+			]);
+			if (forkRes.status !== "fulfilled") throw forkRes.reason;
+			list = forkRes.value;
+			if (treeRes.status === "fulfilled") tree = treeRes.value;
 		} catch (e) {
 			console.warn("[message-fork] get_fork_messages 失败", e?.message || e);
 			anchorBtn = null;
@@ -297,7 +312,12 @@ export function init(ctx) {
 		}
 
 		const messages = Array.isArray(list?.messages) ? list.messages : [];
-		const hit = messages.find((m) => typeof m?.text === "string" && m.text.trim() === text);
+		// 同一段文字可能出现多次（例如连发两次「继续」）。按「从末尾数第几条」对齐，
+		// 而不是 find 第一条；历史只加载尾部时（load-earlier 只前插）这个口径仍然成立。
+		const rows = [...stream.querySelectorAll(".row.mine")].filter((r) => r.querySelector(":scope > .user"));
+		const fromEnd = Math.max(0, rows.length - 1 - rows.indexOf(row));
+		const chain = tree ? activeChainUserEntries({ entries: tree.entries, leafId: tree.leafId }) : [];
+		const hit = pickForkEntry({ users: chain, messages, text, rowIndexFromEnd: fromEnd });
 		if (!hit?.entryId) {
 			console.warn("[message-fork] 找不到对应的历史消息", text.slice(0, 40));
 			anchorBtn = null;

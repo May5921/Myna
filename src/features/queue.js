@@ -1,23 +1,28 @@
-// 排队 dock：流式期间输入框上方贴一块与输入卡融合的待发送面板。
-// pi 只有 steer / follow_up / clear_queue，没有按条 remove/edit/steer；所以本地维护「我发过的文本」镜像，
-// 行内只显示预览与「已排队」，清空只能整队清。
-// Enter → follow_up（排队）；Ctrl/Cmd+Enter → steer（插话）；流式中点 #send 且草稿非空 → 排队发送。
-// 自注入样式与 DOM（#composer 内、.box 之前），不改 index.html / app.js / base.css。
-// RPC：follow_up / steer / get_state / clear_queue
+// 排队 dock：结构照 DSH 的 QueueDock（packages/client/ui-conversation/src/client/queue/QueueDock.tsx）。
+// 本地队列：pi 没有按条编辑/删除/插话的 RPC，只能由前端维护。
+// 行为：
+//   - 空队列不渲染；1 条直接显示一行；多条折叠成「N 条排队」，默认收起
+//   - 行内图标操作：编辑（勾/叉确认）、删除、插话（仅运行中可用）
+//   - 发送中：条目保留并显示「发送中…」，成功后移除，失败恢复可操作
+//   - 空闲且队列非空时自动发下一条（等价于 DSH 的 host 队列自动投递）
+// Enter → 排队；Ctrl/Cmd+Enter → 插话（设置 → 行为可互换）。
+// 持久化：pi-mini.queue.<sessionFile>，只存文本；带图条目只活在本次运行。
 
-const POLL_MS = 2000;
 const TOAST_MS = 2000;
-const ARM_MS = 2500;
-const SETTLE_GRACE_MS = 1500;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-// ---------- 持久化 ----------
-// 队列项按会话落 localStorage：key = pi-mini.queue.<sessionFile>，新会话（还没有 sessionFile）用 _new。
-// 只存 { text, mode }，不存 id / 已发送标记——恢复出来的一律是「本地草稿」，不是 pi 的 pending。
 const STORE_PREFIX = "pi-mini.queue.";
 const STORE_NEW = `${STORE_PREFIX}_new`;
 const STORE_MAX = 50;
 const SESSION_WATCH_MS = 500;
+const BUSY_ENTER_KEY = "pi-mini.busyEnter";
+const busyEnter = () => {
+	try {
+		return localStorage.getItem(BUSY_ENTER_KEY) === "steer" ? "steer" : "queue";
+	} catch {
+		return "queue";
+	}
+};
 
 const storeKeyOf = (sessionFile) => {
 	const f = typeof sessionFile === "string" ? sessionFile.trim() : "";
@@ -34,12 +39,12 @@ const readQueueStore = (key) => {
 		for (const it of arr) {
 			const text = typeof it?.text === "string" ? it.text : "";
 			if (!text.trim()) continue;
-			out.push({ text, mode: it?.mode === "steer" ? "steer" : "follow_up" });
+			out.push({ text });
 			if (out.length >= STORE_MAX) break;
 		}
 		return out;
 	} catch {
-		return []; // 坏数据当成空队列，不打断 Dock
+		return [];
 	}
 };
 
@@ -48,76 +53,35 @@ const CSS = `
 	box-sizing: border-box;
 	width: min(768px, 100% - 48px);
 	margin: 0 auto -3px;
-	padding: 2px 0;
 	overflow: hidden;
 	background: var(--bg);
 	border: 1px solid var(--line);
 	border-bottom: none;
 	border-radius: 10px 10px 0 0;
-	box-shadow: none;
 }
 .queue-dock[hidden] { display: none; }
 
 .queue-head {
 	display: flex;
 	align-items: center;
-	gap: 8px; /* STYLE §3⑥ 间距只用 4 的倍数（原 10） */
+	gap: 10px;
+	width: 100%;
 	height: 36px;
-	padding: 0 8px 0 12px;
-}
-
-.queue-lead {
-	display: grid;
-	flex: none;
-	place-items: center;
-	color: var(--faint);
-}
-.queue-lead svg { display: block; }
-
-.queue-count {
-	flex: 1 1 auto;
-	min-width: 0;
-	overflow: hidden;
+	padding: 4px 12px;
+	border: none;
+	background: none;
 	color: var(--text);
 	font: 13px/24px var(--ui);
-	white-space: nowrap;
-	text-overflow: ellipsis;
+	text-align: left;
+	cursor: pointer;
 }
-
-.queue-clear {
-	flex: none;
-	height: 24px;
-	/*「清空」40px →「确认清空」64px：预留宽度，二次确认时整行不跳动 */
-	min-width: 64px;
-	padding: 0 8px;
-	border: none;
-	border-radius: 8px;
-	background: none;
-	color: var(--faint);
-	font: 12px/1 var(--ui);
-	white-space: nowrap;
-	transition: background-color 120ms ease, color 120ms ease;
-}
-.queue-clear:hover { background: var(--hover); color: var(--text); }
-/* armed 必须和 hover 有区别，否则看不出已进入确认态 */
-.queue-clear[data-armed="1"] { background: var(--hover); color: var(--err); }
-.queue-clear:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
-
-.queue-chevron {
-	display: grid;
-	flex: none;
-	place-items: center;
-	width: 24px;
-	height: 24px;
-	padding: 0;
-	border: none;
-	border-radius: 8px;
-	background: none;
-	color: var(--faint);
-	transition: background-color 120ms ease, color 120ms ease;
-}
-.queue-chevron:hover { background: var(--hover); color: var(--text); }
-.queue-chevron:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+.queue-head[hidden] { display: none; }
+.queue-head:disabled { cursor: default; }
+.queue-head:focus-visible { outline: 1px solid var(--faint); outline-offset: -2px; }
+.queue-count { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.queue-chevron { display: grid; place-items: center; flex: none; width: 14px; height: 14px; color: var(--faint); }
+.queue-lead { display: grid; place-items: center; flex: none; color: var(--faint); }
+.queue-lead svg, .queue-chevron svg, .queue-act svg { display: block; }
 
 .queue-list {
 	max-height: 180px;
@@ -126,36 +90,73 @@ const CSS = `
 	overflow-y: auto;
 	list-style: none;
 	scrollbar-width: thin;
-	/* 与 base.css 全局 thumb（rgba(13,13,13,.2)）对齐；--line 只有 8% 透明，拖动条等于看不见 */
-	scrollbar-color: rgba(13, 13, 13, 0.2) transparent;
+	scrollbar-color: var(--line-strong) transparent;
 }
 .queue-list[hidden] { display: none; }
 
 .queue-row {
+	box-sizing: border-box;
 	display: flex;
 	align-items: center;
-	gap: 8px; /* STYLE §3⑥ 间距只用 4 的倍数（原 10） */
+	gap: 10px;
+	width: 100%;
 	min-height: 36px;
-	padding: 4px 12px;
+	padding: 4px 6px 4px 12px;
 }
 .queue-row + .queue-row { box-shadow: inset 0 1px 0 var(--line); }
+.queue-row.pending .queue-preview { color: var(--faint); }
 
+.queue-thumbs { display: flex; flex: none; gap: 4px; min-width: 0; max-width: 45%; overflow: hidden; }
+.queue-thumb {
+	width: 24px;
+	height: 24px;
+	object-fit: cover;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	background: var(--hover);
+}
+.queue-more { flex: none; align-self: center; color: var(--faint); font: 11px/1 var(--mono); }
 .queue-preview {
 	flex: 1 1 auto;
 	min-width: 0;
 	overflow: hidden;
 	color: var(--dim);
-	font: 12px/1.5 var(--ui);
+	font: 13px/1.5 var(--ui);
 	white-space: nowrap;
 	text-overflow: ellipsis;
 }
+.queue-status { flex: none; color: var(--faint); font: 12px/1.5 var(--ui); white-space: nowrap; }
 
-.queue-status {
+.queue-actions { display: flex; flex: none; align-items: center; gap: 2px; }
+.queue-act {
+	display: grid;
+	place-items: center;
 	flex: none;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: none;
+	border-radius: 999px;
+	background: none;
 	color: var(--faint);
-	font: 11px/1 var(--mono);
-	white-space: nowrap;
+	transition: background-color 120ms ease, color 120ms ease;
 }
+.queue-act:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.queue-act:disabled { opacity: 0.45; cursor: default; }
+.queue-act:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+
+.queue-edit {
+	flex: 1 1 auto;
+	min-width: 0;
+	height: 28px;
+	padding: 0 8px;
+	border: 1px solid var(--line-strong);
+	border-radius: 6px;
+	background: var(--bg);
+	color: var(--text);
+	font: 13px/1.4 var(--ui);
+}
+.queue-edit:focus { outline: none; border-color: var(--faint); }
 
 /* 运行中草稿非空：#send 显示箭头（压过 base.css 的 #send.stop .sq / .up） */
 #send.queue-send .up { display: block; }
@@ -180,10 +181,11 @@ const CSS = `
 .queue-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 @media (prefers-reduced-motion: reduce) {
-	.queue-clear, .queue-chevron, .queue-toast { transition: none; }
+	.queue-act, .queue-toast, .queue-chevron { transition: none; }
 }
 `;
 
+// ---------- 图标（14px，DSH QueueDock 的图标尺寸）----------
 const svg = (parts) => {
 	const el = document.createElementNS(SVG_NS, "svg");
 	el.setAttribute("width", "14");
@@ -198,13 +200,11 @@ const svg = (parts) => {
 	for (const part of parts) el.append(part);
 	return el;
 };
-
 const pathEl = (d) => {
 	const p = document.createElementNS(SVG_NS, "path");
 	p.setAttribute("d", d);
 	return p;
 };
-
 const dotEl = (cx, cy) => {
 	const c = document.createElementNS(SVG_NS, "circle");
 	c.setAttribute("cx", cx);
@@ -215,9 +215,23 @@ const dotEl = (cx, cy) => {
 	return c;
 };
 
-const queueIcon = () => svg([dotEl("2.8", "4.4"), dotEl("2.8", "9.6"), pathEl("M5.6 4.4h5.6"), pathEl("M5.6 9.6h5.6")]);
+const ICON = {
+	queue: () => svg([dotEl("2.8", "4.4"), dotEl("2.8", "9.6"), pathEl("M5.6 4.4h5.6"), pathEl("M5.6 9.6h5.6")]),
+	chevronDown: () => svg([pathEl("M3.6 5.2 7 8.6l3.4-3.4")]),
+	chevronUp: () => svg([pathEl("M3.6 8.8 7 5.4l3.4 3.4")]),
+	edit: () => svg([pathEl("M9.6 2.6a1.2 1.2 0 0 1 1.7 0l.1.1a1.2 1.2 0 0 1 0 1.7L5.2 10.6l-2.2.5.5-2.2 6.1-6.3Z")]),
+	trash: () => svg([pathEl("M2.6 3.6h8.8"), pathEl("M5.4 3.6V2.5h3.2v1.1"), pathEl("M3.8 3.6l.5 7.6h5.4l.5-7.6")]),
+	steer: () => svg([pathEl("M12.4 1.9 1.9 6.1l4 1.6 1.6 4 4.9-9.8Z"), pathEl("M5.9 7.7 9 5.4")]),
+	check: () => svg([pathEl("M3 7.4 5.7 10.1 11 4.8")]),
+	close: () => svg([pathEl("M3.6 3.6l6.8 6.8"), pathEl("M10.4 3.6l-6.8 6.8")]),
+};
 
-const chevronIcon = (open) => svg([pathEl(open ? "M3.6 8.8 7 5.4l3.4 3.4" : "M3.6 5.2 7 8.6l3.4-3.4")]);
+const mk = (tag, cls, text) => {
+	const el = document.createElement(tag);
+	if (cls) el.className = cls;
+	if (text != null) el.textContent = text;
+	return el;
+};
 
 export function init(ctx) {
 	const input = ctx?.input;
@@ -232,175 +246,50 @@ export function init(ctx) {
 	document.head.append(style);
 
 	const sendTitle = sendBtn.title || "发送";
+	const basePlaceholder = input.placeholder;
 
-	// ---------- 本地队列镜像（pi 没有按条操作，只有整队 clear_queue）----------
-	// sent=true：已经交给 pi 的（follow_up 排队），pi 计数归零时可以本地移除；
-	// sent=false：从 localStorage 恢复的本地草稿，pi 不知道它的存在，任何计数清理都不能碰。
-	const queue = []; // { id, text, mode, sent }
+	const queue = []; // { id, text, images, pending }
 	let seq = 0;
-	let storeKey = storeKeyOf(ctx.state?.sessionFile); // 当前会话对应的存储 key
-	let restoredKey = null; // 已经恢复过的 key：同一个 key 不重复覆盖本地队列
-	let settleAt = 0; // 最近一次 agent_settled：只有刚结束这一轮，_new → 真实文件的迁移才可信
+	let storeKey = storeKeyOf(ctx.state?.sessionFile);
+	let restoredKey = null;
+	let settleAt = 0;
 	let collapsed = true;
-	let lastPushAt = 0;
-	let pollTimer = 0;
-	let busy = false;
-	let armed = false;
-	let armTimer = 0;
+	let editingId = null;
+	let dispatching = false;
+	let failAt = 0; // 投递失败后的退避，避免 500ms 看门狗变成重试风暴
+	let failCount = 0;
+	let demo = false;
 	let toastTimer = 0;
 	let toastSeq = 0;
-	let demo = false; // 验收钩子塞的假条目：不发送，也不让轮询把它清掉
 
 	// ---------- Dock DOM ----------
-	const dock = document.createElement("div");
-	dock.className = "queue-dock";
+	const dock = mk("div", "queue-dock");
 	dock.hidden = true;
 	dock.setAttribute("role", "region");
 	dock.setAttribute("aria-label", "待发送队列");
 
-	const head = document.createElement("div");
-	head.className = "queue-head";
+	const head = mk("button", "queue-head");
+	head.type = "button";
+	head.hidden = true;
+	head.setAttribute("aria-controls", "queue-list");
+	head.setAttribute("aria-expanded", "false");
 
-	const leadEl = document.createElement("span");
-	leadEl.className = "queue-lead";
-	leadEl.append(queueIcon());
+	const leadEl = mk("span", "queue-lead");
+	leadEl.append(ICON.queue());
+	const countEl = mk("span", "queue-count");
+	countEl.setAttribute("aria-live", "polite");
+	const chevronEl = mk("span", "queue-chevron");
+	head.append(leadEl, countEl, chevronEl);
 
-	const countEl = document.createElement("span");
-	countEl.className = "queue-count";
-	countEl.setAttribute("aria-live", "polite"); // 队列增减时焦点不在 Dock 上，靠 live 区域播报条数
-
-	const clearBtn = document.createElement("button");
-	clearBtn.type = "button";
-	clearBtn.className = "queue-clear";
-	clearBtn.textContent = "清空";
-	clearBtn.title = "清空待发送队列";
-	clearBtn.setAttribute("aria-label", "清空待发送队列");
-
-	const chevronBtn = document.createElement("button");
-	chevronBtn.type = "button";
-	chevronBtn.className = "queue-chevron";
-	chevronBtn.setAttribute("aria-controls", "queue-list");
-	chevronBtn.setAttribute("aria-expanded", "false"); // 初值 collapsed = true，不能先声明成展开
-	chevronBtn.setAttribute("aria-label", "展开队列");
-
-	const listEl = document.createElement("ul");
-	listEl.className = "queue-list";
+	const listEl = mk("ul", "queue-list");
 	listEl.id = "queue-list";
 	listEl.setAttribute("aria-label", "待发送消息");
 
-	head.append(leadEl, countEl, clearBtn, chevronBtn);
 	dock.append(head, listEl);
 	composer.insertBefore(dock, box);
 
-	function resetArm() {
-		clearTimeout(armTimer);
-		armTimer = 0;
-		armed = false;
-		clearBtn.dataset.armed = "0";
-		clearBtn.textContent = "清空";
-	}
-
-	const rowEl = (item) => {
-		const li = document.createElement("li");
-		li.className = "queue-row";
-		const preview = document.createElement("span");
-		preview.className = "queue-preview";
-		preview.textContent = item.text;
-		preview.title = item.text;
-		const status = document.createElement("span");
-		status.className = "queue-status";
-		// 恢复出来的草稿 pi 那边没有，不能写「已排队」冒充 pendingMessageCount
-		status.textContent = item.sent ? "已排队" : "未发送";
-		li.append(preview, status);
-		return li;
-	};
-
-	function render() {
-		const n = queue.length;
-		dock.hidden = n === 0;
-		if (n === 0) {
-			listEl.replaceChildren();
-			resetArm();
-			return;
-		}
-		const listVisible = !collapsed;
-		countEl.textContent = `${n} 条待发送`;
-		listEl.hidden = !listVisible;
-		chevronBtn.replaceChildren(chevronIcon(listVisible));
-		const chevronLabel = listVisible ? "收起队列" : "展开队列";
-		chevronBtn.setAttribute("aria-expanded", listVisible ? "true" : "false");
-		chevronBtn.title = chevronLabel;
-		chevronBtn.setAttribute("aria-label", chevronLabel); // 图标按钮没有可读文本，名字必须显式同步
-		listEl.replaceChildren();
-		for (const item of queue) listEl.append(rowEl(item));
-	}
-
-	// ---------- 写盘 / 恢复 ----------
-	function persist() {
-		if (demo) return; // 验收钩子的假条目不落盘
-		try {
-			if (!queue.length) {
-				localStorage.removeItem(storeKey);
-				return;
-			}
-			const rows = queue.slice(-STORE_MAX).map((it) => ({ text: it.text, mode: it.mode === "steer" ? "steer" : "follow_up" }));
-			localStorage.setItem(storeKey, JSON.stringify(rows));
-		} catch (err) {
-			console.warn("[queue] 持久化失败", err?.message || err);
-		}
-	}
-
-	function clearLocal() {
-		queue.length = 0;
-		render();
-		persist();
-	}
-
-	// 只清「已经交给 pi 的」条目；恢复出来的本地草稿留着，pi 的 pendingMessageCount 管不到它们
-	function clearSent() {
-		let hit = false;
-		for (let i = queue.length - 1; i >= 0; i--) {
-			if (queue[i].sent) {
-				queue.splice(i, 1);
-				hit = true;
-			}
-		}
-		if (!hit) return;
-		render();
-		persist();
-	}
-
-	// 会话变了就把 Dock 换成那个会话的队列；sessionFile 还没出来时挂在 _new 上
-	function restore() {
-		const nextKey = storeKeyOf(ctx.state?.sessionFile);
-		if (nextKey === restoredKey) return;
-		// 新会话第一轮结束才有 sessionFile：刚 settle 完的这一下，把没发出去的草稿带到正式 key 上，别丢。
-		// 手动切会话不算（那是别的会话，草稿留在 _new 里等下次新会话）。
-		const settled = Date.now() - settleAt < 5000;
-		const carry = restoredKey === STORE_NEW && nextKey !== STORE_NEW && settled ? queue.filter((it) => !it.sent) : [];
-		restoredKey = nextKey;
-		storeKey = nextKey;
-		demo = false;
-		queue.length = 0;
-		for (const it of readQueueStore(nextKey)) queue.push({ id: ++seq, text: it.text, mode: it.mode, sent: false });
-		for (const it of carry) queue.push({ id: ++seq, text: it.text, mode: it.mode, sent: false });
-		render();
-		syncSend();
-		if (carry.length) persist();
-	}
-
-	// ---------- 发送键在运行中：草稿有内容显示 Send（排队），空则保持 Stop ----------
-	const syncSend = () => {
-		const streaming = !!ctx.state?.streaming;
-		const queuing = streaming && input.value.trim().length > 0;
-		sendBtn.classList.toggle("queue-send", queuing);
-		// 运行中空草稿时按钮实际是「停止」（#send.stop 方块），title 不能回落成「发送」
-		sendBtn.title = queuing ? "排队发送（Ctrl+Enter 插话）" : streaming ? "停止" : sendTitle;
-	};
-
-	// ---------- Toast（只用于插话反馈）----------
-	const toastEl = document.createElement("div");
-	toastEl.className = "queue-toast";
+	// ---------- Toast ----------
+	const toastEl = mk("div", "queue-toast");
 	toastEl.setAttribute("role", "status");
 	toastEl.setAttribute("aria-live", "polite");
 	document.body.append(toastEl);
@@ -418,174 +307,414 @@ export function init(ctx) {
 		}, TOAST_MS);
 	}
 
-	// ---------- 发送 ----------
+	// ---------- 行 ----------
+	const iconBtn = (icon, label, { disabled = false, title = label, onClick } = {}) => {
+		const b = mk("button", "queue-act");
+		b.type = "button";
+		b.append(icon());
+		b.title = title;
+		b.setAttribute("aria-label", label);
+		b.disabled = disabled;
+		if (onClick) b.onclick = onClick;
+		return b;
+	};
+
+	const editorFor = (item) => {
+		const inp = mk("input", "queue-edit");
+		inp.type = "text";
+		inp.value = item.text;
+		inp.setAttribute("aria-label", "编辑排队消息");
+		inp.onkeydown = (e) => {
+			if (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) {
+				e.preventDefault();
+				saveEdit(item, inp.value);
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				editingId = null;
+				render();
+			}
+		};
+		return inp;
+	};
+
+	const saveEdit = (item, value) => {
+		const text = String(value || "").trim();
+		if (!text) return;
+		item.text = text;
+		editingId = null;
+		persist();
+		render();
+	};
+
+	const removeItem = (item) => {
+		const i = queue.indexOf(item);
+		if (i < 0) return;
+		queue.splice(i, 1);
+		if (editingId === item.id) editingId = null;
+		persist();
+		render();
+	};
+
+	const steerItem = async (item) => {
+		if (item.pending) return;
+		if (!ctx.state?.streaming) return;
+		try {
+			const cmd = { type: "steer", message: item.text || `[${item.images?.length || 0} 张图片]` };
+			if (item.images?.length) cmd.images = item.images;
+			await ctx.pi.command(cmd);
+			removeItem(item);
+			toast("已插话");
+		} catch (err) {
+			console.warn("[queue] steer 失败", err?.message || err);
+			toast("插话失败");
+		}
+	};
+
+	const rowEl = (item) => {
+		const li = mk("li", "queue-row" + (item.pending ? " pending" : ""));
+		li.dataset.id = String(item.id);
+		const single = queue.length === 1;
+		if (single) {
+			const lead = mk("span", "queue-lead");
+			lead.append(ICON.queue());
+			li.append(lead);
+		}
+		if (item.images?.length) {
+			const thumbs = mk("span", "queue-thumbs");
+			for (const img of item.images.slice(0, 3)) {
+				const im = document.createElement("img");
+				im.className = "queue-thumb";
+				im.src = img.url || (img.data ? `data:${img.mimeType};base64,${img.data}` : "");
+				im.alt = img.name || "图片";
+				im.draggable = false;
+				thumbs.append(im);
+			}
+			if (item.images.length > 3) thumbs.append(mk("span", "queue-more", `+${item.images.length - 3}`));
+			li.append(thumbs);
+		}
+
+		const editing = editingId === item.id;
+		if (editing) {
+			li.append(editorFor(item));
+		} else {
+			const preview = mk("span", "queue-preview", item.text || "[仅图片]");
+			preview.title = item.text || "";
+			li.append(preview);
+		}
+
+		if (item.pending) {
+			li.append(mk("span", "queue-status", "发送中…"));
+			const actions = mk("span", "queue-actions");
+			actions.append(
+				iconBtn(ICON.edit, "编辑", { disabled: true, title: "发送中" }),
+				iconBtn(ICON.trash, "删除", { disabled: true, title: "发送中" }),
+				iconBtn(ICON.steer, "插话", { disabled: true, title: "发送中" }),
+			);
+			li.append(actions);
+			return li;
+		}
+
+		const actions = mk("span", "queue-actions");
+		if (editing) {
+			actions.append(
+				iconBtn(ICON.check, "保存", { title: "保存编辑", onClick: () => saveEdit(item, li.querySelector(".queue-edit")?.value) }),
+				iconBtn(ICON.close, "取消", {
+					title: "取消编辑",
+					onClick: () => {
+						editingId = null;
+						render();
+					},
+				}),
+			);
+		} else {
+			const running = !!ctx.state?.streaming;
+			actions.append(
+				iconBtn(ICON.edit, "编辑", {
+					title: "编辑排队消息",
+					onClick: () => {
+						editingId = item.id;
+						render();
+					},
+				}),
+				iconBtn(ICON.trash, "删除", { title: "删除排队消息", onClick: () => removeItem(item) }),
+				iconBtn(ICON.steer, "插话", {
+					disabled: !running,
+					title: running ? "立即插入当前回合" : "当前没有正在生成的回复",
+					onClick: () => void steerItem(item),
+				}),
+			);
+		}
+		li.append(actions);
+		return li;
+	};
+
+	const jumpEl = document.getElementById("jump");
+	let jumpBase = null;
+	const syncJumpOffset = () => {
+		if (!jumpEl) return;
+		if (jumpBase == null) {
+			const raw = parseFloat(getComputedStyle(jumpEl).bottom);
+			jumpBase = Number.isFinite(raw) ? raw : 150;
+		}
+		if (dock.hidden) {
+			jumpEl.style.removeProperty("bottom");
+		} else {
+			// #jump 的默认 bottom 按空 composer 算的；dock 出现后要把这段高度让出来
+			jumpEl.style.bottom = `${jumpBase + dock.offsetHeight + 8}px`;
+		}
+	};
+
+	// ---------- 渲染 ----------
+	function render() {
+		const n = queue.length;
+		dock.hidden = n === 0;
+		head.hidden = n <= 1;
+		if (n === 0) {
+			collapsed = true;
+			editingId = null;
+			listEl.replaceChildren();
+			head.setAttribute("aria-expanded", "false");
+			syncSend();
+			syncJumpOffset();
+			return;
+		}
+		const interactionActive = editingId !== null || queue.some((it) => it.pending);
+		if (interactionActive) collapsed = false;
+		const listVisible = n === 1 || !collapsed;
+		head.disabled = interactionActive;
+		countEl.textContent = `${n} 条排队`;
+		head.setAttribute("aria-expanded", listVisible ? "true" : "false");
+		head.setAttribute("aria-label", listVisible ? "收起排队消息" : "展开排队消息");
+		chevronEl.replaceChildren(listVisible ? ICON.chevronDown() : ICON.chevronUp());
+		listEl.hidden = !listVisible;
+		listEl.replaceChildren(...queue.map(rowEl));
+		if (editingId !== null) listEl.querySelector(".queue-edit")?.focus();
+		syncSend();
+		syncJumpOffset();
+	}
+
+	head.onclick = (e) => {
+		e.preventDefault();
+		if (head.disabled) return;
+		collapsed = !collapsed;
+		render();
+	};
+
+	// ---------- 写盘 / 恢复 ----------
+	function persist() {
+		if (demo) return;
+		try {
+			if (!queue.length) {
+				localStorage.removeItem(storeKey);
+				return;
+			}
+			// base64 图不落盘（localStorage 存不下），带图条目只活在本次运行里
+			const rows = queue
+				.filter((it) => !it.images?.length && it.text.trim())
+				.slice(-STORE_MAX)
+				.map((it) => ({ text: it.text }));
+			if (!rows.length) {
+				localStorage.removeItem(storeKey);
+				return;
+			}
+			localStorage.setItem(storeKey, JSON.stringify(rows));
+		} catch (err) {
+			console.warn("[queue] 持久化失败", err?.message || err);
+		}
+	}
+
+	function restore() {
+		const nextKey = storeKeyOf(ctx.state?.sessionFile);
+		if (nextKey === restoredKey) return;
+		// 新会话第一轮结束才有 sessionFile：刚 settle 完的 5 秒内，把没发出去的草稿带到正式 key 上。
+		const settled = Date.now() - settleAt < 5000;
+		const carry = restoredKey === STORE_NEW && nextKey !== STORE_NEW && settled ? queue.filter((it) => !it.pending) : [];
+		restoredKey = nextKey;
+		storeKey = nextKey;
+		demo = false;
+		editingId = null;
+		collapsed = true;
+		queue.length = 0;
+		for (const it of readQueueStore(nextKey)) queue.push({ id: ++seq, text: it.text, images: [], pending: false });
+		for (const it of carry) queue.push({ id: ++seq, text: it.text, images: it.images || [], pending: false });
+		render();
+		if (carry.length) {
+			persist();
+			try {
+				localStorage.removeItem(STORE_NEW);
+			} catch {}
+		}
+	}
+
+	// ---------- 发送键 / 草稿 ----------
+	const hasDraft = () => !!input.value.trim() || (ctx.attachments?.get?.() || []).length > 0;
+	const syncSend = () => {
+		const streaming = !!ctx.state?.streaming;
+		const queuing = streaming && hasDraft();
+		sendBtn.classList.toggle("queue-send", queuing);
+		const primary = busyEnter();
+		sendBtn.title = queuing
+			? primary === "steer"
+				? "插话发送（Ctrl+Enter 排队）"
+				: "排队发送（Ctrl+Enter 插话）"
+			: streaming
+				? "停止"
+				: sendTitle;
+	};
+
 	const takeDraft = () => {
 		const text = input.value.trim();
-		if (!text) return null;
+		const images = ctx.attachments?.take?.() || [];
+		if (!text && !images.length) return null;
 		const prev = input.value;
 		input.value = "";
 		input.dispatchEvent(new Event("input", { bubbles: true }));
-		return { text, prev };
+		return { text, prev, images };
 	};
 
-	const restoreDraft = (prev) => {
-		if (input.value) return;
-		input.value = prev;
-		input.dispatchEvent(new Event("input", { bubbles: true }));
+	const restoreDraft = (draft) => {
+		if (draft.images?.length) ctx.attachments.set?.(draft.images);
+		if (!input.value) {
+			input.value = draft.prev || "";
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+		}
 		input.focus();
 	};
 
-	const enqueue = async () => {
-		// follow_up 只带文本：带图排队会把附件静默留在 rail 上，用户以为已经发出去了
-		if ((ctx.attachments?.get?.() || []).length) {
-			toast("排队不支持图片，请等这轮结束再发");
-			return;
-		}
+	const enqueue = () => {
 		const draft = takeDraft();
 		if (!draft) return;
-		try {
-			await ctx.pi.command({ type: "follow_up", message: draft.text });
-			demo = false;
-			queue.push({ id: ++seq, text: draft.text, mode: "follow_up", sent: true });
-			lastPushAt = Date.now();
-			render();
-			persist();
-			startPoll();
-		} catch (err) {
-			console.warn("[queue] follow_up 失败", err?.message || err);
-			restoreDraft(draft.prev);
-		}
+		demo = false;
+		failAt = 0;
+		failCount = 0;
+		queue.push({ id: ++seq, text: draft.text, images: draft.images, pending: false });
+		persist();
+		render();
+		toast(draft.images.length ? `已排队（含 ${draft.images.length} 张图）` : "已排队");
 	};
 
 	const steerNow = async () => {
 		const draft = takeDraft();
 		if (!draft) return;
 		try {
-			await ctx.pi.command({ type: "steer", message: draft.text });
+			const cmd = { type: "steer", message: draft.text || `[${draft.images.length} 张图片]` };
+			if (draft.images.length) cmd.images = draft.images;
+			await ctx.pi.command(cmd);
 			toast("已插话");
 		} catch (err) {
 			console.warn("[queue] steer 失败", err?.message || err);
-			restoreDraft(draft.prev);
+			restoreDraft(draft);
 		}
 	};
 
-	// ---------- 计数轮询：流式期间每 2s，pi 报 0 时同步清空 ----------
-	async function poll() {
-		if (document.hidden || busy) return;
-		if (!ctx.state?.streaming) {
-			stopPoll();
-			return;
-		}
-		busy = true;
+	const keepBackoff = () => {
+		if (!failAt) return false;
+		const wait = Math.min(30000, 5000 * 2 ** Math.min(failCount, 3));
+		return Date.now() - failAt < wait;
+	};
+
+	// ---------- 投递 ----------
+	// 每条排队消息占一个完整回合：先标记 pending（发送中），submit 成功后才出队；
+	// 失败/早退则恢复可操作，输入和附件都回滚。
+	async function dispatchNext() {
+		if (dispatching || !queue.length) return;
+		if (demo) return;
+		const item = queue[0];
+		if (item.pending) return;
+		if (editingId !== null) return;
+		if (ctx.state?.streaming || ctx.state?.switching) return;
+		if (keepBackoff()) return;
+		if (input.value.trim()) return;
+		if ((ctx.attachments?.get?.() || []).length) return;
+		dispatching = true;
+		item.pending = true;
+		render();
 		try {
-			const s = await ctx.pi.command({ type: "get_state" });
-			if (s?.isStreaming === false) {
-				stopPoll();
-				if (!demo) clearSent();
-				return;
+			input.value = item.text;
+			if (item.images?.length) ctx.attachments.set?.(item.images);
+			input.dispatchEvent(new Event("input", { bubbles: true }));
+			const sent = await ctx.submit?.();
+			if (sent === false) {
+				item.pending = false;
+				ctx.attachments.clear?.();
+				input.value = "";
+				input.dispatchEvent(new Event("input", { bubbles: true }));
+				persist();
+				render();
+			} else {
+				removeItem(item);
 			}
-			// pi 的计数只描述它自己的队列，只能用来清「已交给 pi」的条目
-			const hasSent = queue.some((it) => it.sent);
-			if (!demo && hasSent && s?.pendingMessageCount === 0 && Date.now() - lastPushAt > SETTLE_GRACE_MS) {
-				clearSent();
-			}
-		} catch {
-			// 查询失败不打扰用户，等下一轮
+		} catch (err) {
+			console.warn("[queue] 排队消息发送失败", err?.message || err);
+			item.pending = false;
+			failAt = Date.now();
+			failCount += 1;
+			ctx.attachments.clear?.();
+			persist();
+			render();
+			toast("排队消息发送失败");
 		} finally {
-			busy = false;
+			dispatching = false;
 		}
 	}
 
-	function startPoll() {
-		if (!pollTimer) pollTimer = setInterval(poll, POLL_MS);
-	}
-
-	function stopPoll() {
-		if (pollTimer) {
-			clearInterval(pollTimer);
-			pollTimer = 0;
-		}
+	// 空闲且队列非空：自动投递下一条（DSH host 队列的等价行为）
+	function kick() {
+		if (!window.__ready || demo || dispatching) return;
+		if (!queue.length || queue[0].pending) return;
+		if (editingId !== null) return;
+		if (ctx.state?.streaming || ctx.state?.switching) return;
+		if (keepBackoff()) return;
+		if (input.value.trim()) return;
+		if ((ctx.attachments?.get?.() || []).length) return;
+		void dispatchNext();
 	}
 
 	// ---------- 交互 ----------
-	// 流式中 Enter → 排队；Ctrl/Cmd+Enter → 插话。补全打开时都让给补全。
 	const onKeyDown = (e) => {
-		if (e.target !== input || e.key !== "Enter" || e.shiftKey || e.isComposing) return;
-		if (!ctx.state?.streaming || !input.value.trim()) return;
+		if (e.target !== input || e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+		if (e.defaultPrevented) return;
+		if (!ctx.state?.streaming || !hasDraft()) return;
 		if (document.querySelector(".sug:not([hidden])")) return;
-		const steer = e.ctrlKey || e.metaKey;
+		const primary = busyEnter();
+		const steer = e.ctrlKey || e.metaKey ? primary !== "steer" : primary === "steer";
 		e.preventDefault();
 		e.stopPropagation();
 		if (steer) void steerNow();
-		else void enqueue();
+		else enqueue();
 	};
 
-	// 流式中点 #send 且草稿非空：捕获阶段拦下，避免 app.js 把它当成 abort
 	const onSendClick = (e) => {
 		if (!sendBtn.contains(e.target)) return;
-		if (!ctx.state?.streaming || !input.value.trim()) return;
+		if (!ctx.state?.streaming || !hasDraft()) return;
 		e.preventDefault();
 		e.stopPropagation();
-		void enqueue();
+		if (busyEnter() === "steer") void steerNow();
+		else enqueue();
 	};
 
-	chevronBtn.onclick = (e) => {
-		e.preventDefault();
-		e.stopPropagation();
-		collapsed = !collapsed;
-		render();
-	};
-
-	clearBtn.onclick = async (e) => {
-		e.preventDefault();
-		e.stopPropagation();
-		if (!armed) {
-			armed = true;
-			clearBtn.dataset.armed = "1";
-			clearBtn.textContent = "确认清空";
-			clearTimeout(armTimer);
-			armTimer = setTimeout(resetArm, ARM_MS);
-			return;
-		}
-		resetArm();
-		try {
-			await ctx.pi.command({ type: "clear_queue" });
-			clearLocal();
-		} catch (err) {
-			console.warn("[queue] clear_queue 失败", err?.message || err);
-		}
-	};
-
-	// ---------- 验收钩子（截图用：只往本地 mirror 塞假条目，不发 RPC）----------
-	const DEMO_TEXTS = [
-		"检查构建输出",
-		"把失败的单测修掉",
-		"补一下 preload 的返回值类型",
-		"重跑 lint 并整理告警",
-	];
-	const demoText = (i) => {
-		const base = DEMO_TEXTS[i % DEMO_TEXTS.length];
-		return i < DEMO_TEXTS.length ? base : `${base}（${i + 1}）`;
-	};
-
+	// ---------- 验收钩子 ----------
+	const DEMO_TEXTS = ["检查构建输出", "把失败的单测修掉", "补一下 preload 的返回值类型", "重跑 lint 并整理告警"];
 	window.__piQueueDemo = (n = 2) => {
 		const count = Math.trunc(Number(n));
-		demo = true; // 先立旗：清空 / 塞假条目都不写 localStorage
+		demo = true;
 		queue.length = 0;
+		editingId = null;
 		if (!Number.isFinite(count) || count <= 0) {
 			demo = false;
 			render();
 			return 0;
 		}
-		for (let i = 0; i < count; i++) queue.push({ id: ++seq, text: demoText(i), mode: "follow_up", sent: true });
-		lastPushAt = Date.now();
+		for (let i = 0; i < count; i++) {
+			queue.push({ id: ++seq, text: i < DEMO_TEXTS.length ? DEMO_TEXTS[i] : `${DEMO_TEXTS[i % DEMO_TEXTS.length]}（${i + 1}）`, images: [], pending: false });
+		}
+		collapsed = false; // 截图验收：直接展开，方便看行结构
 		render();
 		return queue.length;
 	};
-
 	window.__piQueueDemoClear = () => {
-		// demo 期间不落盘：清掉的只是假条目，磁盘上那份真实队列不能被顺手删了
 		queue.length = 0;
+		editingId = null;
 		render();
 		demo = false;
 	};
@@ -598,36 +727,27 @@ export function init(ctx) {
 	try {
 		ctx.pi.onEvent?.((ev) => {
 			if (ev?.type === "agent_start") {
-				startPoll();
-				poll();
+				failAt = 0;
+				failCount = 0;
+				input.placeholder = busyEnter() === "steer" ? "插话发送…（Ctrl+Enter 排队）" : "排队发送…（Ctrl+Enter 插话）";
 				syncSend();
 			} else if (ev?.type === "agent_settled") {
-				stopPoll();
-				if (!demo) clearSent();
+				input.placeholder = basePlaceholder;
 				syncSend();
 				settleAt = Date.now();
-				restore(); // 新会话第一轮结束才有 sessionFile，这里补一次
+				restore();
+				void dispatchNext();
 			} else if (ev?.type === "session_info_changed") {
-				settleAt = 0; // 会话被换掉了，不是「刚结束一轮」的迁移
+				settleAt = 0;
 				restore();
 			}
 		});
 	} catch {}
 
-	document.addEventListener("visibilitychange", () => {
-		if (!document.hidden && ctx.state?.streaming) poll();
-	});
-
-	// app.js 的 refreshState 不广播事件：轮询 sessionFile 变化兜底（只是读一个字符串）
 	setInterval(() => {
 		if (storeKeyOf(ctx.state?.sessionFile) !== restoredKey) restore();
+		kick();
 	}, SESSION_WATCH_MS);
 
-	restore();
 	render();
-	syncSend();
-	if (ctx.state?.streaming) {
-		startPoll();
-		poll();
-	}
 }

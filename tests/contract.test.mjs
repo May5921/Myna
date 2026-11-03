@@ -30,12 +30,15 @@ function stripComments(code) {
 		.replace(/(^|[^:])\/\/.*$/gm, "$1");
 }
 
-// 解析 preload.cjs 里 contextBridge.exposeInMainWorld("pi", { ... }) 的键名
+// 解析 preload.cjs 里 contextBridge.exposeInMainWorld("pi", { ... }) 的键名。
 function exposedPiKeys() {
 	const preload = readFileSync(path.join(root, "preload.cjs"), "utf8");
-	const start = preload.indexOf("exposeInMainWorld");
-	assert.notEqual(start, -1, "preload.cjs 没找到 contextBridge.exposeInMainWorld");
-	const body = preload.slice(start);
+	const start = preload.indexOf('exposeInMainWorld("pi"');
+	assert.notEqual(start, -1, 'preload.cjs 没找到 contextBridge.exposeInMainWorld("pi"');
+	const rest = preload.slice(start);
+	const open = rest.indexOf("{");
+	const close = rest.indexOf("\n});", open);
+	const body = close < 0 ? rest : rest.slice(0, close);
 	const keys = [...body.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*:/gm)].map((m) => m[1]);
 	return new Set(keys);
 }

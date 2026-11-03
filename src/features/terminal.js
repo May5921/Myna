@@ -164,7 +164,7 @@ const CSS = `
 	padding: 6px 12px 8px;
 	background: var(--term-bg);
 	color: var(--term-fg);
-	font: 12px/1.55 var(--mono);
+	font: var(--term-size, 12px)/1.55 var(--mono);
 	white-space: pre-wrap;
 	word-break: break-word;
 	overscroll-behavior: contain;

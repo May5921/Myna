@@ -7,11 +7,15 @@
 //   gitDiff(path)  → string                                        空串 = 未跟踪或无差异
 //   openPath(path) → boolean
 //   command({ type: "get_tree" }) → { tree: SessionTreeNode[], leafId: string | null }
+//     大会话上 pi 的 get_tree 会递归爆栈，此时退回 get_entries + treeFromEntries()
+//     （见 src/core/fork-target.js）。
 //     SessionTreeNode = { entry: SessionEntry, children: SessionTreeNode[], label?, labelTimestamp? }
 //     SessionEntry    = { type, id, parentId, timestamp }
 //       type "message" 时 entry.message 是 AgentMessage（role: "user" | "assistant" | "toolResult"）
 //       其余 type：compaction / branch_summary / model_change / thinking_level_change /
 //                  usage / custom / custom_message / context_edit / label / session_info
+
+import { treeFromEntries } from "../core/fork-target.js";
 
 const TABS = [
 	{ key: "files", label: "文件" },
@@ -28,6 +32,10 @@ const MAX_DIFF_LINES = 400; // 单个 diff 最多渲染行数
 const MAX_ERR = 140;
 const DEMO_MS = 8000; // 演示钩子兜底：取不到数据也不阻塞
 const FLASH_MS = 3000;
+
+// 快速打开（Mod+P）：文件索引缓存 5s，和主进程 pi:list-files 的缓存窗口一致
+const PALETTE_CACHE_MS = 5000;
+const PALETTE_MAX = 50;
 
 // 落盘范围：只有「当前 tab」和「抽屉宽度」。面板开合、全屏状态都不持久化。
 const LS_TAB = "pi-mini.rpTab";
@@ -50,6 +58,8 @@ const EXPAND_ICON =
 	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M7.2 2.4h2.4v2.4M4.8 9.6H2.4V7.2M9.6 2.4 6.6 5.4M2.4 9.6l3-3"/></svg>';
 const SHRINK_ICON =
 	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 2.4H2.4v2.4M7.2 9.6h2.4V7.2M2.4 2.4 5.4 5.4M9.6 9.6 6.6 6.6"/></svg>';
+const RELOAD_ICON =
+	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 5.1A4.1 4.1 0 1 0 10.1 7"/><path d="M10.1 2.4v2.7H7.4"/></svg>';
 
 // 文件树图标：16px 线性、单色（STYLE §3 不做彩色填充，所以类型只靠形状区分）
 const ICONS = {
@@ -287,6 +297,8 @@ body.rp-resizing .rp-panel { transition: none; }
 	min-width: 0;
 	min-height: 0;
 	overflow-y: auto;
+	/* 横向溢出必须收在 pane 内：否则树节点会把整个页面撑出横向滚动条 */
+	overflow-x: hidden;
 	/* 常驻滚动条槽：切 tab 时内容列不横向跳动 */
 	scrollbar-gutter: stable;
 	padding: 4px 4px 10px;
@@ -406,7 +418,29 @@ body.rp-resizing .rp-panel { transition: none; }
 	white-space: nowrap;
 }
 .rp-file-open:hover { background: var(--hover); color: var(--text); }
-.rp-code { margin: 8px 0 0; overflow: auto; }
+.rp-file-open:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
+.rp-file-open:disabled { opacity: 0.45; cursor: default; }
+/* 重载是图标按钮：文字留给「用系统程序打开」，宽度让给文件名 */
+.rp-file-reload {
+	width: 24px;
+	padding: 0;
+	display: grid;
+	place-items: center;
+}
+.rp-file-reload svg { width: 12px; height: 12px; }
+.rp-code { margin: 8px 0 0; overflow: auto; position: relative; }
+/* 行号定位的高亮带放在代码下面一层，文字和 shiki 的 span 仍然可读 */
+.rp-code > .shiki,
+.rp-code > pre.code-plain { position: relative; z-index: 1; }
+.rp-line-mark {
+	position: absolute;
+	left: 0;
+	background: var(--sel);
+	opacity: 0.7;
+	border-radius: 2px;
+	pointer-events: none;
+	z-index: 0;
+}
 .rp-code .shiki {
 	margin: 0;
 	padding: 8px 10px;
@@ -429,6 +463,18 @@ body.rp-resizing .rp-panel { transition: none; }
 	margin: 10px 0 0;
 	border: 1px solid var(--line);
 	border-radius: 6px;
+}
+/* HTML 只在这个内联沙箱里渲染：sandbox="" 同时禁掉脚本、表单、同源和弹窗，
+   文件里的 <script>/onclick 不会碰到应用本身。 */
+.rp-html-frame {
+	display: block;
+	width: 100%;
+	height: calc(100vh - 120px);
+	min-height: 320px;
+	margin: 8px 0 0;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: #fff;
 }
 
 .rp-bar {
@@ -631,6 +677,13 @@ body.rp-resizing .rp-panel { transition: none; }
 .rp-msg { max-width: 100%; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .rp-msg.user { align-self: flex-end; max-width: 84%; background: var(--user-bubble, #edf3fe); color: var(--text); padding: 7px 12px; border-radius: 14px; white-space: pre-wrap; }
 .rp-msg.bot { align-self: stretch; color: var(--text); }
+.rp-think { border-left: 2px solid var(--line); padding: 1px 0 1px 9px; margin: 0 0 8px; }
+.rp-think-row { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--faint); text-align: left; width: 100%; }
+.rp-think-row:hover { color: var(--dim); }
+.rp-think-chev { font-size: 10px; transition: transform 120ms; }
+.rp-think[data-open="1"] .rp-think-chev { transform: rotate(90deg); }
+.rp-think-body { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--dim); white-space: pre-wrap; max-height: 160px; overflow: auto; }
+.rp-think[data-open="0"] .rp-think-body { display: none; }
 .rp-msg.bot .rp-md { font-size: 13px; line-height: 1.7; }
 .rp-md p { margin: 0 0 8px; }
 .rp-md p:last-child { margin-bottom: 0; }
@@ -663,6 +716,127 @@ body.rp-resizing .rp-panel { transition: none; }
 .rp-chat-state.err { color: var(--err); }
 .rp-chat-reset { flex: none; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 5px; font-size: 10.5px; color: var(--faint); }
 .rp-chat-reset:hover { background: var(--hover); color: var(--text); }
+
+/* 快速打开文件（Mod+P）：独立于右栏，面板收起时也能用 */
+.rp-palette-back {
+	position: fixed;
+	inset: 0;
+	z-index: 1200;
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding: min(14vh, 120px) 16px 24px;
+	background: rgba(0, 0, 0, 0.22);
+}
+.rp-palette-back[hidden] { display: none; }
+.rp-palette {
+	display: flex;
+	flex-direction: column;
+	width: min(620px, 100%);
+	max-height: 60vh;
+	overflow: hidden;
+	background: var(--bg);
+	color: var(--text);
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	box-shadow: var(--shadow-menu);
+}
+.rp-palette-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	padding: 0 12px;
+	border-bottom: 1px solid var(--line);
+}
+.rp-palette-input {
+	flex: 1;
+	min-width: 0;
+	height: 42px;
+	padding: 0;
+	border: 0;
+	outline: 0;
+	background: transparent;
+	color: var(--text);
+	font: 13px/1.4 var(--ui);
+}
+.rp-palette-input::placeholder { color: var(--faint); }
+.rp-palette-list {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 6px;
+}
+.rp-palette-row {
+	display: flex;
+	align-items: baseline;
+	gap: 4px;
+	width: 100%;
+	height: 28px;
+	padding: 0 8px;
+	border-radius: 6px;
+	font-size: 12.5px;
+	line-height: 28px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.rp-palette-row.rp-is-active { background: var(--sel); color: var(--text); }
+.rp-palette-dir {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--faint);
+}
+.rp-palette-base {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 78%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--dim);
+}
+.rp-palette-row.rp-is-active .rp-palette-base { color: var(--text); }
+.rp-palette-empty {
+	padding: 20px 12px;
+	text-align: center;
+	font-size: 12.5px;
+	line-height: 1.6;
+	color: var(--faint);
+}
+.rp-palette-empty.rp-is-err { color: var(--err); text-align: left; }
+.rp-palette-foot {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 12px;
+	border-top: 1px solid var(--line);
+	font-size: 11px;
+	color: var(--faint);
+}
+.rp-palette-hint {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.rp-palette-trunc {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--err);
+}
+.rp-palette-trunc[hidden] { display: none; }
+.rp-palette-count {
+	flex: none;
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+}
 `;
 
 export function init(ctx) {
@@ -923,6 +1097,19 @@ export function init(ctx) {
 	// 文件 tab 的内嵌预览：null = 显示树；对象 = 显示该文件的只读内容
 	let preview = null;
 	let previewSeq = 0;
+
+	// 快速打开面板的状态（DOM 首次 Mod+P 时才创建）
+	let paletteUI = null;
+	let paletteOpen = false;
+	let paletteFocus = null;
+	let paletteCache = null; // { cwd, at, files, truncated }
+	let paletteSeq = 0;
+	let paletteLoading = false;
+	let paletteError = "";
+	let paletteResults = [];
+	let paletteTotal = 0;
+	let paletteSel = 0;
+	let paletteQuery = "";
 	const PREVIEW_LANG = {
 		js: "javascript",
 		mjs: "javascript",
@@ -1023,15 +1210,40 @@ export function init(ctx) {
 	};
 
 	// 点文件：在面板内打开只读预览；预览头部的按钮再用系统程序打开
-	async function openFile(relPath) {
-		return openAbsolute(fullPathOf(relPath), String(relPath || "").split("/").pop());
+	async function openFile(relPath, line) {
+		return openAbsolute(fullPathOf(relPath), String(relPath || "").split("/").pop(), { line });
 	}
 
+	// 预览代码高亮。shiki 侧只固定了 github-light/github-dark 两套主题，
+	// 所以读文件时要把当前主题一起传过去，否则暗色下会拿到浅色底。
+	const highlightCode = async (res) => {
+		if (!res || res.kind !== "text" || !res.content) return null;
+		const lang = PREVIEW_LANG[String(res.ext || "").replace(/^\./, "").toLowerCase()] || "text";
+		try {
+			const arr = await ctx.pi.highlight([{ code: res.content, lang }], {
+				dark: document.documentElement.dataset.theme === "dark",
+			});
+			return Array.isArray(arr) ? arr[0] || null : null;
+		} catch {
+			return null;
+		}
+	};
+
 	// 绝对路径预览：工作区内外都走这里（聊天里的路径可能在工作区外）
-	async function openAbsolute(full, nameHint) {
+	async function openAbsolute(full, nameHint, opts = {}) {
 		const seq = ++previewSeq;
 		const name = nameHint || String(full || "").split(/[\\/]/).pop();
-		preview = { path: full, name, busy: true, error: "" };
+		const line = Math.max(0, Math.floor(Number(opts.line) || 0));
+		preview = {
+			path: full,
+			name,
+			busy: true,
+			error: "",
+			line,
+			lineDone: false,
+			reloading: false,
+			htmlMode: false,
+		};
 		renderFiles();
 		try {
 			const res = await ctx.pi.readFile(full);
@@ -1043,26 +1255,94 @@ export function init(ctx) {
 				Promise.resolve(ctx.pi.openPath(full)).catch(() => {});
 				return;
 			}
-			let html = null;
-			if (res && res.kind === "text" && res.content) {
-				const lang = PREVIEW_LANG[String(res.ext || "").replace(/^\./, "").toLowerCase()] || "text";
-				try {
-					const arr = await ctx.pi.highlight([{ code: res.content, lang }]);
-					html = Array.isArray(arr) ? arr[0] || null : null;
-				} catch {}
-			}
+			const html = await highlightCode(res);
 			if (seq !== previewSeq) return;
-			preview = { ...res, busy: false, error: "", html };
+			preview = {
+				...res,
+				busy: false,
+				error: "",
+				html,
+				line,
+				lineDone: false,
+				reloading: false,
+				htmlMode: false,
+			};
 		} catch (e) {
 			if (seq !== previewSeq) return;
-			preview = { ...preview, busy: false, error: brief(e) };
+			preview = { ...preview, busy: false, error: brief(e), reloading: false };
 		}
 		renderFiles();
+	}
+
+	// 重新读取当前预览。不先切到 busy 状态：保留旧内容直到新内容到达，
+	// 这样滚动位置不会在读取期间被清空重置。
+	async function reloadPreview() {
+		const cur = preview;
+		if (!cur?.path || cur.busy || cur.reloading) return;
+		const host = pane.get("files");
+		const keep = host.scrollTop;
+		const seq = ++previewSeq;
+		cur.reloading = true;
+		host.setAttribute("aria-busy", "true");
+		const btn = host.querySelector(".rp-file-reload");
+		if (btn) {
+			btn.disabled = true;
+			btn.title = "读取中…";
+			btn.setAttribute("aria-busy", "true");
+		}
+		try {
+			const res = await ctx.pi.readFile(cur.path);
+			if (seq !== previewSeq) return;
+			if (res && res.kind === "dir") {
+				preview = null;
+				renderFiles();
+				return;
+			}
+			const html = await highlightCode(res);
+			if (seq !== previewSeq) return;
+			preview = {
+				...res,
+				busy: false,
+				error: "",
+				html,
+				line: cur.line || 0,
+				lineDone: true,
+				reloading: false,
+				htmlMode: !!cur.htmlMode,
+			};
+		} catch (e) {
+			if (seq !== previewSeq) return;
+			preview = { ...cur, busy: false, error: brief(e), reloading: false };
+		}
+		renderFiles();
+		host.scrollTop = keep;
 	}
 
 	function openExternally() {
 		if (!preview?.path) return;
 		Promise.resolve(ctx.pi.openPath(preview.path)).catch((e) => flash(brief(e)));
+	}
+
+	// 行定位高亮：约 1 行的高度必须和 .rp-code 里的 font-size/line-height 同步。
+	// 目的行在 .rp-code 内部，但纵向滚动发生在 .rp-pane 上，所以按 pane 的坐标算。
+	const PREVIEW_LINE_H = 11.5 * 1.55;
+	function scrollPreviewLine(box, line) {
+		const host = pane.get("files");
+		const total = String(preview?.content || "").replace(/\r\n/g, "\n").split("\n").length;
+		const n = Math.max(1, total ? Math.min(line, total) : line);
+		const top = 8 + (n - 1) * PREVIEW_LINE_H;
+		requestAnimationFrame(() => {
+			if (!box.isConnected || preview?.line !== line) return;
+			const mark = el("div", "rp-line-mark");
+			mark.style.top = `${top}px`;
+			mark.style.height = `${PREVIEW_LINE_H}px`;
+			mark.style.width = `${Math.max(box.scrollWidth, box.clientWidth)}px`;
+			box.append(mark);
+			const br = box.getBoundingClientRect();
+			const hr = host.getBoundingClientRect();
+			const y = br.top - hr.top + host.scrollTop + top;
+			host.scrollTop = Math.max(0, y - host.clientHeight / 3);
+		});
 	}
 
 	function renderPreview(host) {
@@ -1078,11 +1358,46 @@ export function init(ctx) {
 			renderFiles();
 		};
 		const name = el("span", "rp-file-name", preview.name || "");
-		name.title = preview.path || "";
+		name.title = preview.line ? `${preview.path || ""}:${preview.line}` : preview.path || "";
+		// HTML 默认仍显示源码；只有用户点「预览」才进内联沙箱。加载中/出错/截断时不提供，
+		// 因为半截文档的渲染结果没有参考价值。
+		const canRenderHtml =
+			preview.kind === "text" &&
+			!preview.busy &&
+			!preview.error &&
+			!preview.truncated &&
+			/\.html?$/i.test(String(preview.ext || ""));
+		const modeBtn = canRenderHtml
+			? el("button", "rp-file-open rp-file-mode", preview.htmlMode ? "源码" : "预览")
+			: null;
+		if (modeBtn) {
+			modeBtn.type = "button";
+			modeBtn.title = preview.htmlMode
+				? "显示 HTML 源码"
+				: "在沙箱中渲染 HTML（脚本已禁用）";
+			modeBtn.setAttribute("aria-label", modeBtn.title);
+			modeBtn.setAttribute("aria-pressed", preview.htmlMode ? "true" : "false");
+			modeBtn.onclick = () => {
+				preview.htmlMode = !preview.htmlMode;
+				preview.lineDone = false;
+				renderFiles();
+			};
+		}
+		const reloadBtn = el("button", "rp-file-open rp-file-reload");
+		reloadBtn.type = "button";
+		reloadBtn.innerHTML = RELOAD_ICON;
+		reloadBtn.title = preview.reloading ? "读取中…" : "重新读取当前文件";
+		reloadBtn.setAttribute("aria-label", "重新读取当前文件");
+		reloadBtn.disabled = !preview.path || !!preview.busy || !!preview.reloading;
+		if (preview.reloading) reloadBtn.setAttribute("aria-busy", "true");
+		reloadBtn.onclick = () => reloadPreview();
 		const openBtn = el("button", "rp-file-open", "用系统程序打开");
 		openBtn.type = "button";
 		openBtn.onclick = openExternally;
-		head.append(back, name, el("span", "rp-grow"), openBtn);
+		const headItems = [back, name, el("span", "rp-grow")];
+		if (modeBtn) headItems.push(modeBtn);
+		headItems.push(reloadBtn, openBtn);
+		head.append(...headItems);
 		host.append(head);
 
 		if (preview.busy) {
@@ -1105,6 +1420,17 @@ export function init(ctx) {
 			host.append(el("div", "rp-note", `二进制文件（${fmtSize(preview.size)}），用系统程序打开。`));
 			return;
 		}
+		if (canRenderHtml && preview.htmlMode) {
+			const frame = document.createElement("iframe");
+			frame.className = "rp-html-frame";
+			// sandbox="" = 全部限制：无脚本、无表单、无同源、无弹窗；srcdoc 不会被当成应用文档
+			frame.setAttribute("sandbox", "");
+			frame.setAttribute("referrerpolicy", "no-referrer");
+			frame.setAttribute("title", `${preview.name || "HTML"} 预览（脚本已禁用）`);
+			frame.srcdoc = String(preview.content || "");
+			host.append(frame);
+			return;
+		}
 		const box = document.createElement("div");
 		box.className = "rp-code";
 		if (preview.html) {
@@ -1120,6 +1446,10 @@ export function init(ctx) {
 		host.append(box);
 		if (preview.truncated) {
 			host.append(el("div", "rp-note", `文件较大，只显示前 512 KB（共 ${fmtSize(preview.size)}）。`));
+		}
+		if (preview.line > 0 && !preview.lineDone) {
+			preview.lineDone = true;
+			scrollPreviewLine(box, preview.line);
 		}
 	}
 
@@ -1143,15 +1473,26 @@ export function init(ctx) {
 		renderFiles();
 		try {
 			const want = String(ctx.state?.cwd || "");
+			const wantNorm = normCwd(want);
 			const res = await ctx.pi.listFiles(want);
+			// 请求期间切了工作区：丢弃这次结果，按新 cwd 重新拉
+			if (workCwd() !== wantNorm) {
+				dataCwd.files = "";
+				setTimeout(() => load("files", true), 0);
+				return;
+			}
 			if (!res || typeof res !== "object") throw new Error("文件列表不可用");
 			const cwd = String(res.cwd || want || "");
 			const list = Array.isArray(res.files) ? res.files : [];
 			const root = buildFileTree(list);
 			const changed = data.files?.cwd !== cwd;
 			data.files = { cwd, tree: root, truncated: !!res.truncated, count: list.length };
+			dataCwd.files = wantNorm;
 			// 换了工作区，旧的预览路径不再可靠，回到文件树
-			if (changed) preview = null;
+			if (changed) {
+				previewSeq++;
+				preview = null;
+			}
 			if (changed || !expandedSeeded) {
 				expanded.clear();
 				expandedSeeded = true;
@@ -1174,7 +1515,13 @@ export function init(ctx) {
 		}
 		renderChanges();
 		try {
+			const wantNorm = workCwd();
 			const res = await ctx.pi.gitChanges();
+			if (workCwd() !== wantNorm) {
+				dataCwd.changes = "";
+				setTimeout(() => load("changes", true), 0);
+				return;
+			}
 			if (!Array.isArray(res)) throw new Error("变更列表不可用");
 			data.changes = res
 				.filter((c) => c && c.path)
@@ -1183,6 +1530,7 @@ export function init(ctx) {
 					staged: !!c.staged,
 					path: String(c.path),
 				}));
+			dataCwd.changes = wantNorm;
 		} catch (e) {
 			errors.changes = brief(e);
 		} finally {
@@ -1196,8 +1544,18 @@ export function init(ctx) {
 		errors.tree = "";
 		renderTree();
 		try {
-			const res = await ctx.pi.command({ type: "get_tree" });
-			if (!res || !Array.isArray(res.tree)) throw new Error("返回结构里没有 tree 数组");
+			let res;
+			try {
+				res = await ctx.pi.command({ type: "get_tree" });
+			} catch (e) {
+				res = null;
+			}
+			if (!res || !Array.isArray(res.tree)) {
+				// get_tree 在大会话上会爆栈（pi 侧递归），改用扁平数组自己建树
+				const flat = await ctx.pi.command({ type: "get_entries" });
+				if (!flat || !Array.isArray(flat.entries)) throw new Error("返回结构里没有 tree/entries 数组");
+				res = treeFromEntries(flat.entries, flat.leafId);
+			}
 			data.tree = { tree: res.tree, leafId: typeof res.leafId === "string" ? res.leafId : null };
 		} catch (e) {
 			errors.tree = brief(e);
@@ -1209,9 +1567,21 @@ export function init(ctx) {
 
 	const loaders = { files: loadFiles, changes: loadChanges, tree: loadTree };
 
+	// 文件/变更缓存必须按工作区隔离：切项目后继续用旧 cwd 的缓存，
+	// 会让文件树指向旧目录、点文件必然报“不在当前工作区”。
+	const dataCwd = { files: "", changes: "" };
+	const normCwd = (value) => String(value || "").replace(/[\\/]+$/, "").toLowerCase();
+	const workCwd = () => normCwd(ctx.state?.cwd);
+	function cacheFresh(key) {
+		if (!data[key] || errors[key]) return false;
+		if (key === "files" || key === "changes") return dataCwd[key] === workCwd();
+		return true;
+	}
+
 	function load(key, force) {
+		if (!loaders[key]) return Promise.resolve();
 		if (pending[key]) return pending[key];
-		if (!force && data[key] && !errors[key]) return Promise.resolve();
+		if (!force && cacheFresh(key)) return Promise.resolve();
 		const p = Promise.resolve()
 			.then(() => loaders[key](true))
 			.catch(() => {});
@@ -1269,7 +1639,7 @@ export function init(ctx) {
 					const row = el("button", `rp-row${node.dir ? " rp-dir" : ""}`);
 					row.type = "button";
 					// 缩进步长 = 图标槽 16px：子级 chevron 落在父级图标下方，而不是压住父级文字
-					row.style.paddingLeft = `${4 + depth * 16}px`;
+					row.style.paddingLeft = `${4 + Math.min(depth, 10) * 16}px`;
 					row.title = node.path;
 
 					const chev = el("span", "rp-chev");
@@ -1459,11 +1829,12 @@ export function init(ctx) {
 		return { role: SYS_ROLE[type] || type, text, sys: true, type };
 	};
 
-	function treeRow(node, depth, leafId) {
+	function treeRow(node, depth, leafId, onSelect) {
 		const info = nodeInfo(node);
 		const row = el("button", `rp-node${info.sys ? " rp-is-sys" : ""}`);
 		row.type = "button";
-		row.style.paddingLeft = `${4 + depth * 16}px`;
+		// 会话树深度可能几十层（工具链）：缩进封顶，否则文字会被推出面板
+		row.style.paddingLeft = `${4 + Math.min(depth, 8) * 14}px`;
 		// get_tree 的 label/labelTimestamp 之前被整个丢掉，至少让它在 title 里可见
 		const label = typeof node?.label === "string" ? node.label : "";
 		row.title = [label, info.text].filter(Boolean).join(" · ") || info.role;
@@ -1487,6 +1858,7 @@ export function init(ctx) {
 			const host = pane.get("tree");
 			for (const on of host.querySelectorAll(".rp-node.rp-is-active")) on.classList.remove("rp-is-active");
 			row.classList.add("rp-is-active");
+			onSelect?.(node);
 		};
 		return row;
 	}
@@ -1513,7 +1885,11 @@ export function init(ctx) {
 			for (const n of nodes) {
 				if (!n || typeof n !== "object") continue;
 				flat.push([n, depth]);
-				if (Array.isArray(n.children) && n.children.length) walk(n.children, depth + 1);
+				const kids = Array.isArray(n.children) ? n.children : [];
+				if (!kids.length) continue;
+				// 单子链不增加缩进：普通会话是一条直线，逐级缩进会变成斜塔；
+				// 只有真正分叉（多个子节点）才需要上一层来区分分支。
+				walk(kids, kids.length > 1 ? depth + 1 : depth);
 			}
 		};
 		walk(data.tree.tree, 0);
@@ -1523,8 +1899,55 @@ export function init(ctx) {
 			return;
 		}
 
+		// 活动分支：从 leafId 顺着 parentId 回到根，顺序 = 主对话历史顺序
+		const byId = new Map();
+		for (const [node] of flat) {
+			const id = String(node?.entry?.id ?? "");
+			if (id) byId.set(id, node);
+		}
+		const chain = [];
+		const seen = new Set();
+		let cursor = data.tree.leafId;
+		while (cursor && byId.has(cursor) && !seen.has(cursor)) {
+			seen.add(cursor);
+			const node = byId.get(cursor);
+			chain.unshift(node);
+			cursor = node?.entry?.parentId;
+		}
+		const chatChain = chain.filter((node) => {
+			const role = node?.entry?.message?.role;
+			return node?.entry?.type === "message" && (role === "user" || role === "assistant");
+		});
+
+		let noteTimer = 0;
+		const note = (text) => {
+			host.querySelector(".rp-tree-note")?.remove();
+			const line = el("div", "rp-note rp-is-err rp-tree-note", text);
+			host.append(line);
+			clearTimeout(noteTimer);
+			noteTimer = setTimeout(() => line.remove(), 2600);
+		};
+
+		const select = (node) => {
+			if (ctx.state?.streaming) {
+				note("生成中，结束后再定位");
+				return;
+			}
+			// toolResult / custom 条目向上找到最近的 user/assistant 再定位
+			let target = node;
+			let index = chatChain.indexOf(target);
+			let guard = 0;
+			while (index < 0 && target?.entry?.parentId && guard++ < 200) {
+				target = byId.get(target.entry.parentId);
+				if (!target) break;
+				index = chatChain.indexOf(target);
+			}
+			if (index >= 0 && ctx.focusMessage?.(index)) return;
+			note(chain.includes(node) ? "这个条目没有可定位的正文" : "该条目在其它分支，主对话只显示当前分支");
+		};
+
 		const frag = document.createDocumentFragment();
-		for (const [node, depth] of flat) frag.append(treeRow(node, depth, data.tree.leafId));
+		for (const [node, depth] of flat) frag.append(treeRow(node, depth, data.tree.leafId, select));
 		host.append(frag);
 		if (errors.tree) host.append(el("div", "rp-note rp-is-err", errors.tree));
 		host.scrollTop = keep;
@@ -1710,6 +2133,57 @@ export function init(ctx) {
 		return row;
 	}
 
+	function chatThink() {
+		if (!chat?.live) return null;
+		if (chat.liveThink) return chat.liveThink;
+		const wrap = el("div", "rp-think");
+		wrap.dataset.open = "1";
+		const row = el("button", "rp-think-row");
+		const chev = el("span", "rp-think-chev", "›");
+		const label = el("span", "rp-think-label", "思考中…");
+		row.append(chev, label);
+		const body = el("div", "rp-think-body");
+		row.onclick = () => {
+			wrap.dataset.open = wrap.dataset.open === "1" ? "0" : "1";
+		};
+		wrap.append(row, body);
+		chat.live.insertBefore(wrap, chat.live.firstChild);
+		chat.liveThink = { wrap, body, label, done: false };
+		return chat.liveThink;
+	}
+
+	function chatCollapseThink(label) {
+		if (!chat?.liveThink) return;
+		chat.liveThink.wrap.dataset.open = "0";
+		if (label) chat.liveThink.label.textContent = label;
+	}
+
+	// 一轮里可能有多段助手消息（文本→工具→文本）。每段单独一个气泡，
+	// 否则后段正文会写在工具行上方，message_end 还会把前段覆盖掉。
+	function chatNewSegment() {
+		if (!chat) return null;
+		const bot = el("div", "rp-msg bot");
+		const md = el("div", "rp-md");
+		bot.append(md, el("span", "rp-caret"));
+		chat.log.append(bot);
+		chat.live = bot;
+		chat.liveMd = md;
+		chat.liveThink = null;
+		chat.liveText = "";
+		chat.segDeltas = 0;
+		chat.needsSegment = false;
+		return bot;
+	}
+
+	function chatIdle() {
+		if (!chat) return;
+		chat.streaming = false;
+		chat.send.classList.remove("stop");
+		chat.send.innerHTML = SEND_ICON;
+		chat.send.title = "发送";
+		chat.send.disabled = !chat.input.value.trim();
+	}
+
 	function chatActivity(text) {
 		chatRow("rp-act", text);
 	}
@@ -1735,14 +2209,7 @@ export function init(ctx) {
 		chat.empty?.remove();
 		chat.empty = null;
 		chatRow("rp-msg user", text);
-		const bot = el("div", "rp-msg bot");
-		const md = el("div", "rp-md");
-		const caret = el("span", "rp-caret");
-		bot.append(md, caret);
-		chat.log.append(bot);
-		chat.live = bot;
-		chat.liveMd = md;
-		chat.liveText = "";
+		chatNewSegment();
 		chat.streaming = true;
 		chat.send.classList.add("stop");
 		chat.send.innerHTML = STOP_ICON;
@@ -1752,10 +2219,7 @@ export function init(ctx) {
 		chatWarmup();
 		chatScroll(true);
 		ctx.pi.sideCommand?.({ type: "prompt", message: text }).catch((e) => {
-			chat.streaming = false;
-			chat.send.classList.remove("stop");
-			chat.send.innerHTML = SEND_ICON;
-			chat.send.title = "发送";
+			chatIdle();
 			chatSetState(e?.message || "发送失败", "err");
 			chatActivity("发送失败：" + (e?.message || "未知错误"));
 		});
@@ -1773,53 +2237,79 @@ export function init(ctx) {
 		if (ev.type === "agent_start") {
 			chatWarm = true;
 			chatSetState("思考中…", "busy");
+		} else if (ev.type === "message_start" && ev.message?.role === "assistant") {
+			// 新消息：工具之后或没有活动气泡时开新段；上一段的思考块收尾
+			chatCollapseThink("思考过程");
+			chat.liveThink = null;
+			if (chat.needsSegment || !chat.liveMd) chatNewSegment();
+			chat.segDeltas = 0;
 		} else if (ev.type === "message_update" && a?.type === "thinking_start") {
+			chatThink();
 			chatSetState("思考中…", "busy");
+			chatScroll();
+		} else if (ev.type === "message_update" && a?.type === "thinking_delta") {
+			const t = chatThink();
+			if (t) {
+				t.body.textContent += a.delta;
+				t.label.textContent = "思考中…";
+			}
+			chatSetState("思考中…", "busy");
+			chatScroll();
+		} else if (ev.type === "message_update" && a?.type === "thinking_end") {
+			const t = chatThink();
+			if (t) {
+				if (typeof a.content === "string" && a.content) t.body.textContent = a.content;
+				t.done = true;
+			}
+			chatCollapseThink("思考过程");
+			// 同一回合的下一段思考必须建新块，否则后段会覆盖前段
+			chat.liveThink = null;
+			chatScroll();
 		} else if (ev.type === "message_update" && a?.type === "text_delta") {
+			chatCollapseThink("思考过程");
+			if (!chat.liveMd) chatNewSegment();
 			chat.liveText += a.delta;
+			chat.segDeltas += 1;
 			if (chat.liveMd) chat.liveMd.textContent = chat.liveText;
 			chatSetState("生成中…", "busy");
 			chatScroll();
 		} else if (ev.type === "tool_execution_start") {
-			chatActivity(`运行 ${ev.toolName || "工具"}…`);
-			chatSetState("运行工具…", "busy");
+			// 侧边对话只关心正文：工具调用、命令输出都不在这里展开（主对话里才有）
+			chat.needsSegment = true;
+			chatSetState("处理中…", "busy");
 		} else if (ev.type === "tool_execution_end") {
-			chatActivity(`${ev.toolName || "工具"} ${ev.isError ? "失败" : "完成"}`);
+			// 同上：不显示“xx 完成”，避免工具噪音打断气泡
 		} else if (ev.type === "message_end" && ev.message) {
 			const blocks = Array.isArray(ev.message.content) ? ev.message.content : [];
 			const text = blocks
 				.filter((b) => b && b.type === "text")
 				.map((b) => b.text)
 				.join("");
-			if (text) {
-				chat.liveText = text;
-				if (chat.liveMd) {
-					if (typeof ctx.md === "function") chat.liveMd.innerHTML = ctx.md(text);
-					else chat.liveMd.textContent = text;
-				}
-				chat.live?.querySelector(".rp-caret")?.remove();
+			// 有流式增量时 liveText 已经是全文；没有增量（非流式消息）才补文本。
+			if (text && !chat.segDeltas) chat.liveText += text;
+			if (chat.liveText && chat.liveMd) {
+				if (typeof ctx.md === "function") chat.liveMd.innerHTML = ctx.md(chat.liveText);
+				else chat.liveMd.textContent = chat.liveText;
 			}
+			if (chat.liveText) chat.live?.querySelector(".rp-caret")?.remove();
+			chat.segDeltas = 0;
 			chatScroll();
 		} else if (ev.type === "agent_settled") {
-			chat.streaming = false;
-			chat.send.classList.remove("stop");
-			chat.send.innerHTML = SEND_ICON;
-			chat.send.title = "发送";
-			chat.send.disabled = !chat.input.value.trim();
+			chatIdle();
 			chatSetState("就绪", null);
 			if (chat.live && !chat.liveText.trim()) chat.live.remove();
 			chat.live = null;
 			chat.liveMd = null;
+			chat.liveThink = null;
 			chat.liveText = "";
+			chat.segDeltas = 0;
+			chat.needsSegment = false;
 			chatScroll();
 		} else if (ev.type === "side_exit") {
-			chat.streaming = false;
-			chat.send.classList.remove("stop");
-			chat.send.innerHTML = SEND_ICON;
-			chat.send.title = "发送";
-			chat.send.disabled = !chat.input.value.trim();
+			chatIdle();
 			chatSetState("侧边会话已退出，下一条消息会重启", "err");
 		} else if (ev.type === "side_error") {
+			chatIdle();
 			chatSetState(ev.message || "侧边对话出错", "err");
 			chatActivity(ev.message || "侧边对话出错");
 		}
@@ -1828,18 +2318,17 @@ export function init(ctx) {
 	function chatReset() {
 		ctx.pi.sideReset?.().catch(() => {});
 		if (!chat) return;
-		chat.streaming = false;
 		chat.live = null;
 		chat.liveMd = null;
+		chat.liveThink = null;
 		chat.liveText = "";
-		chat.send.classList.remove("stop");
-		chat.send.innerHTML = SEND_ICON;
-		chat.send.title = "发送";
+		chat.segDeltas = 0;
+		chat.needsSegment = false;
 		chat.log.textContent = "";
 		chat.empty = chatEmptyHint();
 		chat.log.append(chat.empty);
 		chatSetState("就绪", null);
-		chat.send.disabled = !chat.input.value.trim();
+		chatIdle();
 		chatWarm = false;
 		chatWarmup();
 	}
@@ -1877,6 +2366,7 @@ export function init(ctx) {
 		chat = {
 			wrap, state, log, bar, input, send, reset,
 			messages: [], empty: null, live: null, liveMd: null, liveText: "", streaming: false,
+			segDeltas: 0, needsSegment: false,
 		};
 		chat.empty = chatEmptyHint();
 		log.append(chat.empty);
@@ -1919,8 +2409,12 @@ export function init(ctx) {
 		if (tab === "files") renderFiles();
 		else if (tab === "changes") renderChanges();
 		else if (tab === "tree") renderTree();
-		else if (tab === "browser") renderBrowser();
-		else renderChat();
+		// 关闭状态不建 webview / 侧边对话：否则应用一启动就联网或拉起第二个 pi 进程
+		else if (tab === "browser") {
+			if (open) renderBrowser();
+		} else if (open) {
+			renderChat();
+		}
 	}
 
 	function setTab(key) {
@@ -2088,6 +2582,15 @@ export function init(ctx) {
 		(e) => {
 			if (!open) return;
 			if (e.key !== "Escape" || e.isComposing) return;
+			const active = document.activeElement;
+			// 侧边输入框：Esc 先停侧边回合，不关整块面板
+			if (active instanceof Element && panel.contains(active) && chat && active === chat.input) {
+				e.preventDefault();
+				e.stopPropagation();
+				if (chat.streaming) chatStop();
+				else setOpen(false);
+				return;
+			}
 			// 菜单开着时 Esc 先收菜单、面板留着：一次 Esc 只关一层，和弹层叠放的直觉一致
 			if (menuOpen) {
 				e.preventDefault();
@@ -2096,8 +2599,8 @@ export function init(ctx) {
 				return;
 			}
 			if (overlayAbove()) return;
-			// 输入框里 Esc 已经是「停止生成」（app.js:1632 的 abort）且不可撤销，流式中让它赢
-			if (ctx.state?.streaming && document.activeElement === ctx.input) return;
+			// 主对话生成中：Esc 必须留给 app.js 的 abortRun（document 冒泡监听）
+			if (ctx.state?.streaming) return;
 			e.preventDefault();
 			e.stopPropagation();
 			setOpen(false);
@@ -2105,27 +2608,388 @@ export function init(ctx) {
 		true,
 	);
 
+	// 切工作区：文件/变更缓存立即作废，面板开着就自动重拉
+	window.addEventListener("pi:cwd-changed", () => {
+		dataCwd.files = "";
+		dataCwd.changes = "";
+		paletteCache = null;
+		if (paletteOpen) closePalette();
+		if (preview) {
+			previewSeq++;
+			preview = null;
+		}
+		if (open && (tab === "files" || tab === "changes")) load(tab, true);
+	});
+
 	render();
+
+	// 先定 tab 再开面板：反过来 setOpen 会按旧 tab（可能是侧边对话/浏览器）先渲染一帧，
+	// 甚至拉起第二个 pi 进程或 webview。
+	function showFilesTab() {
+		if (tab === "files") return;
+		if (open) setTab("files");
+		else {
+			tab = "files";
+			writePref(LS_TAB, tab);
+		}
+	}
 
 	// 供聊天里的路径链接调用：在右栏打开只读预览。
 	// 传绝对路径或相对 cwd 的路径；工作区外的返回 false，由调用方退回系统程序打开。
+	// 支持 path:12 / path:12:5 / path#L12 形式：后缀只用于定位，不参与读取。
 	async function previewPath(inputPath) {
+		const raw = String(inputPath || "").trim();
+		let line = 0;
+		let spec = raw;
+		const suffix = /(?:#L(\d+)(?:C\d+)?|:(\d+)(?::\d+)?)$/i.exec(raw);
+		if (suffix && raw.length > suffix[0].length) {
+			line = Math.floor(Number(suffix[1] || suffix[2]) || 0);
+			spec = raw.slice(0, raw.length - suffix[0].length);
+		}
 		const cwd = String(ctx.state?.cwd || data.files?.cwd || "").replace(/[\\/]+$/, "");
-		let p = String(inputPath || "").trim().replace(/\//g, "\\");
+		let p = spec.replace(/\//g, "\\");
 		if (!p || !cwd) return false;
 		// 相对路径按当前工作区补全；绝对路径也必须在工作区内，否则交给系统程序
 		if (!/^[A-Za-z]:/.test(p) && !p.startsWith("\\\\")) p = `${cwd}\\${p.replace(/^\\+/, "")}`;
 		const base = cwd.replace(/\//g, "\\");
 		if (!p.toLowerCase().startsWith(`${base.toLowerCase()}\\`)) return false;
+		showFilesTab();
 		if (!open) setOpen(true);
-		if (tab !== "files") setTab("files");
 		if (!data.files || (data.files.cwd && data.files.cwd !== cwd)) await load("files", true);
 		const rel = p.slice(base.length + 1).replace(/\\/g, "/");
 		if (!rel) return false;
-		await openFile(rel);
+		await openFile(rel, line);
 		return true;
 	}
 	ctx.rightPanel = { preview: previewPath };
+
+	// ---------- 快速打开文件（Mod+P）----------
+	const paletteModP = (e) =>
+		(e.ctrlKey || e.metaKey) &&
+		!e.altKey &&
+		!e.shiftKey &&
+		(e.code === "KeyP" || String(e.key || "").toLowerCase() === "p");
+
+	// 子序列匹配：按顺序出现即可（"rpn" 命中 "right-panel.js"）
+	const paletteSubsequence = (hay, needle) => {
+		let at = 0;
+		for (let i = 0; i < needle.length; i++) {
+			at = hay.indexOf(needle[i], at);
+			if (at < 0) return false;
+			at += 1;
+		}
+		return true;
+	};
+
+	// 文件名命中优先于目录名/整路径命中；返回值越小越靠前
+	const paletteScore = (path, query) => {
+		const cut = path.lastIndexOf("/") + 1;
+		const base = path.slice(cut);
+		if (base === query) return 0;
+		if (base.startsWith(query)) return 1;
+		if (base.includes(query)) return 2;
+		if (paletteSubsequence(base, query)) return 3;
+		if (path.includes(query)) return 4;
+		if (paletteSubsequence(path, query)) return 5;
+		return -1;
+	};
+
+	const computePaletteResults = () => {
+		const query = paletteQuery.trim().toLowerCase();
+		const files = (paletteCache?.files || [])
+			.filter((f) => f && !f.dir && typeof f.path === "string" && f.path)
+			.map((f) => ({ path: f.path.replace(/\\/g, "/") }));
+		if (!query) {
+			files.sort((a, b) => a.path.localeCompare(b.path));
+			paletteTotal = files.length;
+			paletteResults = files.slice(0, PALETTE_MAX);
+			return;
+		}
+		const scored = [];
+		for (const f of files) {
+			const score = paletteScore(f.path.toLowerCase(), query);
+			if (score >= 0) scored.push({ ...f, score });
+		}
+		scored.sort(
+			(a, b) => a.score - b.score || a.path.length - b.path.length || a.path.localeCompare(b.path),
+		);
+		paletteTotal = scored.length;
+		paletteResults = scored.slice(0, PALETTE_MAX).map((f) => ({ path: f.path }));
+	};
+
+	function renderPalette() {
+		if (!paletteUI) return;
+		const { list, input, count, trunc } = paletteUI;
+		list.textContent = "";
+		trunc.hidden = !paletteCache?.truncated;
+		input.setAttribute("aria-expanded", paletteOpen ? "true" : "false");
+		if (paletteLoading) {
+			count.textContent = "读取中…";
+			list.append(el("div", "rp-palette-empty", "正在读取文件索引…"));
+			input.removeAttribute("aria-activedescendant");
+			return;
+		}
+		if (paletteError) {
+			count.textContent = "读取失败";
+			list.append(el("div", "rp-palette-empty rp-is-err", `读取失败：${paletteError}`));
+			input.removeAttribute("aria-activedescendant");
+			return;
+		}
+		computePaletteResults();
+		if (!paletteResults.length) {
+			count.textContent = "0 项";
+			list.append(
+				el("div", "rp-palette-empty", paletteQuery.trim() ? "没有匹配的文件" : "工作区里没有可打开的文件"),
+			);
+			input.removeAttribute("aria-activedescendant");
+			return;
+		}
+		if (paletteSel >= paletteResults.length) paletteSel = paletteResults.length - 1;
+		if (paletteSel < 0) paletteSel = 0;
+		const frag = document.createDocumentFragment();
+		paletteResults.forEach((item, i) => {
+			const row = el("div", `rp-palette-row${i === paletteSel ? " rp-is-active" : ""}`);
+			row.id = `rp-palette-opt-${i}`;
+			row.setAttribute("role", "option");
+			row.setAttribute("aria-selected", i === paletteSel ? "true" : "false");
+			row.title = item.path;
+			const cut = item.path.lastIndexOf("/") + 1;
+			if (cut > 0) row.append(el("span", "rp-palette-dir", item.path.slice(0, cut)));
+			row.append(el("span", "rp-palette-base", item.path.slice(cut)));
+			// 按下时保住输入框焦点：选区靠 aria-activedescendant，不靠行内焦点
+			row.addEventListener("mousedown", (e) => e.preventDefault());
+			row.onclick = () => choosePalette(i);
+			frag.append(row);
+		});
+		list.append(frag);
+		count.textContent =
+			paletteTotal > paletteResults.length
+				? `前 ${paletteResults.length} / ${paletteTotal} 项`
+				: `${paletteResults.length} 项`;
+		input.setAttribute("aria-activedescendant", `rp-palette-opt-${paletteSel}`);
+		const active = list.querySelector(".rp-palette-row.rp-is-active");
+		if (active) {
+			const top = active.offsetTop;
+			const bottom = top + active.offsetHeight;
+			if (top < list.scrollTop) list.scrollTop = top;
+			else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+		}
+	}
+
+	function buildPalette() {
+		const back = el("div", "rp-palette-back");
+		back.hidden = true;
+		const box = el("div", "rp-palette");
+		box.setAttribute("role", "dialog");
+		box.setAttribute("aria-modal", "true");
+		box.setAttribute("aria-label", "快速打开文件");
+		const head = el("div", "rp-palette-head");
+		const input = el("input", "rp-palette-input");
+		input.type = "text";
+		input.spellcheck = false;
+		input.autocomplete = "off";
+		input.placeholder = "搜索文件路径…";
+		input.setAttribute("role", "combobox");
+		input.setAttribute("aria-label", "搜索文件");
+		input.setAttribute("aria-autocomplete", "list");
+		input.setAttribute("aria-expanded", "false");
+		input.setAttribute("aria-controls", "rp-palette-list");
+		const list = el("div", "rp-palette-list");
+		list.id = "rp-palette-list";
+		list.setAttribute("role", "listbox");
+		list.setAttribute("aria-label", "文件结果");
+		const foot = el("div", "rp-palette-foot");
+		const hint = el("span", "rp-palette-hint", "↑↓ 选择 · Enter 打开 · Esc 关闭");
+		const trunc = el("span", "rp-palette-trunc", "文件索引已截断，部分文件可能搜不到");
+		trunc.title = "主进程只索引前 2000 个文件";
+		trunc.hidden = true;
+		const count = el("span", "rp-palette-count");
+		count.setAttribute("aria-live", "polite");
+		foot.append(hint, trunc, count);
+		head.append(input);
+		box.append(head, list, foot);
+		back.append(box);
+		document.body.append(back);
+		back.addEventListener("pointerdown", (e) => {
+			if (e.target === back) closePalette();
+		});
+		input.addEventListener("input", () => {
+			paletteQuery = input.value;
+			paletteSel = 0;
+			renderPalette();
+		});
+		paletteUI = { back, box, input, list, hint, trunc, count };
+	}
+
+	// 设置 / cmd+k / 其它 aria-modal 压在上面时不抢 Mod+P：
+	// 这些模态有自己的焦点管理和 Esc 语义，两层叠在一起焦点会打架。
+	const paletteBlocked = () => {
+		const settings = document.querySelector(".settings-overlay");
+		if (settings && !settings.hidden && settings.getClientRects().length) return true;
+		const cmdk = document.getElementById("cmdk-panel");
+		if (cmdk && cmdk.getClientRects().length) return true;
+		return [...document.querySelectorAll('[aria-modal="true"]')].some(
+			(n) => n !== paletteUI?.back && n.getClientRects().length > 0,
+		);
+	};
+
+	function openPalette() {
+		if (paletteOpen) return;
+		if (paletteBlocked()) return;
+		if (!paletteUI) buildPalette();
+		paletteOpen = true;
+		paletteFocus = document.activeElement;
+		paletteQuery = "";
+		paletteSel = 0;
+		paletteError = "";
+		paletteResults = [];
+		paletteTotal = 0;
+		paletteUI.input.value = "";
+		paletteUI.back.hidden = false;
+		// 5s 内且工作区一致：直接用缓存；否则重新向主进程要索引
+		const want = workCwd();
+		const fresh =
+			paletteCache &&
+			Date.now() - paletteCache.at < PALETTE_CACHE_MS &&
+			(!want || normCwd(paletteCache.cwd) === want);
+		if (fresh) {
+			paletteLoading = false;
+			renderPalette();
+		} else {
+			paletteLoading = true;
+			renderPalette();
+			loadPaletteFiles();
+		}
+		paletteUI.input.focus({ preventScroll: true });
+	}
+
+	function closePalette() {
+		if (!paletteOpen) return;
+		paletteOpen = false;
+		if (paletteUI) {
+			paletteUI.back.hidden = true;
+			paletteUI.input.setAttribute("aria-expanded", "false");
+			paletteUI.input.removeAttribute("aria-activedescendant");
+		}
+		const back = paletteFocus;
+		paletteFocus = null;
+		// 焦点不能丢在 hidden 的模态里；回不到原处就交给主输入框
+		if (back && back.isConnected && back !== document.body && typeof back.focus === "function") {
+			back.focus({ preventScroll: true });
+			return;
+		}
+		ctx.input?.focus?.({ preventScroll: true });
+	}
+
+	async function loadPaletteFiles() {
+		const seq = ++paletteSeq;
+		const want = ctx.state?.cwd;
+		try {
+			const res = await ctx.pi.listFiles(want);
+			if (seq !== paletteSeq) return;
+			if (!res || typeof res !== "object") throw new Error("文件列表不可用");
+			paletteCache = {
+				cwd: String(res.cwd || want || ""),
+				at: Date.now(),
+				files: Array.isArray(res.files) ? res.files : [],
+				truncated: !!res.truncated,
+			};
+			paletteLoading = false;
+			if (paletteOpen) {
+				paletteSel = 0;
+				renderPalette();
+			}
+		} catch (e) {
+			if (seq !== paletteSeq) return;
+			paletteLoading = false;
+			paletteError = brief(e);
+			if (paletteOpen) renderPalette();
+		}
+	}
+
+	const joinAbs = (base, rel) => {
+		const b = String(base || "").replace(/[\\/]+$/, "");
+		const r = String(rel || "")
+			.replace(/^[\\/]+/, "")
+			.replace(/\//g, "\\");
+		return b ? `${b}\\${r}` : r;
+	};
+
+	async function choosePalette(i) {
+		const item = paletteResults[i];
+		if (!item) return;
+		const cwd = String(paletteCache?.cwd || ctx.state?.cwd || "");
+		closePalette();
+		// 面板关着时直接把 tab 定到 files 再 setOpen：否则 setOpen 会先
+		// 按旧 tab（可能是侧边对话）渲染一帧，甚至拉起侧边 pi 进程。
+		showFilesTab();
+		if (!open) setOpen(true);
+		// 等文件树就绪再开预览：loadFiles 在首次加载时会把 preview 清掉，
+		// 不 await 的话刚打开的预览会被它覆盖回文件树。
+		await load("files");
+		openAbsolute(joinAbs(cwd, item.path), item.path.split("/").pop());
+	}
+
+	// 全局快捷键。capture 阶段拦截：Esc 不落到 app.js 的 abortRun。
+	document.addEventListener(
+		"keydown",
+		(e) => {
+			if (e.isComposing || e.keyCode === 229) return; // 输入法组合中不抢
+			if (paletteOpen) {
+				if (paletteModP(e)) {
+					e.preventDefault();
+					e.stopPropagation();
+					if (!e.repeat) closePalette();
+					return;
+				}
+				if (e.key === "Escape") {
+					e.preventDefault();
+					e.stopPropagation();
+					closePalette();
+					return;
+				}
+				if (e.key === "Tab") {
+					e.preventDefault();
+					e.stopPropagation();
+					paletteUI?.input.focus({ preventScroll: true });
+					return;
+				}
+				if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+					if (!paletteResults.length) return;
+					e.preventDefault();
+					e.stopPropagation();
+					const step = e.key === "ArrowDown" ? 1 : -1;
+					paletteSel = (paletteSel + step + paletteResults.length) % paletteResults.length;
+					renderPalette();
+					return;
+				}
+				if (e.key === "Home" || e.key === "End") {
+					if (!paletteResults.length) return;
+					e.preventDefault();
+					e.stopPropagation();
+					paletteSel = e.key === "Home" ? 0 : paletteResults.length - 1;
+					renderPalette();
+					return;
+				}
+				if (e.key === "Enter") {
+					if (!paletteResults.length) return;
+					e.preventDefault();
+					e.stopPropagation();
+					choosePalette(paletteSel);
+				}
+				return;
+			}
+			if (!paletteModP(e)) return;
+			// 精确的 Mod+P 在输入框里也放行（这是全局唤起快捷键）；带 Shift/Alt 的变体
+			// 不算精确，走上面的 return，输入框行为保持不变。
+			if (paletteBlocked()) return;
+			e.preventDefault();
+			e.stopPropagation();
+			if (e.repeat) return;
+			openPalette();
+		},
+		true,
+	);
 
 	// ---------- 演示钩子（截图用；取不到数据也不阻塞）----------
 	window.__piRightPanelDemo = (which) => {

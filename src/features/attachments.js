@@ -378,6 +378,20 @@ export function init(ctx) {
 		render();
 		notifyInput();
 	};
+	// 队列接管：把 rail 上已解码的图整体取走（DSH 的 admit 语义——附件随消息走，不留在编辑器里）
+	ctx.attachments.take = () => {
+		const out = items;
+		ctx.attachments.clear();
+		return out;
+	};
+	// 出队/失败回滚时把图放回 rail；gen++ 让还在解码的旧图作废，避免混进新一批
+	ctx.attachments.set = (list) => {
+		if (!Array.isArray(list) || !list.length) return;
+		gen++;
+		items = list.map((it) => ({ ...it, id: nextId() }));
+		render();
+		notifyInput();
+	};
 
 	// ---------- 开发钩子：截图验证用，不自动发送 ----------
 	window.__piAttachDemo = async () => {

@@ -1,7 +1,7 @@
 {
-	"name": "pi-mini",
+	"name": "myna",
 	"version": "0.1.0",
-	"description": "Minimal Electron frontend for the pi CLI",
+	"description": "Minimal desktop GUI for the pi agent",
 	"license": "MIT",
 	"type": "module",
 	"main": "main.js",
