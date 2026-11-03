@@ -595,6 +595,7 @@ function startDevWatch() {
 				} catch {}
 				if (!want.trim()) return;
 				shotBusy = true;
+				log("[dev] shot start", JSON.stringify(want));
 				try {
 					unlinkSync(join(dir, "shot.request"));
 				} catch {}
@@ -603,8 +604,10 @@ function startDevWatch() {
 						const ready = await win.webContents.executeJavaScript(
 							`(async () => { for (let i = 0; i < 160; i++) { if (window.__ready) return true; await new Promise((r) => setTimeout(r, 250)); } return false; })()`,
 						);
+						log("[dev] shot ready", String(ready));
 						if (ready) {
 							await win.webContents.executeJavaScript("window.__selftest && window.__selftest()");
+							log("[dev] shot selftest done");
 							if (want.includes("sug") || want.includes("cmd")) {
 								const kind = want.includes("cmd") ? "command" : "file";
 								const root = JSON.stringify(import.meta.dirname);
@@ -654,8 +657,9 @@ function startDevWatch() {
 							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
 							return true;
 						})()`);
+						log("[dev] tps prompt sent");
 						const samples = [];
-						for (let i = 0; i < 20; i++) {
+						for (let i = 0; i < 60; i++) {
 							await new Promise((r) => setTimeout(r, 200));
 							const st = await win.webContents.executeJavaScript(`(() => {
 								const el = document.querySelector(".row.assistant .tps");
@@ -666,7 +670,7 @@ function startDevWatch() {
 								});
 							})()`);
 							samples.push(JSON.parse(st));
-							if (samples[samples.length - 1].text) break;
+							if ((samples[samples.length - 1].text || "").includes("tok/s")) break;
 						}
 						log("[dev] tps", JSON.stringify(samples));
 						await win.webContents.executeJavaScript(`(() => {

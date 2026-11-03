@@ -982,6 +982,22 @@
 				color: #fff;
 				line-height: 1.5;
 				white-space: nowrap;
+				transition: background 200ms ease, color 200ms ease;
+			}
+			.tps.wait {
+				background: var(--hover);
+				color: var(--dim);
+			}
+			.tps.done {
+				padding: 0;
+				background: transparent;
+				color: var(--faint);
+			}
+			.row.assistant > .meta {
+				transition: opacity 400ms ease;
+			}
+			.row.assistant > .meta.fade {
+				opacity: 0;
 			}
 			@keyframes blink {
 				50% {

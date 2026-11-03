@@ -27,7 +27,8 @@ const state = {
 	revealRaf: 0,
 	revealTick: 0,
 	revealFinal: null, // message_end 到达但文本还没吐完时暂存
-	liveTps: null, // 流式速度指示（tokens / t/s）
+	liveTps: null, // 流式速度指示（tokens / tok/s）
+	liveTokens: 0, // 已接收文本的增量 token 估算
 	tpsTimer: 0,
 	tools: new Map(),
 };
@@ -49,6 +50,8 @@ function estimateTokens(text) {
 	}
 	return cjk + rest / 4;
 }
+
+const fmtTokens = (n) => Math.round(n).toLocaleString("en-US");
 
 // 极简 markdown：段落、列表、标题、代码块、行内代码/加粗。不做完整解析，够用即可。
 // 相对/绝对/Windows 盘符路径（对齐 DSH isExplicitFilePath）
@@ -281,6 +284,7 @@ function clearStream() {
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
 	state.liveTps = null;
+	state.liveTokens = 0;
 	stream.innerHTML = "";
 	state.live = null;
 	state.liveText = null;
@@ -329,9 +333,10 @@ function addAssistantRow() {
 	row.className = "row assistant fresh";
 	const meta = document.createElement("div");
 	meta.className = "meta";
-	meta.hidden = true;
 	const tps = document.createElement("span");
-	tps.className = "tps";
+	tps.className = "tps wait";
+	tps.setAttribute("aria-hidden", "true");
+	tps.textContent = "等待首个 token…";
 	meta.append(tps);
 	const body = document.createElement("div");
 	body.className = "body";
@@ -340,7 +345,8 @@ function addAssistantRow() {
 	state.live = { row, body };
 	state.liveRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
-	state.liveTps = { box: meta, el: tps, start: 0 };
+	state.liveTps = { box: meta, el: tps, start: 0, waitStart: performance.now() };
+	state.liveTokens = 0;
 	state.tpsTimer = setInterval(tpsTick, 300);
 	const tn = document.createTextNode("");
 	body.append(tn);
@@ -394,23 +400,22 @@ function revealStep(now) {
 	}
 }
 
-// 流式速度指示：每 300ms 按已收文本估算 tokens 与 t/s（对齐 pi-web）
+// 流式速度指示：首 token 前显示等待时长，之后每 300ms 按增量 tokens 算 tok/s
 function tpsTick() {
 	const st = state.liveTps;
 	if (!st || !state.liveText) return;
-	const tokens = estimateTokens(state.liveRaw);
 	if (!st.start) {
-		if (tokens < 1) return;
-		st.start = performance.now();
+		const waited = (performance.now() - st.waitStart) / 1000;
+		st.el.textContent = `等待首个 token… ${waited.toFixed(1)}s`;
 		return;
 	}
 	const elapsed = (performance.now() - st.start) / 1000;
 	if (elapsed < 0.5) return;
-	const speed = tokens / elapsed;
-	st.el.textContent = `↓ ${Math.round(tokens)} · ${speed.toFixed(1)} t/s`;
+	const speed = state.liveTokens / elapsed;
+	st.el.className = "tps";
+	st.el.textContent = `↓ ${fmtTokens(state.liveTokens)} · ${speed.toFixed(1)} tok/s`;
 	st.el.style.background =
 		speed >= 50 ? "#53b3cb" : speed >= 30 ? "#9bc53d" : speed >= 15 ? "#f9c22e" : "#e01a4f";
-	st.box.hidden = false;
 }
 
 function finalizeAssistant(message) {
@@ -419,8 +424,23 @@ function finalizeAssistant(message) {
 	state.revealFinal = null;
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
-	if (state.liveTps?.box) state.liveTps.box.hidden = true;
+	const st = state.liveTps;
 	state.liveTps = null;
+	const total = Math.max(state.liveTokens, Number(message?.usage?.output) || 0);
+	const elapsed = st?.start ? (performance.now() - st.start) / 1000 : 0;
+	if (st?.box && total > 0 && elapsed > 0.5) {
+		st.el.className = "tps done";
+		st.el.style.background = "";
+		st.el.textContent = `${fmtTokens(total)} tokens · 平均 ${(total / elapsed).toFixed(1)} tok/s`;
+		st.box.hidden = false;
+		const box = st.box;
+		setTimeout(() => box.classList.add("fade"), 3200);
+		setTimeout(() => {
+			box.hidden = true;
+		}, 3800);
+	} else if (st?.box) {
+		st.box.hidden = true;
+	}
 	if (!state.live) return;
 	const body = state.live.body;
 	const text = blockText(message?.content ?? state.liveRaw);
@@ -1520,6 +1540,8 @@ window.pi.onEvent((ev) => {
 			if (a?.type === "text_delta" && state.liveText) {
 				state.liveRaw += a.delta;
 				state.textPending += a.delta;
+				state.liveTokens += estimateTokens(a.delta);
+				if (state.liveTps && !state.liveTps.start) state.liveTps.start = performance.now();
 				scheduleReveal();
 				follow();
 			}
