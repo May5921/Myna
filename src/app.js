@@ -16,6 +16,8 @@ const state = {
 	sessionName: null,
 	streaming: false,
 	collapsed: new Set(),
+	archived: new Set(),
+	archivedOpen: false,
 	projects: [],
 	projectsSeeded: false,
 	live: null, // 正在流式的 assistant 行
@@ -815,6 +817,30 @@ function saveCollapsed() {
 	} catch {}
 }
 
+const ARCHIVE_KEY = "pi-mini.archived";
+
+function loadArchived() {
+	try {
+		const raw = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]");
+		return new Set(Array.isArray(raw) ? raw.filter((x) => typeof x === "string" && x) : []);
+	} catch {
+		return new Set();
+	}
+}
+
+function saveArchived() {
+	try {
+		localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...state.archived]));
+	} catch {}
+}
+
+function toggleArchive(s) {
+	if (state.archived.has(s.path)) state.archived.delete(s.path);
+	else state.archived.add(s.path);
+	saveArchived();
+	renderSessions();
+}
+
 function relTime(ts) {
 	const t = new Date(ts).getTime();
 	if (!Number.isFinite(t)) return "";
@@ -824,6 +850,52 @@ function relTime(ts) {
 	if (d < 86_400_000) return `${Math.floor(d / 3_600_000)} 小时前`;
 	if (d < 172_800_000) return "昨天";
 	return new Date(ts).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
+const SESS_MORE_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.6" cy="8" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="12.4" cy="8" r="1.1"/></svg>';
+
+// 一行会话：可点击打开 + 悬停出「…」菜单（目前只有归档/取消归档）
+function sessionRow(s) {
+	const row = document.createElement("div");
+	row.className = "srow";
+	const b = document.createElement("button");
+	b.type = "button";
+	b.className = "item" + (s.path === state.sessionFile ? " active" : "");
+	const name = document.createElement("span");
+	name.className = "item-title";
+	name.textContent = s.name || s.title || "未命名会话";
+	const time = document.createElement("span");
+	time.className = "item-time";
+	time.textContent = relTime(s.timestamp);
+	b.append(name, time);
+	b.title = `${s.cwd}\n${s.path}`;
+	b.onclick = () => pickSession(s.path, s.cwd);
+
+	const actions = document.createElement("button");
+	actions.type = "button";
+	actions.className = "sess-more";
+	actions.title = "会话操作";
+	actions.setAttribute("aria-label", "会话操作");
+	actions.innerHTML = SESS_MORE_ICON;
+	const pop = document.createElement("div");
+	pop.className = "sess-menu";
+	pop.hidden = true;
+	const arch = document.createElement("button");
+	arch.type = "button";
+	arch.textContent = state.archived.has(s.path) ? "取消归档" : "归档";
+	arch.onclick = (e) => {
+		e.stopPropagation();
+		toggleArchive(s);
+	};
+	pop.append(arch);
+	actions.onclick = (e) => {
+		e.stopPropagation();
+		const wasHidden = pop.hidden;
+		for (const m of document.querySelectorAll(".sess-menu")) m.hidden = true;
+		pop.hidden = !wasHidden;
+	};
+	row.append(b, actions, pop);
+	return row;
 }
 
 function renderSessions() {
@@ -839,6 +911,10 @@ function renderSessions() {
 	if (!state.collapsedSeeded) {
 		state.collapsed = loadCollapsed();
 		state.collapsedSeeded = true;
+	}
+	if (!state.archivedSeeded) {
+		state.archived = loadArchived();
+		state.archivedSeeded = true;
 	}
 
 	// 工作区标题行：标题 + 搜索 + 绑定新项目（DSH sidebar 结构）
@@ -922,6 +998,7 @@ function renderSessions() {
 			const text = `${s.name || ""} ${s.title || ""}`.toLowerCase();
 			if (!text.includes(q)) continue;
 		}
+		if (state.archived.has(s.path) && s.path !== state.sessionFile) continue;
 		if (!byCwd.has(key)) byCwd.set(key, []);
 		byCwd.get(key).push(s);
 	}
@@ -1031,21 +1108,7 @@ function renderSessions() {
 		};
 
 		for (const s of items.slice(0, state.expandedGroups?.has(cwd) ? items.length : 6)) {
-			const b = document.createElement("button");
-			b.type = "button";
-			b.className = "item" + (s.path === state.sessionFile ? " active" : "");
-			const dot = document.createElement("span");
-			dot.className = "item-status";
-			const name = document.createElement("span");
-			name.className = "item-title";
-			name.textContent = s.name || s.title || "未命名会话";
-			const time = document.createElement("span");
-			time.className = "item-time";
-			time.textContent = relTime(s.timestamp);
-			b.append(dot, name, time);
-			b.title = `${s.cwd}\n${s.path}`;
-			b.onclick = () => pickSession(s.path, s.cwd);
-			kids.append(b);
+			kids.append(sessionRow(s));
 		}
 		if (items.length > 6) {
 			const expanded = state.expandedGroups?.has(cwd);
@@ -1080,11 +1143,39 @@ function renderSessions() {
 		}
 		list.append(kids);
 	}
+
+	const archivedItems = state.sessions
+		.filter((s) => state.archived.has(s.path) && s.path !== state.sessionFile)
+		.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+	if (archivedItems.length) {
+		const head = document.createElement("button");
+		head.type = "button";
+		head.className = "archived-head" + (state.archivedOpen ? " open" : "");
+		head.innerHTML = `<span class="chev">›</span><span>已归档</span><span class="arch-count">${archivedItems.length}</span>`;
+		head.onclick = () => {
+			state.archivedOpen = !state.archivedOpen;
+			renderSessions();
+		};
+		list.append(head);
+		if (state.archivedOpen) {
+			const box = document.createElement("div");
+			box.className = "kids archived-kids";
+			for (const s of archivedItems) box.append(sessionRow(s));
+			list.append(box);
+		}
+	}
 }
 
 document.addEventListener("click", () => {
-	for (const m of document.querySelectorAll(".proj-menu")) m.hidden = true;
+	for (const m of document.querySelectorAll(".proj-menu, .sess-menu")) m.hidden = true;
 });
+
+// 开发/截图用：清空归档列表（location.reload 会被 will-navigate 拦截）
+window.__piClearArchive = () => {
+	state.archived.clear();
+	saveArchived();
+	renderSessions();
+};
 
 const capLevel = (l) => (l ? l.charAt(0).toUpperCase() + l.slice(1) : "");
 

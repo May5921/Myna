@@ -692,6 +692,17 @@ function startDevWatch() {
 						log("[dev] extui failed", e.message);
 					}
 				}
+				if (want.includes("unarch")) {
+					try {
+						const r = await win.webContents.executeJavaScript(
+							"window.__piClearArchive ? (window.__piClearArchive(), 'cleared') : 'missing'",
+						);
+						log("[dev] unarch", r);
+						await new Promise((r) => setTimeout(r, 500));
+					} catch (e) {
+						log("[dev] unarch failed", e.message);
+					}
+				}
 				if (want.includes("sess")) {
 					try {
 						const st = await win.webContents.executeJavaScript(`(async () => {
@@ -706,7 +717,26 @@ function startDevWatch() {
 							const load = [...document.querySelectorAll(".kids .item-more")].find((b) => b.textContent === "加载更多会话");
 							load?.click();
 							await new Promise((r) => setTimeout(r, 1500));
-							return JSON.stringify({ proj: !!proj, more: !!more, load: !!load, before, after: document.querySelectorAll(".kids .item").length });
+							const rowsBefore = document.querySelectorAll(".kids .item").length;
+							const target = [...document.querySelectorAll(".kids .srow")].find((r) => !r.querySelector(".item.active"));
+							target?.querySelector(".sess-more")?.click();
+							await new Promise((r) => setTimeout(r, 200));
+							const archBtn = [...document.querySelectorAll(".sess-menu button")].find((b) => b.textContent === "归档");
+							archBtn?.click();
+							await new Promise((r) => setTimeout(r, 500));
+							const head = document.querySelector(".archived-head");
+							head?.click();
+							await new Promise((r) => setTimeout(r, 500));
+							return JSON.stringify({
+								proj: !!proj,
+								more: !!more,
+								load: !!load,
+								before,
+								after: document.querySelectorAll(".kids .item").length,
+								rowsBefore,
+								archived: document.querySelectorAll(".archived-kids .item").length,
+								head: head?.textContent || "",
+							});
 						})()`);
 						log("[dev] sess", st);
 					} catch (e) {
