@@ -1821,8 +1821,7 @@ async function bindWorkspace(cwd) {
 		emptyHint();
 		await loadModels();
 		await refreshState();
-		input.value = "";
-		loadDraft();
+		swapDraft();
 		return true;
 	} catch (e) {
 		showError(e.message);
@@ -1855,8 +1854,7 @@ async function pickSession(path, cwd) {
 		if (r.cancelled) return;
 		renderHistory(r.messages ?? []);
 		await refreshState();
-		input.value = "";
-		loadDraft();
+		swapDraft();
 	} catch (e) {
 		showError(e.message);
 	}
@@ -1869,8 +1867,7 @@ async function newSession() {
 	clearStream();
 	emptyHint();
 	await refreshState();
-	input.value = "";
-	loadDraft();
+	swapDraft();
 }
 
 async function pifold() {
@@ -1886,8 +1883,7 @@ async function pifold() {
 	emptyHint();
 	await loadModels();
 	await refreshState();
-	input.value = "";
-	loadDraft();
+	swapDraft();
 }
 
 function showError(msg) {
@@ -1935,6 +1931,13 @@ function loadDraft() {
 	updateSend();
 	const end = v.length;
 	input.setSelectionRange(end, end);
+}
+// 切会话后：先清空上一个会话的草稿，再装新会话的草稿并同步输入框尺寸/发送键
+function swapDraft() {
+	input.value = "";
+	loadDraft();
+	autosize();
+	updateSend();
 }
 
 async function submit() {

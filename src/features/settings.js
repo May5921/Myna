@@ -372,6 +372,7 @@ const CSS = `
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.settings-about-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px 4px; }
 
 .settings-note {
 	padding: 8px 0 0;
@@ -1883,6 +1884,32 @@ export function init(ctx) {
 			row.append(val);
 			aboutList.append(row);
 		}
+		// 诊断入口：路径可直接打开，环境信息一键复制
+		const acts = el("div", "settings-about-actions");
+		const aboutBtn = (label, fn) => {
+			const b = el("button", "settings-btn", label);
+			b.type = "button";
+			b.onclick = fn;
+			return b;
+		};
+		const openIt = (p) => () => ctx.pi.openPath?.(p).catch(() => toast("打不开这个路径"));
+		if (appInfo.agentRoot) acts.append(aboutBtn("打开配置目录", openIt(appInfo.agentRoot)));
+		if (appInfo.logFile) acts.append(aboutBtn("打开日志", openIt(appInfo.logFile)));
+		acts.append(
+			aboutBtn("复制诊断信息", async () => {
+				const text = [
+					`pi-mini ${appInfo.version || "?"}`,
+					`Electron ${appInfo.electron || "?"} / Chromium ${appInfo.chrome || "?"} / Node ${appInfo.node || "?"}`,
+					`pi ${appInfo.piVersion || "?"}`,
+					`cwd ${ctx.state.cwd || "?"}`,
+					`session ${ctx.state.sessionFile || "new"}`,
+					`log ${appInfo.logFile || "?"}`,
+				].join("\n");
+				await copyText(text);
+				toast("诊断信息已复制");
+			}),
+		);
+		aboutList.append(acts);
 	}
 
 	async function loadAppInfo() {
