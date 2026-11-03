@@ -348,6 +348,71 @@ body.rp-resizing .rp-panel { transition: none; }
 }
 .rp-note.rp-is-err { color: var(--err); }
 
+.rp-file-head {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 30px;
+	padding: 0 2px 0 0;
+	border-bottom: 1px solid var(--line);
+	background: var(--bg);
+}
+.rp-file-back {
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 6px;
+	color: var(--dim);
+}
+.rp-file-back svg { width: 12px; height: 12px; transform: rotate(180deg); }
+.rp-file-back:hover { background: var(--hover); color: var(--text); }
+.rp-file-name {
+	min-width: 0;
+	font-size: 12px;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.rp-file-open {
+	flex: none;
+	height: 22px;
+	padding: 0 6px;
+	border-radius: 6px;
+	font-size: 11px;
+	color: var(--faint);
+	white-space: nowrap;
+}
+.rp-file-open:hover { background: var(--hover); color: var(--text); }
+.rp-code { margin: 8px 0 0; overflow: auto; }
+.rp-code .shiki {
+	margin: 0;
+	padding: 8px 10px;
+	background: transparent !important;
+	font-family: var(--mono);
+	font-size: 11.5px;
+	line-height: 1.55;
+}
+.rp-code pre.code-plain {
+	margin: 0;
+	padding: 8px 10px;
+	font-family: var(--mono);
+	font-size: 11.5px;
+	line-height: 1.55;
+	white-space: pre;
+}
+.rp-img {
+	display: block;
+	max-width: 100%;
+	margin: 10px 0 0;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+}
+
 .rp-bar {
 	display: flex;
 	align-items: center;
@@ -784,6 +849,54 @@ export function init(ctx) {
 	const diffErr = new Map();
 	const diffBusy = new Set();
 
+	// 文件 tab 的内嵌预览：null = 显示树；对象 = 显示该文件的只读内容
+	let preview = null;
+	let previewSeq = 0;
+	const PREVIEW_LANG = {
+		js: "javascript",
+		mjs: "javascript",
+		cjs: "javascript",
+		jsx: "jsx",
+		ts: "typescript",
+		tsx: "tsx",
+		py: "python",
+		rb: "ruby",
+		go: "go",
+		rs: "rust",
+		java: "java",
+		c: "c",
+		h: "c",
+		cpp: "cpp",
+		cc: "cpp",
+		cs: "csharp",
+		sh: "bash",
+		ps1: "powershell",
+		json: "json",
+		md: "markdown",
+		yml: "yaml",
+		yaml: "yaml",
+		toml: "toml",
+		css: "css",
+		scss: "scss",
+		html: "html",
+		xml: "xml",
+		svg: "xml",
+		sql: "sql",
+		php: "php",
+		swift: "swift",
+		kt: "kotlin",
+		vue: "vue",
+		svelte: "svelte",
+		ini: "ini",
+		gitignore: "text",
+	};
+	const fmtSize = (n) => {
+		const v = Number(n) || 0;
+		if (v < 1024) return `${v} B`;
+		if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+		return `${(v / 1024 / 1024).toFixed(1)} MB`;
+	};
+
 	// ---------- 文件树 ----------
 	// 点目录（.git 已在主进程跳过，其余如 .cache/.anaconda）不进树，避免家目录被噪音淹没；
 	// 仓库相关目录放行，点文件（.gitignore/.env）照常显示。
@@ -838,13 +951,91 @@ export function init(ctx) {
 		return base ? `${base}\\${rel}` : rel;
 	};
 
+	// 点文件：在面板内打开只读预览；预览头部的按钮再用系统程序打开
 	async function openFile(relPath) {
 		const full = fullPathOf(relPath);
+		const seq = ++previewSeq;
+		preview = { path: full, name: String(relPath || "").split("/").pop(), busy: true, error: "" };
+		renderFiles();
 		try {
-			const ok = await ctx.pi.openPath(full);
-			if (ok === false) flash("打不开这个文件");
+			const res = await ctx.pi.readFile(full);
+			let html = null;
+			if (res && res.kind === "text" && res.content) {
+				const lang = PREVIEW_LANG[String(res.ext || "").replace(/^\./, "").toLowerCase()] || "text";
+				try {
+					const arr = await ctx.pi.highlight([{ code: res.content, lang }]);
+					html = Array.isArray(arr) ? arr[0] || null : null;
+				} catch {}
+			}
+			if (seq !== previewSeq) return;
+			preview = { ...res, busy: false, error: "", html };
 		} catch (e) {
-			flash(brief(e));
+			if (seq !== previewSeq) return;
+			preview = { ...preview, busy: false, error: brief(e) };
+		}
+		renderFiles();
+	}
+
+	function openExternally() {
+		if (!preview?.path) return;
+		Promise.resolve(ctx.pi.openPath(preview.path)).catch((e) => flash(brief(e)));
+	}
+
+	function renderPreview(host) {
+		const head = el("div", "rp-file-head");
+		const back = el("button", "rp-file-back");
+		back.type = "button";
+		back.innerHTML = CHEV_ICON;
+		back.title = "返回文件树";
+		back.setAttribute("aria-label", "返回文件树");
+		back.onclick = () => {
+			previewSeq++;
+			preview = null;
+			renderFiles();
+		};
+		const name = el("span", "rp-file-name", preview.name || "");
+		name.title = preview.path || "";
+		const openBtn = el("button", "rp-file-open", "用系统程序打开");
+		openBtn.type = "button";
+		openBtn.onclick = openExternally;
+		head.append(back, name, el("span", "rp-grow"), openBtn);
+		host.append(head);
+
+		if (preview.busy) {
+			host.append(el("div", "rp-note", "读取中…"));
+			return;
+		}
+		if (preview.error) {
+			host.append(el("div", "rp-note rp-is-err", preview.error));
+			return;
+		}
+		if (preview.kind === "image") {
+			const img = document.createElement("img");
+			img.className = "rp-img";
+			img.alt = preview.name || "图片";
+			img.src = `data:${preview.mime || "image/png"};base64,${preview.data || ""}`;
+			host.append(img);
+			return;
+		}
+		if (preview.kind === "binary") {
+			host.append(el("div", "rp-note", `二进制文件（${fmtSize(preview.size)}），用系统程序打开。`));
+			return;
+		}
+		const box = document.createElement("div");
+		box.className = "rp-code";
+		if (preview.html) {
+			box.innerHTML = preview.html;
+		} else {
+			const pre = document.createElement("pre");
+			pre.className = "code-plain";
+			const code = document.createElement("code");
+			code.textContent = preview.content || "";
+			pre.append(code);
+			box.append(pre);
+		}
+		host.append(box);
+		if (preview.truncated) {
+			host.append(el("div", "rp-note", `文件较大，只显示前 512 KB（共 ${fmtSize(preview.size)}）。`));
 		}
 	}
 
@@ -875,6 +1066,8 @@ export function init(ctx) {
 			const root = buildFileTree(list);
 			const changed = data.files?.cwd !== cwd;
 			data.files = { cwd, tree: root, truncated: !!res.truncated, count: list.length };
+			// 换了工作区，旧的预览路径不再可靠，回到文件树
+			if (changed) preview = null;
 			if (changed || !expandedSeeded) {
 				expanded.clear();
 				expandedSeeded = true;
@@ -965,6 +1158,11 @@ export function init(ctx) {
 		const keep = host.scrollTop;
 		host.textContent = "";
 		host.setAttribute("aria-busy", busy.files ? "true" : "false");
+
+		if (preview) {
+			renderPreview(host);
+			return;
+		}
 
 		if (!data.files) {
 			host.append(

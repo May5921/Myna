@@ -2,8 +2,8 @@
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync } from "node:fs";
+import { join, sep, resolve, extname, basename } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -19,6 +19,20 @@ protocol.registerSchemesAsPrivileged([
 
 const SESSIONS_ROOT = join(homedir(), ".pi", "agent", "sessions");
 const LOG_FILE = join(homedir(), "AppData", "Local", "Temp", "pi-mini.log");
+// 右栏文件预览的限制：文本只读前 512KB，图片上限 12MB
+const PREVIEW_TEXT_MAX = 512 * 1024;
+const PREVIEW_IMAGE_MAX = 12 * 1024 * 1024;
+const PREVIEW_IMAGE_MIME = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".svg": "image/svg+xml",
+	".bmp": "image/bmp",
+	".ico": "image/x-icon",
+	".avif": "image/avif",
+};
 const STATE_FILE = join(homedir(), ".pi-mini.json");
 
 function log(...args) {
@@ -1031,6 +1045,36 @@ ipcMain.handle("pi:highlight", async (_e, items) => {
 	return out;
 });
 
+ipcMain.handle("pi:read-file", async (_e, filePath) => {
+	const root = realpathSync(currentCwd);
+	const full = resolve(String(filePath || ""));
+	const real = realpathSync(full);
+	if (real !== root && !real.startsWith(root + sep)) throw new Error("文件不在当前工作区");
+	const st = statSync(real);
+	if (!st.isFile()) throw new Error("不是文件");
+	const ext = extname(real).toLowerCase();
+	const base = { path: real, name: basename(real), ext, size: st.size };
+	if (PREVIEW_IMAGE_MIME[ext]) {
+		if (st.size > PREVIEW_IMAGE_MAX) return { ...base, kind: "binary" };
+		return {
+			...base,
+			kind: "image",
+			mime: PREVIEW_IMAGE_MIME[ext],
+			data: readFileSync(real).toString("base64"),
+		};
+	}
+	const fd = openSync(real, "r");
+	let buf;
+	try {
+		buf = Buffer.alloc(Math.min(st.size, PREVIEW_TEXT_MAX));
+		readSync(fd, buf, 0, buf.length, 0);
+	} finally {
+		closeSync(fd);
+	}
+	if (buf.includes(0)) return { ...base, kind: "binary" };
+	return { ...base, kind: "text", content: buf.toString("utf8"), truncated: st.size > PREVIEW_TEXT_MAX };
+});
+
 ipcMain.handle("pi:switch-session", async (_e, path) => {
 	const res = await sessionCall({ type: "switch_session", sessionPath: path });
 	if (res?.cancelled) return { cancelled: true };
@@ -1421,6 +1465,20 @@ function startDevWatch() {
 						if (ok) await win.webContents.executeJavaScript(`window.__piRightPanelDemo("${tab}")`);
 						else log("[dev] right panel demo unavailable");
 						await new Promise((r) => setTimeout(r, 2000));
+						if (want.includes("preview")) {
+							const imgMode = want.includes("previewimg");
+							const info = await win.webContents.executeJavaScript(`(async () => {
+								const rows = [...document.querySelectorAll('.rp-pane .rp-row')];
+								const hit = ${imgMode}
+									? rows.find((r) => /\\.(png|jpe?g|gif|webp|svg)$/i.test(r.textContent || ""))
+									: rows.find((r) => /README|main\\.js|package\\.json/.test(r.textContent || "")) || rows.find((r) => !r.classList.contains('rp-dir'));
+								if (!hit) return JSON.stringify({ clicked: false });
+								hit.click();
+								await new Promise((r) => setTimeout(r, 1800));
+								return JSON.stringify({ clicked: true, head: !!document.querySelector('.rp-file-head'), code: !!document.querySelector('.rp-code'), img: !!document.querySelector('.rp-img'), chars: (document.querySelector('.rp-code')?.textContent || '').length });
+							})()`);
+							log("[dev] rp preview", info);
+						}
 					} catch (e) {
 						log("[dev] right panel demo failed", e.message);
 					}

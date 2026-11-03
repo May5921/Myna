@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("pi", {
 	sessions: (opts) => ipcRenderer.invoke("pi:sessions", opts),
 	searchSessions: (input) => ipcRenderer.invoke("pi:search-sessions", input),
 	listFiles: (cwd) => ipcRenderer.invoke("pi:list-files", cwd),
+	readFile: (path) => ipcRenderer.invoke("pi:read-file", path),
 	gitChanges: () => ipcRenderer.invoke("pi:git-changes"),
 	gitDiff: (path) => ipcRenderer.invoke("pi:git-diff", path),
 	perf: () => ipcRenderer.invoke("pi:perf"),
