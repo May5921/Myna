@@ -2075,6 +2075,8 @@ window.pi.onEvent((ev) => {
 			if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
 			// 运行中状态行只在运行期存在，一轮结束就收掉
 			settleRunStatus();
+			// 回话结束：所有工具卡（含运行中手动展开、历史里自动展开的 read/grep）统一折回去
+			for (const el of stream.querySelectorAll('.tool[data-open="1"]')) toggleDisclosure(el, false);
 			if (state.aborted) {
 				const body = [...stream.querySelectorAll(".row.assistant")]
 					.map((r) => r.querySelector(":scope > .body"))

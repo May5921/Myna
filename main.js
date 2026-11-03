@@ -56,8 +56,12 @@ let currentCwd = (() => {
 	const saved = loadState().cwd;
 	return typeof saved === "string" && saved && existsSync(saved) ? saved : homedir();
 })();
-// 渲染层当前打开的会话文件：pi 崩溃/重启时用它续上，避免回答跑进新会话
-let activeSessionFile = null;
+// 渲染层当前打开的会话文件：持久化到 ~/.pi-mini.json，主进程重启也能续上
+// （否则 relaunch 后 startPi 会开新会话，renderer 又把 lastSession 覆盖成空会话）
+let activeSessionFile = (() => {
+	const saved = loadState().sessionFile;
+	return typeof saved === "string" && saved && existsSync(saved) ? saved : null;
+})();
 function resumeSessionFile() {
 	return activeSessionFile && existsSync(activeSessionFile) ? activeSessionFile : null;
 }
@@ -808,7 +812,7 @@ let restorePending = process.env.PI_MINI_SESSION || null;
 let relaunching = false;
 
 ipcMain.handle("pi:boot", async () => {
-	if (!child) startPi(currentCwd);
+	if (!child) startPi(currentCwd, resumeSessionFile());
 	await ensureReady().catch((e) => log("[boot] pi not ready", e.message));
 	// 只在本进程第一次 boot 时恢复指定会话；renderer 热重载后直接用当前会话
 	const restore = restorePending;
@@ -838,6 +842,8 @@ ipcMain.handle("pi:pick-folder", async () => {
 		defaultPath: currentCwd,
 	});
 	if (res.canceled || !res.filePaths.length) return null;
+	activeSessionFile = null;
+	saveState({ sessionFile: null });
 	startPi(res.filePaths[0]);
 	return { cwd: currentCwd, sessions: listSessions() };
 });
@@ -845,7 +851,11 @@ ipcMain.handle("pi:pick-folder", async () => {
 // 侧栏点其他工作区：重启 pi 子进程切换 cwd（pi 单进程模型）
 ipcMain.handle("pi:set-cwd", async (_e, cwd) => {
 	if (typeof cwd !== "string" || !cwd || !existsSync(cwd)) throw new Error("目录不存在");
-	if (cwd !== currentCwd) startPi(cwd);
+	if (cwd !== currentCwd) {
+		activeSessionFile = null;
+		saveState({ sessionFile: null });
+		startPi(cwd);
+	}
 	await ensureReady();
 	return { cwd: currentCwd, sessions: listSessions() };
 });
@@ -1026,10 +1036,16 @@ ipcMain.handle("pi:switch-session", async (_e, path) => {
 	if (res?.cancelled) return { cancelled: true };
 	const history = await sessionCall({ type: "get_messages" });
 	const state = await sessionCall({ type: "get_state" });
+	if (typeof path === "string" && path && existsSync(path)) {
+		activeSessionFile = path;
+		saveState({ sessionFile: path });
+	}
 	return { cancelled: false, messages: history?.messages ?? [], state };
 });
 
 ipcMain.handle("pi:new-session", async () => {
+	activeSessionFile = null;
+	saveState({ sessionFile: null });
 	await sessionCall({ type: "new_session" });
 	return { sessions: listSessions() };
 });
@@ -1037,6 +1053,7 @@ ipcMain.handle("pi:new-session", async () => {
 // 渲染层把当前会话文件同步过来；崩溃重启时按它续会话
 ipcMain.handle("pi:set-active-session", (_e, path) => {
 	activeSessionFile = typeof path === "string" && path && existsSync(path) ? path : null;
+	saveState({ sessionFile: activeSessionFile });
 	return activeSessionFile;
 });
 
@@ -1433,7 +1450,7 @@ function startDevWatch() {
 				if (want.includes("dumprows")) {
 					try {
 						const s = await win.webContents.executeJavaScript(
-							`JSON.stringify({ summary: document.querySelectorAll(".run-summary").length, rows: [...document.querySelectorAll(".row.assistant")].map(r => ({ a: !!r.querySelector(":scope > .acts"), c: r.className, hc: !!r.querySelector(".caret"), rm: !!r.querySelector(".meta.running"), nx: (r.nextElementSibling?.className || null) })) })`,
+							`JSON.stringify({ last: localStorage.getItem("pi-mini.lastSession"), cwd: document.getElementById("cwd-name")?.textContent, empty: (document.querySelector(".empty")?.innerText || "").slice(0, 200), streamLen: (document.querySelector("#stream")?.innerText || "").length, summary: document.querySelectorAll(".run-summary").length, rows: [...document.querySelectorAll(".row.assistant")].map(r => ({ a: !!r.querySelector(":scope > .acts"), c: r.className, hc: !!r.querySelector(".caret"), rm: !!r.querySelector(".meta.running"), nx: (r.nextElementSibling?.className || null) })) })`,
 						);
 						log("[dev] dumprows", s);
 					} catch (e) {
@@ -1567,6 +1584,39 @@ function startDevWatch() {
 						log(`[dev] livetool ${st}`);
 					} catch (e) {
 						log("[dev] livetool failed", e.message);
+					}
+				}
+				if (want.includes("toolfold")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "用 bash 执行命令：ping -n 6 127.0.0.1";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+						})()`);
+						await new Promise((r) => setTimeout(r, 1800));
+						const before = await win.webContents.executeJavaScript(`(() => {
+							const list = [...document.querySelectorAll(".tool")];
+							const t = list[list.length - 1];
+							t?.querySelector(".hdr")?.click();
+							return JSON.stringify({ tools: list.length, open: document.querySelectorAll('.tool[data-open="1"]').length, last: t?.dataset.open });
+						})()`);
+						let after = "";
+						for (let k = 0; k < 80; k++) {
+							await new Promise((r) => setTimeout(r, 500));
+							after = await win.webContents.executeJavaScript(
+								`JSON.stringify({streaming: !!window.__piui?.state?.streaming, open: document.querySelectorAll('.tool[data-open="1"]').length, last: (() => { const a = [...document.querySelectorAll(".tool")]; return a[a.length - 1]?.dataset.open; })()})`,
+							);
+							if (!/"streaming":true/.test(after)) break;
+						}
+						log(`[dev] toolfold ${before} -> ${after}`);
+						await win.webContents.executeJavaScript(`(() => {
+							const rows = [...document.querySelectorAll(".row")];
+							rows[rows.length - 1]?.scrollIntoView({ block: "end" });
+						})()`);
+					} catch (e) {
+						log("[dev] toolfold failed", e.message);
 					}
 				}
 				if (want.includes("live") && !want.includes("livetool")) {

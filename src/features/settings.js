@@ -839,7 +839,7 @@ export function init(ctx) {
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2.8 3.4h10.4v7.2H8l-3 2.2v-2.2H2.8Z"/></svg>',
 		model:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="4" y="4" width="8" height="8" rx="1.6"/><path d="M6.5 2.2v1.8M9.5 2.2v1.8M6.5 12v1.8M9.5 12v1.8M2.2 6.5H4M2.2 9.5H4M12 6.5h1.8M12 9.5h1.8"/></svg>',
-		provider:
+		providers:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><rect x="2.6" y="3" width="10.8" height="4.2" rx="1.4"/><rect x="2.6" y="8.8" width="10.8" height="4.2" rx="1.4"/><circle cx="5" cy="5.1" r=".8" fill="currentColor" stroke="none"/><circle cx="5" cy="10.9" r=".8" fill="currentColor" stroke="none"/></svg>',
 		behavior:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.4" y="5" width="11.2" height="6" rx="3"/><circle cx="10.4" cy="8" r="1.6"/></svg>',
