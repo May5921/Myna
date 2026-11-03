@@ -38,7 +38,9 @@
 				--weight-shell: 445;
 				--sidebar-width: 275px;
 				--titlebar-height: 46px;
-				--thread-max-width: 768px;
+				/* DSH 聊天列宽：ConversationRoot 的 --dsh-chat-content-width，chat 组件里
+				   多处写死的 fallback 就是 748px（MessageItem/GoalCommandInputView），对齐它 */
+				--thread-max-width: 748px;
 				--thread-inset-top: 33px;
 				--thread-inset-x: 24px;
 				--thread-inset-bottom: 32px;
@@ -602,6 +604,9 @@
 				width: min(var(--thread-max-width), 100% - 48px);
 				margin: 0 auto var(--turn-gap);
 			}
+			/* 用户消息：与上一条之间的距离用 --user-turn-gap（16px，本行 margin-top 与上一条
+			   .row 的 12px 折叠取大）；与下一条之间仍是 .row 的 12px，
+			   对应 DSH MessageItem .userRow 之后 response 项的 12px flow gap */
 			.row.mine {
 				display: flex;
 				justify-content: flex-end;
@@ -621,6 +626,8 @@
 			}
 			.assistant .body {
 				word-break: break-word;
+				/* DSH MarkdownText .markdown：长串（URL、无空格路径）也能断，别撑破列宽 */
+				overflow-wrap: anywhere;
 				font-size: 14px;
 				line-height: 24px;
 			}
@@ -679,10 +686,24 @@
 				line-height: 1.62;
 			}
 
+			/* 引用（DSH MarkdownText .markdown blockquote）：2px 竖线 + 16px 上间距 */
+			.body blockquote {
+				border-left: 2px solid var(--faint);
+				margin: 16px 0 0;
+				padding-left: 14px;
+			}
+			/* 分隔线（DSH MarkdownText .markdown hr）：0.5px、上下 32px */
+			.body hr {
+				border: none;
+				height: 0.5px;
+				margin: 32px 0;
+				background: var(--line-strong);
+			}
+
+			/* 表格（DSH MarkdownText .tableScroll / th / td）：只有 0.5px 行线，无外框、
+			   表头无底色；首列左内边距归零，与正文左缘对齐，末列右内边距归零 */
 			.body .table-wrap {
 				margin: 16px 0;
-				border: 1px solid var(--line);
-				border-radius: 8px;
 				overflow-x: auto;
 			}
 			.body table {
@@ -693,29 +714,44 @@
 			}
 			.body th,
 			.body td {
-				padding: 6px 10px;
-				border-bottom: 1px solid var(--line);
-				text-align: left;
+				padding: 10px 16px;
+				text-align: start;
 				vertical-align: top;
 				word-break: break-word;
 			}
 			.body th {
-				background: var(--surface-2);
+				border-bottom: 0.5px solid var(--line-strong);
 				font-weight: 600;
 				color: var(--text);
-				white-space: nowrap;
 			}
 			.body td {
+				border-bottom: 0.5px solid var(--line);
 				color: var(--dim);
 			}
-			.body tr:last-child td {
-				border-bottom: 0;
+			.body th:first-child,
+			.body td:first-child {
+				padding-left: 0;
+			}
+			.body td:last-child {
+				padding-right: 0;
 			}
 
 			/* 工具行 */
 			/* 工具行：hover 才露 chevron，24px 行高，受控展开 */
+			/* 行距（DSH ChatView .flowItem 默认 --dsh-chat-flow-gap: 4px）：
+			   同一组内工具卡 4px；正文进入工具组时 12px（DSH response 项之后的 12px）。
+			   正文块自带 16px 下边距时按外边距折叠规则取 16px，不再叠加 */
+			.body > .tool {
+				margin-top: 12px;
+			}
+			.body > .tool + .tool {
+				margin-top: 4px;
+			}
+			.body > .tool:first-child {
+				margin-top: 0;
+			}
 			.tool {
-				margin: 8px 0;
+				margin: 4px 0;
 				border: 1px solid var(--line);
 				border-radius: 12px;
 				background: var(--bg);
@@ -922,6 +958,8 @@
 				.tool.running .name {
 					animation: none;
 				}
+				/* 运行中文字的微光在下面 .meta.running .run-text 里定义，
+				   这里只留 .fresh / .tool.running 的关断（顺序敏感，见那里的 media） */
 				.tool .body,
 				.tool .chev,
 				.tool .ic {
@@ -1057,19 +1095,66 @@
 				vertical-align: -2px;
 				animation: blink 1.1s steps(1) infinite;
 			}
-			/* 流式速度：等待首 token / ↓ tokens · tok/s / 结束摘要 */
+			/* 用户主动中断的安静标记（DSH AssistantMarkdown .stopped） */
+			.body > .stopped {
+				display: inline-flex;
+				margin-top: 8px;
+				padding: 0 6px;
+				border-radius: 6px;
+				background: var(--hover);
+				color: var(--faint);
+				font-size: 11px;
+				line-height: 18px;
+			}
+			/* 运行中状态行 + 流式速度（DSH ChatView .running / .runningContent：
+			   字号 14-2=12px、行高 22、内容槽高 28、文字与徽标同排、gap 6） */
 			.row.assistant > .meta {
 				display: flex;
 				align-items: center;
 				gap: 6px;
 				margin: 0 0 4px 1px;
-				font-size: 11px;
+				font-size: var(--text-sm);
+				line-height: 22px;
 				color: var(--faint);
 				font-variant-numeric: tabular-nums;
 				transition: opacity 400ms ease;
 			}
+			.row.assistant > .meta.running {
+				height: 28px;
+			}
 			.row.assistant > .meta[hidden] {
 				display: none;
+			}
+			/* 「思考中… / 生成中… 1.2s」；状态文字在左，t/s 徽标靠右（margin-left:auto） */
+			.run-state {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				min-width: 0;
+				color: var(--dim);
+			}
+			.run-clock {
+				color: var(--faint);
+			}
+			/* 运行中文字微光（DSH TextShimmer，沿用 .tool.running .name 的同一套渐变） */
+			.meta.running .run-text {
+				background: linear-gradient(90deg, #9a9a9a 0%, #d2d2d2 50%, #9a9a9a 100%);
+				background-size: 200% 100%;
+				-webkit-background-clip: text;
+				background-clip: text;
+				color: transparent;
+				animation: shimmer 1.3s linear infinite;
+			}
+			.meta.running .tps {
+				margin-left: auto;
+			}
+			/* 关掉微光时要把渐变文字还原成实色，否则透明字看不见（放在渐变规则之后才生效） */
+			@media (prefers-reduced-motion: reduce) {
+				.meta.running .run-text {
+					animation: none;
+					background: none;
+					color: var(--dim);
+				}
 			}
 			.tps {
 				padding: 1px 6px;

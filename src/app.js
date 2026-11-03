@@ -36,6 +36,9 @@ const state = {
 	liveTps: null, // 流式速度指示（tokens / tok/s）
 	liveTokens: 0, // 已接收文本的增量 token 估算
 	tpsTimer: 0,
+	runClock: null, // 运行中状态行（思考中/生成中 + 已用时间，DSH RunningStatus）
+	pendingTools: [], // 正文还没落定时先排队的工具卡，finalize 写完 innerHTML 再插入
+	aborted: false, // 用户主动中断：settle 时画“已停止”标记（DSH 的 stopped tag）
 	runStart: 0,
 	runTools: 0,
 	tools: new Map(),
@@ -190,6 +193,28 @@ function renderFragment(part) {
 			flushList();
 			continue;
 		}
+		// 分隔线 --- / *** / ___（DSH MarkdownText 的 hr）
+		if (/^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line)) {
+			flushPara();
+			flushList();
+			html += "<hr>";
+			continue;
+		}
+		// 引用 "> ..."（DSH MarkdownText 的 blockquote）：连续引用行合成一段
+		const quote = line.match(/^ {0,3}>\s?(.*)$/);
+		if (quote) {
+			flushPara();
+			flushList();
+			const quoted = [quote[1]];
+			while (i + 1 < lines.length) {
+				const next = lines[i + 1].match(/^ {0,3}>\s?(.*)$/);
+				if (!next) break;
+				quoted.push(next[1]);
+				i++;
+			}
+			html += `<blockquote>${quoted.map(inlineMd).join("<br>")}</blockquote>`;
+			continue;
+		}
 		// GFM 表格：表头行 + 分隔行（| --- | :---: |）
 		if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
 			flushPara();
@@ -295,6 +320,8 @@ function clearStream() {
 	state.revealFinal = null;
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
+	state.runClock = null;
+	state.pendingTools = [];
 	state.liveTps = null;
 	state.liveTokens = 0;
 	stream.innerHTML = "";
@@ -341,15 +368,31 @@ function addAssistantRow() {
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
+	// 一轮里只挂一行运行状态：新行接手，旧行先收摊，别两行同时闪
+	settleRunStatus();
 	const row = document.createElement("div");
 	row.className = "row assistant fresh";
+	// 运行中状态行（DSH ChatView .running / RunningStatus.tsx）：先「思考中」，首 token 后「生成中」+ 已用时间
 	const meta = document.createElement("div");
-	meta.className = "meta";
+	meta.className = "meta running";
+	const runState = document.createElement("span");
+	runState.className = "run-state";
+	runState.setAttribute("role", "status");
+	runState.setAttribute("aria-live", "polite");
+	const runText = document.createElement("span");
+	runText.className = "run-text";
+	runText.textContent = "思考中…";
+	const runClock = document.createElement("span");
+	runClock.className = "run-clock";
+	runClock.setAttribute("aria-hidden", "true");
+	runClock.textContent = "0.0s";
+	runState.append(runText, runClock);
 	const tps = document.createElement("span");
 	tps.className = "tps wait";
 	tps.setAttribute("aria-hidden", "true");
-	tps.textContent = "等待首个 token…";
-	meta.append(tps);
+	// 计时已经在状态行里，t/s 徽标等首 token 出来再出现，避免两个时钟
+	tps.hidden = true;
+	meta.append(runState, tps);
 	const body = document.createElement("div");
 	body.className = "body";
 	row.append(meta, body);
@@ -357,7 +400,9 @@ function addAssistantRow() {
 	state.live = { row, body };
 	state.liveRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
-	state.liveTps = { box: meta, el: tps, start: 0, waitStart: performance.now() };
+	state.liveTps = { box: meta, el: tps, text: runText, start: 0 };
+	// 用时按整轮算（DSH RunningStatus 的 turn startTime），工具阶段换行也不归零
+	state.runClock = { text: runText, clock: runClock, start: state.runStart || performance.now() };
 	state.liveTokens = 0;
 	state.tpsTimer = setInterval(tpsTick, 300);
 	const tn = document.createTextNode("");
@@ -368,6 +413,45 @@ function addAssistantRow() {
 	state.liveText = { node: tn, caret };
 	follow();
 	return row;
+}
+
+// 运行中状态行收尾（DSH 的 running 槽只在运行期存在）：清计时器、去掉状态文字，
+// 行里只剩 t/s 摘要时保留，什么都没有就整行藏掉
+function settleRunStatus() {
+	if (state.tpsTimer) clearInterval(state.tpsTimer);
+	state.tpsTimer = 0;
+	state.runClock = null;
+	for (const meta of stream.querySelectorAll(".row.assistant > .meta.running")) {
+		meta.querySelector(":scope > .run-state")?.remove();
+		meta.classList.remove("running");
+		const tps = meta.querySelector(":scope > .tps");
+		meta.hidden = !tps || tps.hidden || !tps.textContent;
+	}
+}
+
+// 工具卡落到最新一条 assistant 的正文里；正文还在吐字/等重写时先排队，
+// 等 finalizeAssistant 写完 innerHTML 再插回去，否则会被整块覆盖（卡片凭空消失）
+function mountTool(el) {
+	if (state.live || state.revealFinal) {
+		state.pendingTools.push(el);
+		return;
+	}
+	let body = [...stream.querySelectorAll(".row.assistant")].pop()?.querySelector(":scope > .body");
+	if (!body) {
+		const row = document.createElement("div");
+		row.className = "row assistant";
+		body = document.createElement("div");
+		body.className = "body";
+		row.append(body);
+		stream.append(row);
+	}
+	body.append(el);
+}
+
+function flushPendingTools(body) {
+	if (!body || !state.pendingTools.length) return;
+	body.append(...state.pendingTools);
+	state.pendingTools = [];
 }
 
 // ---- pi-web 式吐字：delta 先进缓冲，再按稳定速率逐帧吐出 ----
@@ -412,18 +496,18 @@ function revealStep(now) {
 	}
 }
 
-// 流式速度指示：首 token 前显示等待时长，之后每 300ms 按增量 tokens 算 tok/s
+// 运行中状态行 + 流式速度：每 300ms 刷一次用时，首 token 之后再补 t/s 徽标
 function tpsTick() {
-	const st = state.liveTps;
-	if (!st || !state.liveText) return;
-	if (!st.start) {
-		const waited = (performance.now() - st.waitStart) / 1000;
-		st.el.textContent = `等待首个 token… ${waited.toFixed(1)}s`;
-		return;
+	if (state.runClock) {
+		const used = (performance.now() - state.runClock.start) / 1000;
+		state.runClock.clock.textContent = `${used.toFixed(1)}s`;
 	}
+	const st = state.liveTps;
+	if (!st || !state.liveText || !st.start) return;
 	const elapsed = (performance.now() - st.start) / 1000;
 	if (elapsed < 0.5) return;
 	const speed = state.liveTokens / elapsed;
+	st.el.hidden = false;
 	st.el.className = "tps";
 	st.el.textContent = `↓ ${fmtTokens(state.liveTokens)} · ${speed.toFixed(1)} tok/s`;
 	st.el.style.background =
@@ -434,19 +518,18 @@ function finalizeAssistant(message) {
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
-	if (state.tpsTimer) clearInterval(state.tpsTimer);
-	state.tpsTimer = 0;
+	// 计时器不在这里停：正文定型后运行中状态行还要继续走到 agent_settled
 	const st = state.liveTps;
 	state.liveTps = null;
 	const total = Math.max(state.liveTokens, Number(message?.usage?.output) || 0);
 	const elapsed = st?.start ? (performance.now() - st.start) / 1000 : 0;
-	if (st?.box && total > 0 && elapsed > 0.5) {
+	if (st?.el && total > 0 && elapsed > 0.5) {
 		st.el.className = "tps done";
 		st.el.style.background = "";
+		st.el.hidden = false;
 		st.el.textContent = `${fmtTokens(total)} tokens · 平均 ${(total / elapsed).toFixed(1)} tok/s`;
-		st.box.hidden = false;
-	} else if (st?.box) {
-		st.box.hidden = true;
+	} else if (st?.el) {
+		st.el.hidden = true;
 	}
 	if (!state.live) return;
 	const body = state.live.body;
@@ -454,6 +537,8 @@ function finalizeAssistant(message) {
 	body.innerHTML = md(text);
 	state.live = null;
 	state.liveText = null;
+	// 流式期间到的工具卡在 innerHTML 写完后再插回（DSH 里工具排在正文之后）
+	flushPendingTools(body);
 	applyHighlight(body);
 	follow();
 }
@@ -1686,10 +1771,15 @@ async function submit() {
 	}
 }
 
+function abortRun() {
+	if (!state.streaming) return;
+	state.aborted = true;
+	window.pi.command({ type: "abort" }).catch(() => {});
+}
+
 function setStreaming(on) {
 	state.streaming = on;
-	sendBtn.classList.toggle("stop", on);
-	updateSend();
+	sendBtn.classList.toggle("stop", on);	updateSend();
 }
 
 // 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后收成小圆点，点击可展开
@@ -1755,8 +1845,11 @@ window.pi.onEvent((ev) => {
 				state.textPending += a.delta;
 				state.liveTokens += estimateTokens(a.delta);
 				if (state.liveTps) {
-					state.liveTps.box.hidden = false;
-					if (!state.liveTps.start) state.liveTps.start = performance.now();
+					if (!state.liveTps.start) {
+						state.liveTps.start = performance.now();
+						// 首个 token 到了：状态文字从「思考中」切「生成中」（DSH RunningStatus 的 deepDiving 阶段）
+						if (state.liveTps.text) state.liveTps.text.textContent = "生成中…";
+					}
 				}
 				scheduleReveal();
 				follow();
@@ -1778,19 +1871,8 @@ window.pi.onEvent((ev) => {
 			state.runTools += 1;
 			const el = buildToolRow({ name: ev.toolName, args: ev.args });
 			el.classList.add("running", "fresh");
-			// 纯工具消息不会有文本：别让「等待首个 token」一直挂着
-			if (state.liveTps && state.liveTokens === 0) state.liveTps.box.hidden = true;
-			let host = state.live?.body;
-			if (!host) {
-				// message_end 之后才开始的工具：补一个与历史一致的 row/body 容器
-				const row = document.createElement("div");
-				row.className = "row assistant";
-				host = document.createElement("div");
-				host.className = "body";
-				row.append(host);
-				stream.append(row);
-			}
-			host.append(el);
+			// 正文可能还在吐字（message_end 之后才开始的工具）：先排队，别被 finalize 的 innerHTML 冲掉
+			mountTool(el);
 			state.tools.set(ev.toolCallId, el);
 			follow();
 			break;
@@ -1819,6 +1901,24 @@ window.pi.onEvent((ev) => {
 			break;
 		case "agent_settled":
 			setStreaming(false);
+			// 中断时 finalize 会重写 body.innerHTML：先把没吐完的尾巴收掉，再画「已停止」，
+			// 顺序反了标记会被冲掉（长文本吐字比 message_end 晚，settle 可能先到）
+			if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+			// 运行中状态行只在运行期存在，一轮结束就收掉
+			settleRunStatus();
+			if (state.aborted) {
+				const body = [...stream.querySelectorAll(".row.assistant")]
+					.map((r) => r.querySelector(":scope > .body"))
+					.filter(Boolean)
+					.pop();
+				if (body && !body.querySelector(":scope > .stopped")) {
+					const stop = document.createElement("span");
+					stop.className = "stopped";
+					stop.textContent = "已停止";
+					body.append(stop);
+				}
+				state.aborted = false;
+			}
 			showRunSummary();
 			// 新会话的第一轮结束后 sessionFile 才有值，刷新一次便于下次启动恢复
 			refreshState().catch(() => {});
@@ -1860,10 +1960,10 @@ document.addEventListener("keydown", (e) => {
 		return;
 	}
 	menuBack = null;
-	if (state.streaming) window.pi.command({ type: "abort" }).catch(() => {});
+	if (state.streaming) abortRun();
 });
 sendBtn.onclick = () => {
-	if (state.streaming) window.pi.command({ type: "abort" }).catch(() => {});
+	if (state.streaming) abortRun();
 	else submit();
 };
 $("cwd").onclick = pifold;

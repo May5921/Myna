@@ -289,6 +289,71 @@ const CSS = `
 	border-radius: 10px;
 }
 
+/* 技能与 MCP：只读技能列表 + 行内展开的 MCP 卡片 */
+.skm-actions { display: flex; align-items: center; gap: 8px; }
+.skm-list { display: flex; flex-direction: column; gap: 8px; padding: 12px 0 4px; }
+.skm-skills { gap: 0; }
+.skm-card { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+.skm-head { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; }
+.skm-main { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.skm-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.skm-name {
+	min-width: 0;
+	font-size: 14px;
+	line-height: 20px;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.skm-tag {
+	flex: none;
+	height: 20px;
+	padding: 0 7px;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	font: 11px/18px var(--mono);
+	color: var(--dim);
+	white-space: nowrap;
+}
+.skm-cmd {
+	font: 12px/1.45 var(--mono);
+	color: var(--dim);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.skm-desc {
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--dim);
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+.skm-ctl { display: flex; align-items: center; gap: 6px; flex: none; }
+.skm-skill {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px 0;
+	border-bottom: 1px solid var(--line);
+}
+.skm-skill:last-child { border-bottom: 0; }
+.skm-editor { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding: 12px 14px; }
+.skm-card.skm-add .skm-editor { border-top: 0; }
+.skm-select { width: 100%; max-width: none; justify-content: space-between; }
+.skm-empty {
+	padding: 12px 14px;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--faint);
+	border: 1px dashed var(--line);
+	border-radius: 12px;
+}
+.skm-empty-path { display: block; margin-top: 4px; font: 11.5px/1.4 var(--mono); overflow-wrap: anywhere; }
+
 .settings-about-row {
 	display: flex;
 	align-items: baseline;
@@ -782,6 +847,8 @@ export function init(ctx) {
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 13V8M8 13V3.5M13 13V6.5"/></svg>',
 		extensions:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2.2"/><path d="M6.4 6.4h3.2v3.2H6.4Z"/></svg>',
+		skillmcp:
+			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 2 7.05 4.35 9.4 5.2 7.05 6.05 6.2 8.4 5.35 6.05 3 5.2 5.35 4.35Z"/><rect x="8.3" y="8.3" width="5.2" height="5.2" rx="1.3"/></svg>',
 		about:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="8" cy="8" r="5.4"/><path d="M8 7.2v3.9M8 5.2h.01"/></svg>',
 		quick:
@@ -1453,6 +1520,284 @@ export function init(ctx) {
 	extNote.hidden = true;
 	secExt.append(extNote);
 
+	// ---------- 5b. 技能与 MCP ----------
+	pane("skillmcp", "技能与 MCP");
+
+	const MCP_EXPOSURES = ["codemode", "deferred", "direct", "hidden"];
+	const MCP_ADD = { add: true }; // "添加"表单的哨兵键，与服务名（字符串）不会相等
+	let skillData = null;
+	let skillErr = "";
+	let skillLoading = false;
+	let mcpData = null;
+	let mcpErr = "";
+	let mcpLoading = false;
+	let mcpOpen = null; // 同时只展开一个编辑器：服务名 / MCP_ADD / null
+
+	// --- 技能（只读）---
+	const skillRefresh = el("button", "settings-refresh", "刷新");
+	skillRefresh.type = "button";
+	skillRefresh.title = "重新读取 ~/.pi/agent/skills";
+	skillRefresh.setAttribute("aria-label", "刷新技能");
+	skillRefresh.onclick = () => loadSkills(true);
+	const secSkills = section("技能", skillRefresh);
+	secSkills.append(el("div", "settings-hint", "技能目录由 pi 自动加载；增删目录后重启 pi 生效"));
+	const skillList = el("div", "skm-list skm-skills");
+	secSkills.append(skillList);
+	const skillNote = el("div", "settings-note");
+	skillNote.hidden = true;
+	secSkills.append(skillNote);
+
+	// --- MCP 服务（可编辑）---
+	const mcpRefresh = el("button", "settings-refresh", "刷新");
+	mcpRefresh.type = "button";
+	mcpRefresh.title = "重新读取 ~/.pi/agent/mcp.json";
+	mcpRefresh.setAttribute("aria-label", "刷新 MCP 服务");
+	mcpRefresh.onclick = () => loadMcp(true);
+	const mcpAddBtn = actionBtn("添加", () => {
+		mcpOpen = mcpOpen === MCP_ADD ? null : MCP_ADD;
+		renderMcp();
+	});
+	const mcpActions = el("div", "skm-actions");
+	mcpActions.append(mcpRefresh, mcpAddBtn);
+	const secMcp = section("MCP 服务", mcpActions);
+	const mcpList = el("div", "skm-list");
+	secMcp.append(mcpList);
+	const mcpNote = el("div", "settings-note");
+	mcpNote.hidden = true;
+	secMcp.append(mcpNote);
+	secMcp.append(el("div", "settings-hint", "写入前会备份 mcp.json；重启 pi 后生效"));
+
+	// args 数组 ↔ 单行文本：含空格的参数加双引号，主进程按同样的引号规则解析回来
+	const argsToText = (list) =>
+		(Array.isArray(list) ? list : []).map((a) => (/\s/.test(String(a)) ? `"${a}"` : String(a))).join(" ");
+
+	const mcpEditor = (seed, isNew) => {
+		const box = el("div", "skm-editor");
+		const note = el("div", "settings-note");
+		note.hidden = true;
+		const name = mkInput("settings-input", "服务名，字母或数字开头，可含 . _ -", seed.name || "");
+		const command = mkInput("settings-input", "npx / uvx / 可执行文件路径", seed.command || "");
+		const args = mkInput("settings-input", "空格分隔；含空格的参数用双引号包住", argsToText(seed.args));
+		const desc = mkInput("settings-input", "说明（可选）", seed.description || "");
+		let exposure = MCP_EXPOSURES.includes(seed.exposure) ? seed.exposure : "codemode";
+		const expSel = makeSelect(exposure, (anchor) =>
+			openMenu(
+				anchor,
+				MCP_EXPOSURES.map((k) => ({ key: k, label: k })),
+				exposure,
+				(item) => {
+					exposure = item.key;
+					expSel.text.textContent = item.key;
+				},
+			),
+		);
+		expSel.btn.classList.add("skm-select");
+		box.append(
+			field("名称", name),
+			field("命令", command),
+			field("参数", args),
+			field("说明", desc),
+			field("暴露方式", expSel.btn),
+			note,
+			saveBtnRow(
+				() => {
+					mcpOpen = null;
+					renderMcp();
+				},
+				async (btn) => {
+					btn.disabled = true;
+					btn.textContent = "保存中…";
+					note.hidden = true;
+					try {
+						await ctx.pi.saveMcp({
+							originalName: isNew ? "" : seed.name,
+							name: name.value.trim(),
+							command: command.value.trim(),
+							args: args.value.trim(),
+							description: desc.value.trim(),
+							exposure,
+						});
+						mcpOpen = null;
+						await loadMcp(true);
+						toast(isNew ? "MCP 服务已添加，重启 pi 后生效" : "MCP 服务已保存，重启 pi 后生效");
+					} catch (e) {
+						note.textContent = errText(e);
+						note.hidden = false;
+						btn.disabled = false;
+						btn.textContent = "保存";
+					}
+				},
+			),
+		);
+		return box;
+	};
+
+	function renderSkills() {
+		skillList.replaceChildren();
+		const items = skillData?.skills || [];
+		if (!items.length) {
+			const box = el("div", "skm-empty");
+			if (!skillData) {
+				box.append(el("span", null, skillErr ? "技能目录读取失败" : "读取中…"));
+			} else {
+				box.append(el("span", null, "~/.pi/agent/skills 下没有找到 SKILL.md"));
+				if (skillData.root) box.append(el("span", "skm-empty-path", skillData.root));
+			}
+			skillList.append(box);
+			return;
+		}
+		for (const s of items) {
+			const row = el("div", "skm-skill");
+			const main = el("div", "skm-main");
+			const name = el("span", "skm-name", s.name || "未命名");
+			name.title = s.name || "";
+			const desc = el("div", "skm-desc", s.description || "无描述");
+			desc.title = s.description || "";
+			main.append(name, desc);
+			const ctl = el("div", "skm-ctl");
+			const openBtn = actionBtn("打开", async () => {
+				try {
+					const ok = await ctx.pi.openPath(s.path);
+					if (ok === false) throw new Error("无法打开 SKILL.md");
+				} catch (e) {
+					toast(errText(e));
+				}
+			});
+			if (s.path) openBtn.title = s.path;
+			ctl.append(openBtn);
+			row.append(main, ctl);
+			skillList.append(row);
+		}
+	}
+
+	async function loadSkills(force) {
+		if (skillLoading) return;
+		if (skillData && !force) return;
+		skillLoading = true;
+		skillRefresh.disabled = true;
+		skillRefresh.textContent = "读取中";
+		try {
+			const d = await ctx.pi.listSkills();
+			skillData = {
+				root: String(d?.root || ""),
+				skills: Array.isArray(d?.skills) ? d.skills : [],
+			};
+			skillErr = "";
+			skillNote.hidden = true;
+		} catch (e) {
+			skillErr = brief(e);
+			skillNote.textContent = skillErr;
+			skillNote.hidden = false;
+		} finally {
+			skillLoading = false;
+			skillRefresh.disabled = false;
+			skillRefresh.textContent = "刷新";
+		}
+		renderSkills();
+	}
+
+	function renderMcp() {
+		mcpList.replaceChildren();
+		const items = mcpData?.servers || [];
+		if (!items.length && mcpOpen !== MCP_ADD) {
+			const box = el("div", "skm-empty");
+			if (!mcpData) box.append(el("span", null, mcpErr ? "mcp.json 读取失败" : "读取中…"));
+			else box.append(el("span", null, "mcp.json 里还没有 MCP 服务"));
+			mcpList.append(box);
+		}
+		for (const s of items) {
+			const card = el("div", "skm-card");
+			const head = el("div", "skm-head");
+			const main = el("div", "skm-main");
+			const title = el("div", "skm-title");
+			title.append(el("span", "skm-name", s.name), el("span", "skm-tag", s.exposure || "codemode"));
+			const parts = [s.command || "", ...(Array.isArray(s.args) ? s.args : [])].filter(Boolean);
+			const cmdText = parts.join(" ") || "（未设置 command）";
+			const cmd = el("div", "skm-cmd", cmdText);
+			cmd.title = cmdText;
+			const desc = el("div", "skm-desc", s.description || "无描述");
+			desc.title = s.description || "";
+			main.append(title, cmd, desc);
+
+			const ctl = el("div", "skm-ctl");
+			ctl.append(
+				actionBtn("编辑", () => {
+					mcpOpen = mcpOpen === s.name ? null : s.name;
+					renderMcp();
+				}),
+			);
+			const del = el("button", "settings-btn", "删除");
+			del.type = "button";
+			let armedDel = false;
+			let delTimer = 0;
+			const disarmDel = () => {
+				if (delTimer) clearTimeout(delTimer);
+				delTimer = 0;
+				armedDel = false;
+				del.textContent = "删除";
+				del.classList.remove("is-armed");
+			};
+			del.onclick = async () => {
+				if (!armedDel) {
+					armedDel = true;
+					del.textContent = "确认删除";
+					del.classList.add("is-armed");
+					delTimer = setTimeout(disarmDel, 3000);
+					return;
+				}
+				disarmDel();
+				del.disabled = true;
+				try {
+					await ctx.pi.deleteMcp(s.name);
+					if (mcpOpen === s.name) mcpOpen = null;
+					await loadMcp(true);
+					toast("MCP 服务已删除");
+				} catch (e) {
+					del.disabled = false;
+					mcpNote.textContent = errText(e);
+					mcpNote.hidden = false;
+				}
+			};
+			ctl.append(del);
+			head.append(main, ctl);
+			card.append(head);
+			if (mcpOpen === s.name) card.append(mcpEditor(s, false));
+			mcpList.append(card);
+		}
+		if (mcpOpen === MCP_ADD) {
+			const card = el("div", "skm-card skm-add");
+			card.append(mcpEditor({ name: "", command: "", args: [], description: "", exposure: "codemode" }, true));
+			mcpList.append(card);
+		}
+	}
+
+	async function loadMcp(force) {
+		if (mcpLoading) return;
+		if (mcpData && !force) return;
+		mcpLoading = true;
+		mcpRefresh.disabled = true;
+		mcpRefresh.textContent = "读取中";
+		try {
+			const d = await ctx.pi.listMcp();
+			mcpData = {
+				path: String(d?.path || ""),
+				servers: Array.isArray(d?.servers) ? d.servers : [],
+			};
+			mcpOpen = null; // 重读后旧编辑器可能指向已改名/删除的服务，不留下半截草稿
+			mcpErr = "";
+			mcpNote.hidden = true;
+		} catch (e) {
+			mcpErr = brief(e);
+			mcpNote.textContent = mcpErr;
+			mcpNote.hidden = false;
+		} finally {
+			mcpLoading = false;
+			mcpRefresh.disabled = false;
+			mcpRefresh.textContent = "刷新";
+		}
+		renderMcp();
+	}
+
 	// ---------- 6. 关于 ----------
 	pane("about", "关于");
 	const secAbout = section("关于");
@@ -1824,7 +2169,15 @@ export function init(ctx) {
 		overlay.hidden = false;
 		gear.setAttribute("aria-expanded", "true");
 		dialog.focus();
-		return Promise.allSettled([loadState(), fetchStats(), loadExtensions(false), loadAppInfo(), loadProviders(false)]);
+		return Promise.allSettled([
+			loadState(),
+			fetchStats(),
+			loadExtensions(false),
+			loadSkills(false),
+			loadMcp(false),
+			loadAppInfo(),
+			loadProviders(false),
+		]);
 	}
 
 	function closeDialog() {
@@ -2028,7 +2381,15 @@ export function init(ctx) {
 	window.__piSettingsDemo = () => {
 		if (overlay.hidden) return openDialog().then(() => true);
 		menuSeq++;
-		return Promise.allSettled([loadState(), fetchStats(), loadExtensions(false), loadAppInfo(), loadProviders(false)]).then(() => true);
+		return Promise.allSettled([
+			loadState(),
+			fetchStats(),
+			loadExtensions(false),
+			loadSkills(false),
+			loadMcp(false),
+			loadAppInfo(),
+			loadProviders(false),
+		]).then(() => true);
 	};
 
 	render();

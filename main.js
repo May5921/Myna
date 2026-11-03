@@ -600,6 +600,140 @@ ipcMain.handle("pi:delete-provider", async (_e, keyRaw) => {
 	return { ok: true, path: MODELS_JSON };
 });
 
+// ---------- 技能与 MCP（~/.pi/agent/skills、~/.pi/agent/mcp.json）----------
+const SKILLS_ROOT = join(homedir(), ".pi", "agent", "skills");
+const MCP_JSON = join(homedir(), ".pi", "agent", "mcp.json");
+const MCP_EXPOSURES = new Set(["codemode", "deferred", "direct", "hidden"]);
+
+function readJsonAny(file) {
+	let text = "";
+	let raw = null;
+	try {
+		text = readFileSync(file, "utf8");
+		raw = JSON.parse(text);
+	} catch {}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) raw = {};
+	return { raw, text };
+}
+
+function writeJsonAny(file, raw, previous) {
+	if (previous) {
+		try {
+			const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+			writeFileSync(`${file}.bak-${stamp}`, previous, "utf8");
+		} catch {}
+	}
+	const tmp = `${file}.tmp-${process.pid}`;
+	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+	renameSync(tmp, file);
+}
+
+// SKILL.md 的 YAML frontmatter 只取 name/description；没有 frontmatter 时退回目录名
+function readSkillMeta(dir, dirName) {
+	let text = "";
+	try {
+		text = readFileSync(join(dir, "SKILL.md"), "utf8");
+	} catch {
+		return null;
+	}
+	let name = dirName;
+	let description = "";
+	const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+	if (m) {
+		for (const line of m[1].split(/\r?\n/)) {
+			const kv = /^([A-Za-z_-]+):\s*(.*)$/.exec(line);
+			if (!kv) continue;
+			const key = kv[1].toLowerCase();
+			let value = kv[2].trim().replace(/^["']|["']$/g, "");
+			if (key === "name" && value) name = value;
+			if (key === "description" && value) description = value;
+		}
+	}
+	if (!description) {
+		const body = text.replace(/^---[\s\S]*?---/, "").trim();
+		const first = body.split(/\r?\n/).find((l) => l.trim().startsWith("#"));
+		if (first) description = first.replace(/^#+\s*/, "").trim();
+	}
+	if (description.length > 200) description = `${description.slice(0, 200)}…`;
+	return { name, description, path: join(dir, "SKILL.md") };
+}
+
+ipcMain.handle("pi:list-skills", async () => {
+	let names = [];
+	try {
+		names = readdirSync(SKILLS_ROOT, { withFileTypes: true })
+			// 技能目录常是 junction/symlink（withFileTypes 会报 isSymbolicLink、isDirectory=false），
+			// 因此再 stat 一次确认真是目录。
+			.filter((d) => {
+				if (d.name.startsWith(".")) return false;
+				if (d.isDirectory()) return true;
+				if (!d.isSymbolicLink()) return false;
+				try {
+					return statSync(join(SKILLS_ROOT, d.name)).isDirectory();
+				} catch {
+					return false;
+				}
+			})
+			.map((d) => d.name);
+	} catch {}
+	const skills = [];
+	for (const n of names.sort((a, b) => a.localeCompare(b))) {
+		const meta = readSkillMeta(join(SKILLS_ROOT, n), n);
+		if (meta) skills.push(meta);
+	}
+	return { root: SKILLS_ROOT, skills };
+});
+
+ipcMain.handle("pi:list-mcp", async () => {
+	const { raw, text } = readJsonAny(MCP_JSON);
+	const servers = Object.entries(raw.mcpServers || {}).map(([name, cfg]) => ({
+		name,
+		description: String(cfg?.description || ""),
+		command: String(cfg?.command || ""),
+		args: Array.isArray(cfg?.args) ? cfg.args.map(String) : [],
+		exposure: String(cfg?.exposure || "codemode"),
+		toolExposure: cfg?.toolExposure && typeof cfg.toolExposure === "object" ? cfg.toolExposure : {},
+	}));
+	return { path: MCP_JSON, text, servers };
+});
+
+ipcMain.handle("pi:save-mcp", async (_e, input) => {
+	const name = String(input?.name || "").trim();
+	const original = String(input?.originalName || "").trim();
+	const command = String(input?.command || "").trim();
+	const exposure = String(input?.exposure || "codemode").trim();
+	const argsRaw = input?.args;
+	const args = (Array.isArray(argsRaw) ? argsRaw : String(argsRaw || "").match(/[^\s"]+|"[^"]*"/g) || []).map((a) =>
+		String(a).replace(/^"|"$/g, ""),
+	);
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error("名称只能包含字母、数字、点、下划线、短横线");
+	if (!command) throw new Error("command 不能为空");
+	if (!MCP_EXPOSURES.has(exposure)) throw new Error("不支持的 exposure");
+	const { raw, text } = readJsonAny(MCP_JSON);
+	if (!raw.mcpServers || typeof raw.mcpServers !== "object") raw.mcpServers = {};
+	if (original && original !== name && raw.mcpServers[original]) {
+		raw.mcpServers[name] = raw.mcpServers[original];
+		delete raw.mcpServers[original];
+	}
+	const prev = raw.mcpServers[name] || {};
+	const next = { ...prev, command, args, description: String(input?.description || "").trim(), exposure };
+	if (next.toolExposure && !Object.keys(next.toolExposure).length) delete next.toolExposure;
+	raw.mcpServers[name] = next;
+	writeJsonAny(MCP_JSON, raw, text);
+	log("[mcp] saved", name);
+	return { ok: true, path: MCP_JSON };
+});
+
+ipcMain.handle("pi:delete-mcp", async (_e, nameRaw) => {
+	const name = String(nameRaw || "").trim();
+	const { raw, text } = readJsonAny(MCP_JSON);
+	if (!raw.mcpServers?.[name]) throw new Error(`MCP 服务「${name}」不存在`);
+	delete raw.mcpServers[name];
+	writeJsonAny(MCP_JSON, raw, text);
+	log("[mcp] deleted", name);
+	return { ok: true, path: MCP_JSON };
+});
+
 // ---------- 终端（非 PTY：一次执行一条命令，流式回传）----------
 let termSeq = 0;
 const termRuns = new Map();
@@ -1014,7 +1148,7 @@ function startDevWatch() {
 						log("[dev] tps failed", e.message);
 					}
 				}
-				// 清掉上一张截图留下的 demo 状态（设置弹窗 / 排队 / 附件 / 右栏）
+				// 清掉上一张截图留下的 demo 状态（设置弹窗 / 排队 / 附件 / 右栏 / 终端）
 				try {
 					await win.webContents.executeJavaScript(`(() => {
 						const ov = document.querySelector(".settings-overlay");
@@ -1023,6 +1157,7 @@ function startDevWatch() {
 						if (window.__piAttachClear) window.__piAttachClear();
 						const t = document.getElementById("rp-toggle");
 						if (t && t.getAttribute("aria-expanded") === "true") t.click();
+						if (window.__piTermAPI?.isOpen && window.__piTermAPI.isOpen()) window.__piTermToggle?.();
 					})()`);
 				} catch {}
 				if (want.includes("old")) {
@@ -1296,6 +1431,10 @@ function startDevWatch() {
 							return started;
 						})()`);
 						await new Promise((r) => setTimeout(r, 800));
+						await win.webContents.executeJavaScript(`(() => {
+							const rows = [...document.querySelectorAll(".row.assistant")];
+							rows[rows.length - 1]?.scrollIntoView({ block: "end" });
+						})()`);
 						const counts = await win.webContents.executeJavaScript(
 							`JSON.stringify({settled: ${JSON.stringify(settled)}, rows: document.querySelectorAll(".row").length, tools: document.querySelectorAll(".tool").length})`,
 						);
