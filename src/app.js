@@ -1066,16 +1066,44 @@ function timeDivider(ts) {
 	return el;
 }
 
+const HISTORY_PAGE = 80;
+
 function renderHistory(messages) {
 	clearStream();
 	const visible = messages.filter((m) => m.role !== "system");
-	if (!visible.length) {
+	state.historyAll = visible;
+	state.historyShown = Math.min(visible.length, HISTORY_PAGE);
+	paintHistory(false);
+}
+
+function paintHistory(keepAnchor) {
+	const all = state.historyAll || [];
+	if (!all.length) {
+		state.historyAll = null;
 		emptyHint();
 		return;
 	}
+	const shown = Math.min(all.length, state.historyShown || HISTORY_PAGE);
+	// 从整轮起点开始渲染，避免把一条 user 消息和它的工具结果截断
+	let from = Math.max(0, all.length - Math.max(shown, 1));
+	while (from > 0 && all[from].role !== "user") from--;
+	const prevH = stream.scrollHeight;
+	const prevTop = stream.scrollTop;
+	stream.replaceChildren();
+	if (from > 0) {
+		const more = document.createElement("button");
+		more.type = "button";
+		more.className = "history-more";
+		more.textContent = `加载更早的消息（还有 ${from} 条）`;
+		more.addEventListener("click", () => {
+			state.historyShown = all.length - from + HISTORY_PAGE;
+			paintHistory(true);
+		});
+		stream.append(more);
+	}
 	const toolRows = new Map();
 	let lastTs = 0;
-	for (const m of visible) {
+	for (const m of all.slice(from)) {
 		if (m.role === "user" && m.timestamp) {
 			// 超过 10 分钟或跨天就插一条时间分隔
 			if (!lastTs || Math.abs(new Date(m.timestamp) - new Date(lastTs)) > 600000) {
@@ -1120,11 +1148,18 @@ function renderHistory(messages) {
 			}
 		}
 	}
-	stickBottom = true;
-	follow();
+	if (keepAnchor) {
+		stickBottom = false;
+		stream.scrollTop = prevTop + (stream.scrollHeight - prevH);
+	} else {
+		stickBottom = true;
+		follow();
+	}
 	applyHighlight(stream);
 }
 
+// 开发/截图钩子：用合成消息压测历史渲染与分页
+window.__piRenderHistory = renderHistory;
 const FOLDER_ICON =
 	'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.6c0-.6.5-1 1-1h3l1.4 1.6H13c.6 0 1 .5 1 1v5.8c0 .6-.4 1-1 1H3c-.5 0-1-.4-1-1V4.6Z" stroke-linejoin="round"/></svg>';
 const PLUS_ICON =

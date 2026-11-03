@@ -1302,6 +1302,20 @@
 				color: var(--faint);
 				font-size: 12px;
 			}
+			.history-more {
+				display: block;
+				margin: 4px auto 18px;
+				padding: 4px 12px;
+				border: 1px solid var(--line);
+				border-radius: 999px;
+				background: var(--bg);
+				color: var(--dim);
+				font-size: 12px;
+			}
+			.history-more:hover {
+				color: var(--text);
+				background: var(--hover);
+			}
 			.err {
 				color: var(--err);
 				font: 12.2px/1.6 var(--mono);
