@@ -2,8 +2,9 @@
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync } from "node:fs";
-import { join, sep, resolve, extname, basename } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, mkdirSync } from "node:fs";
+import { join, sep, resolve, extname, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -146,6 +147,7 @@ function onData(chunk) {
 
 function startPi(cwd, sessionFile = null) {
 	stopPi();
+	stopSide();
 	const cli = resolvePiCli();
 	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
 	const resume = sessionFile && existsSync(sessionFile) ? sessionFile : null;
@@ -821,6 +823,141 @@ ipcMain.handle("pi:term-kill", async (_e, runIdRaw) => {
 	return { ok: true };
 });
 
+// ---------- 侧边对话：第二个 pi RPC 子进程，独立 session，不干扰主对话 ----------
+let sideChild = null;
+let sideBuffer = "";
+let sideSeq = 0;
+const sideWaiting = new Map();
+
+function sideSessionPath() {
+	const hash = createHash("sha1").update(String(currentCwd)).digest("hex").slice(0, 12);
+	return join(app.getPath("userData"), "side", `side-${hash}.jsonl`);
+}
+
+function stopSide() {
+	const proc = sideChild;
+	sideChild = null;
+	sideBuffer = "";
+	for (const w of sideWaiting.values()) {
+		try {
+			w.reject(new Error("侧边对话已停止"));
+		} catch {}
+	}
+	sideWaiting.clear();
+	if (proc) {
+		try {
+			proc.kill();
+		} catch {}
+	}
+}
+
+function ensureSide() {
+	if (sideChild) return;
+	const cli = resolvePiCli();
+	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
+	const file = sideSessionPath();
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+	} catch {}
+	const args = [cli, "--mode", "rpc"];
+	const resume = existsSync(file);
+	if (resume) args.push("--session", file);
+	const proc = spawn("node", args, {
+		cwd: currentCwd,
+		stdio: ["pipe", "pipe", "pipe"],
+		windowsHide: true,
+		env: { ...process.env },
+	});
+	sideChild = proc;
+	sideBuffer = "";
+	log("[side] spawn", resume ? "resume" : "new", file);
+	proc.stdout.setEncoding("utf8");
+	proc.stdin.on("error", () => {});
+	proc.stdout.on("data", (chunk) => {
+		if (sideChild !== proc) return;
+		sideBuffer += chunk;
+		let i;
+		while ((i = sideBuffer.indexOf("\n")) >= 0) {
+			let line = sideBuffer.slice(0, i);
+			sideBuffer = sideBuffer.slice(i + 1);
+			if (line.endsWith("\r")) line = line.slice(0, -1);
+			if (!line.trim()) continue;
+			let rec;
+			try {
+				rec = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			if (rec.type === "response") {
+				const w = sideWaiting.get(rec.id);
+				if (!w) continue;
+				sideWaiting.delete(rec.id);
+				if (rec.success) w.resolve(rec.data ?? {});
+				else w.reject(new Error(rec.error || "命令失败"));
+			} else {
+				send("pi:side-event", rec);
+			}
+		}
+	});
+	proc.stderr.setEncoding("utf8");
+	proc.stderr.on("data", (d) => log("[side stderr]", String(d).trim()));
+	proc.on("error", (err) => log("[side error]", err.message));
+	proc.on("exit", (code) => {
+		if (sideChild === proc) sideChild = null;
+		for (const w of sideWaiting.values()) {
+			try {
+				w.reject(new Error("侧边对话已退出"));
+			} catch {}
+		}
+		sideWaiting.clear();
+		send("pi:side-event", { type: "side_exit", code: Number.isFinite(code) ? code : null });
+	});
+}
+
+function sideCommand(cmd, timeoutMs = 120000) {
+	ensureSide();
+	const id = `s${++sideSeq}`;
+	const proc = sideChild;
+	return new Promise((resolveCmd, reject) => {
+		const timer = setTimeout(() => {
+			sideWaiting.delete(id);
+			reject(new Error("侧边对话超时"));
+		}, timeoutMs);
+		sideWaiting.set(id, {
+			resolve: (v) => {
+				clearTimeout(timer);
+				resolveCmd(v);
+			},
+			reject: (e) => {
+				clearTimeout(timer);
+				reject(e);
+			},
+		});
+		try {
+			proc.stdin.write(JSON.stringify({ id, ...cmd }) + "\n");
+		} catch {
+			sideWaiting.delete(id);
+			clearTimeout(timer);
+			reject(new Error("侧边对话未就绪"));
+		}
+	});
+}
+
+ipcMain.handle("pi:side-command", async (_e, cmd) => {
+	if (!cmd || typeof cmd !== "object") return false;
+	// prompt 的 response 要等整轮结束才回，先 ack，正文走 pi:side-event
+	sideCommand(cmd).catch((e) => send("pi:side-event", { type: "side_error", message: e.message }));
+	return true;
+});
+
+ipcMain.handle("pi:side-reset", async () => {
+	stopSide();
+	try {
+		unlinkSync(sideSessionPath());
+	} catch {}
+	return true;
+});
+
 // ---------- IPC ----------
 let restorePending = process.env.PI_MINI_SESSION || null;
 let relaunching = false;
@@ -1046,9 +1183,9 @@ ipcMain.handle("pi:highlight", async (_e, items) => {
 });
 
 ipcMain.handle("pi:read-file", async (_e, filePath) => {
+	// 右栏预览只允许当前工作区内的文件（和文件树同一范围）；工作区外交给系统程序打开。
 	const root = realpathSync(currentCwd);
-	const full = resolve(String(filePath || ""));
-	const real = realpathSync(full);
+	const real = realpathSync(resolve(String(filePath || "")));
 	if (real !== root && !real.startsWith(root + sep)) throw new Error("文件不在当前工作区");
 	const st = statSync(real);
 	const base = { path: real, name: basename(real), size: st.size };
@@ -1486,11 +1623,12 @@ function startDevWatch() {
 					}
 				}
 				if (want.includes("linkprev")) {
+					const target = "D:/fangzi/package.json";
 					const info = await win.webContents.executeJavaScript(`(async () => {
 						const a = document.createElement("span");
 						a.className = "flink";
-						a.dataset.path = "D:/fangzi/package.json";
-						a.textContent = "package.json";
+						a.dataset.path = ${JSON.stringify(target)};
+						a.textContent = "file";
 						document.querySelector("#stream").append(a);
 						a.click();
 						await new Promise((r) => setTimeout(r, 1800));
@@ -1585,6 +1723,78 @@ function startDevWatch() {
 						}
 					} catch (e) {
 						log("[dev] resumecheck failed", e.message);
+					}
+				}
+				if (want.includes("browsertab")) {
+					try {
+						const r = await win.webContents.executeJavaScript(
+							`(async () => {
+								const toggle = document.getElementById("rp-toggle");
+								if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+								document.getElementById("rp-tab-browser")?.click();
+								await new Promise(r => setTimeout(r, 150));
+								const input = document.querySelector(".rp-url");
+								if (!input) return JSON.stringify({ err: "no url bar" });
+								input.value = "file:///C:/Windows/win.ini";
+								input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+								await new Promise(r => setTimeout(r, 100));
+								const blocked = (document.querySelector(".rp-bnote")?.textContent || "");
+								input.value = "http://127.0.0.1:58133/";
+								input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+								const t0 = Date.now();
+								let wvUrl = "";
+								while (Date.now() - t0 < 6000) {
+									const wv = document.querySelector("webview");
+									try {
+										wvUrl = wv?.getURL?.() || "";
+									} catch {}
+									if (wvUrl) break;
+									await new Promise(r => setTimeout(r, 150));
+								}
+								const wv = document.querySelector("webview");
+								let wvUrl2 = "";
+								try {
+									wvUrl2 = wv?.getURL?.() || "";
+								} catch {}
+								return JSON.stringify({ hasWv: !!wv, blocked, url: wvUrl2, note: document.querySelector(".rp-bnote")?.textContent || "" });
+							})()`,
+						);
+						log("[dev] browsertab", r);
+					} catch (e) {
+						log("[dev] browsertab failed", e.message);
+					}
+				}
+				if (want.includes("sidechat")) {
+					try {
+						const r = await win.webContents.executeJavaScript(
+							`(async () => {
+								const toggle = document.getElementById("rp-toggle");
+								if (toggle?.getAttribute("aria-expanded") !== "true") toggle?.click();
+								document.getElementById("rp-tab-chat")?.click();
+								await new Promise(r => setTimeout(r, 150));
+								const input = document.querySelector(".rp-chat-input");
+								const send = document.querySelector(".rp-chat-send");
+								if (!input || !send) return JSON.stringify({ err: "no chat ui" });
+								input.value = "只回复两个字：你好";
+								input.dispatchEvent(new Event("input", { bubbles: true }));
+								await new Promise(r => setTimeout(r, 80));
+								send.click();
+								const t0 = Date.now();
+								while (Date.now() - t0 < 45000) {
+									const st = document.querySelector(".rp-chat-state")?.textContent || "";
+									if (st === "就绪" || st.includes("退出")) break;
+									await new Promise(r => setTimeout(r, 250));
+								}
+								return JSON.stringify({
+									state: document.querySelector(".rp-chat-state")?.textContent,
+									width: getComputedStyle(document.documentElement).getPropertyValue("--rp-w").trim(),
+									msgs: [...document.querySelectorAll(".rp-chat-log .rp-msg")].map(m => ({ cls: m.className, text: (m.innerText || "").slice(0, 120) })),
+								});
+							})()`,
+						);
+						log("[dev] sidechat", r);
+					} catch (e) {
+						log("[dev] sidechat failed", e.message);
 					}
 				}
 				if (want.includes("think")) {
@@ -1900,6 +2110,7 @@ function createWindow() {
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: false,
+			webviewTag: true, // 右栏浏览器用 <webview>，只允许 http(s)
 		},
 	});
 	// 记住窗口几何（拖动/缩放/最大化后 400ms 落盘）

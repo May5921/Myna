@@ -17,7 +17,11 @@ const TABS = [
 	{ key: "files", label: "文件" },
 	{ key: "changes", label: "变更" },
 	{ key: "tree", label: "会话" },
+	{ key: "browser", label: "浏览器" },
+	{ key: "chat", label: "对话" },
 ];
+
+const LOADABLE = new Set(["files", "changes", "tree"]);
 
 const MAX_SUMMARY = 40; // 会话节点摘要字数
 const MAX_DIFF_LINES = 400; // 单个 diff 最多渲染行数
@@ -283,6 +287,15 @@ body.rp-resizing .rp-panel { transition: none; }
 	padding: 4px 4px 10px;
 }
 .rp-pane[hidden] { display: none; }
+
+/* 对话 / 浏览器要占满抽屉高度，自带内部滚动；文件和变更保持块级滚动 */
+#rp-pane-chat:not([hidden]),
+#rp-pane-browser:not([hidden]) {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	padding: 0;
+}
 
 .rp-row {
 	display: flex;
@@ -592,6 +605,63 @@ body.rp-resizing .rp-panel { transition: none; }
 	.rp-retry,
 	.rp-refresh { transition: none; }
 }
+
+/* 浏览器 tab */
+.rp-browser { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.rp-bbar { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex: none; }
+.rp-bbtn { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--faint); flex: none; }
+.rp-bbtn:hover { background: var(--hover); color: var(--text); }
+.rp-bbtn:disabled { opacity: .35; cursor: default; }
+.rp-url { flex: 1; min-width: 0; height: 26px; border: 1px solid var(--line); border-radius: 7px; padding: 0 8px; font: 12px/1.4 var(--mono); color: var(--text); background: var(--bg); }
+.rp-url:focus { outline: none; border-color: var(--faint); }
+.rp-bnote { display: none; padding: 6px 12px; font-size: 11.5px; color: var(--err); border-bottom: 1px solid var(--line); flex: none; }
+.rp-bnote.on { display: block; }
+.rp-bview { flex: 1; min-height: 0; display: flex; background: #fff; }
+.rp-bview webview { width: 100%; height: 100%; border: 0; display: inline-flex; }
+.rp-bempty { margin: auto; padding: 24px; text-align: center; font-size: 12px; color: var(--faint); }
+
+/* 侧边对话 tab */
+.rp-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--bg); }
+.rp-chat-head { flex: none; height: 38px; display: flex; align-items: center; gap: 7px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--line); }
+.rp-chat-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex: none; transition: background 120ms; }
+.rp-chat-dot.busy { background: #d9a53b; }
+.rp-chat-dot.err { background: var(--err); }
+.rp-chat-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.rp-chat-state { flex: 1; min-width: 0; font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-chat-reset { width: 26px; height: 26px; flex: none; border-radius: 6px; display: grid; place-items: center; color: var(--faint); }
+.rp-chat-reset:hover { background: var(--hover); color: var(--text); }
+.rp-chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 12px; }
+.rp-msg { max-width: 100%; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.rp-msg.user { align-self: flex-end; max-width: 84%; background: var(--user-bubble, #edf3fe); color: var(--text); padding: 7px 12px; border-radius: 14px; white-space: pre-wrap; }
+.rp-msg.bot { align-self: stretch; color: var(--text); }
+.rp-msg.bot .rp-md { font-size: 13px; line-height: 1.7; }
+.rp-md p { margin: 0 0 8px; }
+.rp-md p:last-child { margin-bottom: 0; }
+.rp-md ul, .rp-md ol { margin: 0 0 8px; padding-left: 20px; }
+.rp-md li + li { margin-top: 4px; }
+.rp-md pre { margin: 0 0 8px; padding: 10px 12px; border-radius: 8px; background: var(--code-bg, #f7f7f8); overflow-x: auto; font: 11.5px/1.6 var(--mono); }
+.rp-md code { font-family: var(--mono); font-size: 11.5px; }
+.rp-md :not(pre) > code { background: var(--hover); padding: 1px 4px; border-radius: 4px; }
+.rp-md table { border-collapse: collapse; font-size: 12px; margin: 0 0 8px; }
+.rp-md th, .rp-md td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.rp-caret { display: inline-block; width: 7px; height: 15px; margin-left: 1px; vertical-align: -2px; background: var(--text); opacity: .75; animation: rp-blink 1s steps(2, start) infinite; }
+@keyframes rp-blink { to { opacity: 0; } }
+.rp-act { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); }
+.rp-act::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--faint); flex: none; }
+.rp-msg.sys { font-size: 11.5px; color: var(--err); padding: 0 2px; }
+.rp-chat-empty { margin: auto; padding: 30px 22px; text-align: center; color: var(--faint); }
+.rp-chat-empty b { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; color: var(--dim); }
+.rp-chat-empty span { font-size: 12px; line-height: 1.7; }
+.rp-chat-bar { flex: none; padding: 8px 12px 10px; border-top: 1px solid var(--line); }
+.rp-chat-box { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--line); border-radius: 14px; padding: 7px 7px 7px 12px; background: var(--bg); }
+.rp-chat-box:focus-within { border-color: var(--line-strong, #d9d9d9); }
+.rp-chat-input { flex: 1; min-width: 0; min-height: 22px; max-height: 120px; resize: none; border: 0; padding: 2px 0; font: 13px/1.55 var(--ui); color: var(--text); background: transparent; }
+.rp-chat-input:focus { outline: none; }
+.rp-chat-send { width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--text); color: var(--bg); }
+.rp-chat-send:disabled { opacity: .28; }
+.rp-chat-send.stop { background: var(--err); }
+.rp-chat-foot { display: flex; align-items: center; gap: 8px; padding: 6px 2px 0; font-size: 10.5px; color: var(--faint); }
+.rp-chat-foot .grow { flex: 1; }
 `;
 
 export function init(ctx) {
@@ -953,9 +1023,14 @@ export function init(ctx) {
 
 	// 点文件：在面板内打开只读预览；预览头部的按钮再用系统程序打开
 	async function openFile(relPath) {
-		const full = fullPathOf(relPath);
+		return openAbsolute(fullPathOf(relPath), String(relPath || "").split("/").pop());
+	}
+
+	// 绝对路径预览：工作区内外都走这里（聊天里的路径可能在工作区外）
+	async function openAbsolute(full, nameHint) {
 		const seq = ++previewSeq;
-		preview = { path: full, name: String(relPath || "").split("/").pop(), busy: true, error: "" };
+		const name = nameHint || String(full || "").split(/[\\/]/).pop();
+		preview = { path: full, name, busy: true, error: "" };
 		renderFiles();
 		try {
 			const res = await ctx.pi.readFile(full);
@@ -1454,6 +1529,386 @@ export function init(ctx) {
 		host.scrollTop = keep;
 	}
 
+	// ---------- 浏览器 ----------
+	const LS_BROWSER_URL = "pi-mini.browserUrl";
+	let browserUI = null;
+
+	function normalizeUrl(raw) {
+		let s = String(raw || "").trim();
+		if (!s) return null;
+		if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) {
+			const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i.test(s);
+			s = (isLocal ? "http://" : "https://") + s;
+		}
+		let u;
+		try {
+			u = new URL(s);
+		} catch {
+			return null;
+		}
+		if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+		return u.href;
+	}
+
+	function browserShowNote(text) {
+		if (!browserUI) return;
+		browserUI.note.textContent = text || "";
+		browserUI.note.classList.toggle("on", !!text);
+	}
+
+	function browserNavigate(raw) {
+		const url = normalizeUrl(raw);
+		if (!url) {
+			browserShowNote("只支持 http:// 和 https:// 地址");
+			return;
+		}
+		browserShowNote("");
+		browserUI.input.value = url;
+		try {
+			localStorage.setItem(LS_BROWSER_URL, url);
+		} catch {}
+		if (!browserUI.view) {
+			const view = document.createElement("webview");
+			view.setAttribute("partition", "persist:pi-mini-browser");
+			view.setAttribute("src", url);
+			view.addEventListener("did-navigate", (e) => {
+				browserUI.input.value = e.url;
+				try {
+					localStorage.setItem(LS_BROWSER_URL, e.url);
+				} catch {}
+			});
+			view.addEventListener("did-navigate-in-page", (e) => {
+				if (e.isMainFrame) browserUI.input.value = e.url;
+			});
+			view.addEventListener("did-fail-load", (e) => {
+				if (e.errorCode !== -3) browserShowNote(`加载失败：${e.errorDescription || e.errorCode}`);
+			});
+			browserUI.empty?.remove();
+			browserUI.empty = null;
+			browserUI.view = view;
+			browserUI.stage.append(view);
+		} else {
+			browserUI.view.setAttribute("src", url);
+		}
+	}
+
+	function renderBrowser() {
+		const host = pane.get("browser");
+		if (!browserUI) {
+			host.textContent = "";
+			const wrap = el("div", "rp-browser");
+			const bar = el("div", "rp-bbar");
+			const back = el("button", "rp-bbtn", "‹");
+			const fwd = el("button", "rp-bbtn", "›");
+			const reload = el("button", "rp-bbtn", "↻");
+			back.title = "后退";
+			fwd.title = "前进";
+			reload.title = "刷新";
+			back.onclick = () => {
+				try {
+					browserUI.view?.goBack();
+				} catch {}
+			};
+			fwd.onclick = () => {
+				try {
+					browserUI.view?.goForward();
+				} catch {}
+			};
+			reload.onclick = () => {
+				try {
+					browserUI.view?.reload();
+				} catch {}
+			};
+			const input = el("input", "rp-url");
+			input.type = "text";
+			input.spellcheck = false;
+			input.placeholder = "输入网址，Enter 打开（只支持 http/https）";
+			input.onkeydown = (e) => {
+				if (e.key === "Enter" && !e.isComposing) {
+					e.preventDefault();
+					browserNavigate(input.value);
+				}
+			};
+			const open = el("button", "rp-bbtn", "↗");
+			open.title = "在系统浏览器打开";
+			open.onclick = () => {
+				const url = normalizeUrl(input.value);
+				if (url) ctx.pi.openExternal?.(url);
+			};
+			const note = el("div", "rp-bnote");
+			const stage = el("div", "rp-bview");
+			bar.append(back, fwd, reload, input, open);
+			wrap.append(bar, note, stage);
+			host.append(wrap);
+			browserUI = { wrap, bar, back, fwd, reload, input, open, note, stage, view: null, empty: null };
+			let saved = "";
+			try {
+				saved = localStorage.getItem(LS_BROWSER_URL) || "";
+			} catch {}
+			if (saved) {
+				input.value = saved;
+				browserNavigate(saved);
+			} else {
+				const empty = el("div", "rp-bempty");
+				empty.textContent = "输入网址后按 Enter。浏览器与主界面隔离，只允许 http/https。";
+				stage.append(empty);
+				browserUI.empty = empty;
+			}
+		}
+		requestAnimationFrame(() => {
+			try {
+				browserUI.input.focus();
+			} catch {}
+		});
+	}
+
+	// ---------- 侧边对话 ----------
+	const CHAT_HINT = "独立的 pi 会话，不会打断主对话。可以问问题、读文件或跑命令。";
+	const SEND_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 12.5V3.5M8 3.5 4 7.5M8 3.5l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+	const STOP_ICON = `<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>`;
+	let chat = null;
+	let chatBound = false;
+	let chatWarm = false;
+
+	function chatAutosize() {
+		if (!chat) return;
+		chat.input.style.height = "auto";
+		chat.input.style.height = `${Math.min(120, chat.input.scrollHeight)}px`;
+	}
+
+	function chatEmptyHint() {
+		const empty = el("div", "rp-chat-empty");
+		const b = el("b", "", "侧边对话");
+		const s = el("span", "", CHAT_HINT);
+		empty.append(b, s);
+		return empty;
+	}
+
+	function chatNearBottom() {
+		if (!chat) return true;
+		return chat.log.scrollHeight - chat.log.scrollTop - chat.log.clientHeight < 60;
+	}
+
+	function chatScroll(force) {
+		if (!chat) return;
+		if (force || chatNearBottom()) chat.log.scrollTop = chat.log.scrollHeight;
+	}
+
+	function chatSetState(text, kind) {
+		if (!chat) return;
+		chat.state.textContent = text || "";
+		chat.dot.classList.toggle("busy", kind === "busy");
+		chat.dot.classList.toggle("err", kind === "err");
+	}
+
+	function chatRow(cls, text) {
+		const row = el("div", cls, text);
+		if (chat) {
+			chat.log.append(row);
+			chatScroll();
+		}
+		return row;
+	}
+
+	function chatActivity(text) {
+		chatRow("rp-act", text);
+	}
+
+	function chatWarmup() {
+		if (chatWarm) return;
+		chatWarm = true;
+		chatSetState("正在启动侧边会话…", "busy");
+		ctx.pi.sideCommand?.({ type: "get_state" })
+			.then(() => {
+				chatWarm = true;
+				if (chat && !chat.streaming) chatSetState("就绪", null);
+			})
+			.catch((e) => chatSetState(e?.message || "启动失败", "err"));
+	}
+
+	function chatSend() {
+		if (!chat || chat.streaming) return;
+		const text = chat.input.value.trim();
+		if (!text) return;
+		chat.input.value = "";
+		chat.input.style.height = "auto";
+		chat.empty?.remove();
+		chat.empty = null;
+		chatRow("rp-msg user", text);
+		const bot = el("div", "rp-msg bot");
+		const md = el("div", "rp-md");
+		const caret = el("span", "rp-caret");
+		bot.append(md, caret);
+		chat.log.append(bot);
+		chat.live = bot;
+		chat.liveMd = md;
+		chat.liveText = "";
+		chat.streaming = true;
+		chat.send.classList.add("stop");
+		chat.send.innerHTML = STOP_ICON;
+		chat.send.title = "停止";
+		chat.send.disabled = false;
+		chatSetState("思考中…", "busy");
+		chatWarmup();
+		chatScroll(true);
+		ctx.pi.sideCommand?.({ type: "prompt", message: text }).catch((e) => {
+			chat.streaming = false;
+			chat.send.classList.remove("stop");
+			chat.send.innerHTML = SEND_ICON;
+			chat.send.title = "发送";
+			chatSetState(e?.message || "发送失败", "err");
+			chatActivity("发送失败：" + (e?.message || "未知错误"));
+		});
+	}
+
+	function chatStop() {
+		if (!chat || !chat.streaming) return;
+		chatSetState("正在停止…", "busy");
+		ctx.pi.sideCommand?.({ type: "abort" }).catch(() => {});
+	}
+
+	function chatOnEvent(ev) {
+		if (!chat || !ev || typeof ev !== "object") return;
+		const a = ev.assistantMessageEvent;
+		if (ev.type === "agent_start") {
+			chatWarm = true;
+			chatSetState("思考中…", "busy");
+		} else if (ev.type === "message_update" && a?.type === "thinking_start") {
+			chatSetState("思考中…", "busy");
+		} else if (ev.type === "message_update" && a?.type === "text_delta") {
+			chat.liveText += a.delta;
+			if (chat.liveMd) chat.liveMd.textContent = chat.liveText;
+			chatSetState("生成中…", "busy");
+			chatScroll();
+		} else if (ev.type === "tool_execution_start") {
+			chatActivity(`运行 ${ev.toolName || "工具"}…`);
+			chatSetState("运行工具…", "busy");
+		} else if (ev.type === "tool_execution_end") {
+			chatActivity(`${ev.toolName || "工具"} ${ev.isError ? "失败" : "完成"}`);
+		} else if (ev.type === "message_end" && ev.message) {
+			const blocks = Array.isArray(ev.message.content) ? ev.message.content : [];
+			const text = blocks
+				.filter((b) => b && b.type === "text")
+				.map((b) => b.text)
+				.join("");
+			if (text) {
+				chat.liveText = text;
+				if (chat.liveMd) {
+					if (typeof ctx.md === "function") chat.liveMd.innerHTML = ctx.md(text);
+					else chat.liveMd.textContent = text;
+				}
+				chat.live?.querySelector(".rp-caret")?.remove();
+			}
+			chatScroll();
+		} else if (ev.type === "agent_settled") {
+			chat.streaming = false;
+			chat.send.classList.remove("stop");
+			chat.send.innerHTML = SEND_ICON;
+			chat.send.title = "发送";
+			chat.send.disabled = !chat.input.value.trim();
+			chatSetState("就绪", null);
+			if (chat.live && !chat.liveText.trim()) chat.live.remove();
+			chat.live = null;
+			chat.liveMd = null;
+			chat.liveText = "";
+			chatScroll();
+		} else if (ev.type === "side_exit") {
+			chat.streaming = false;
+			chat.send.classList.remove("stop");
+			chat.send.innerHTML = SEND_ICON;
+			chat.send.title = "发送";
+			chat.send.disabled = !chat.input.value.trim();
+			chatSetState("侧边会话已退出，下一条消息会重启", "err");
+		} else if (ev.type === "side_error") {
+			chatSetState(ev.message || "侧边对话出错", "err");
+			chatActivity(ev.message || "侧边对话出错");
+		}
+	}
+
+	function chatReset() {
+		ctx.pi.sideReset?.().catch(() => {});
+		if (!chat) return;
+		chat.streaming = false;
+		chat.live = null;
+		chat.liveMd = null;
+		chat.liveText = "";
+		chat.send.classList.remove("stop");
+		chat.send.innerHTML = SEND_ICON;
+		chat.send.title = "发送";
+		chat.log.textContent = "";
+		chat.empty = chatEmptyHint();
+		chat.log.append(chat.empty);
+		chatSetState("就绪", null);
+		chat.send.disabled = !chat.input.value.trim();
+		chatWarm = false;
+		chatWarmup();
+	}
+
+	function renderChat() {
+		if (chat) return;
+		const host = pane.get("chat");
+		host.textContent = "";
+		const wrap = el("div", "rp-chat");
+		const head = el("div", "rp-chat-head");
+		const dot = el("span", "rp-chat-dot");
+		dot.setAttribute("aria-hidden", "true");
+		const title = el("span", "rp-chat-title", "侧边对话");
+		const state = el("span", "rp-chat-state", "独立会话");
+		state.setAttribute("aria-live", "polite");
+		const reset = el("button", "rp-chat-reset", "↺");
+		reset.title = "清空侧边会话";
+		reset.setAttribute("aria-label", "清空侧边会话");
+		head.append(dot, title, state, reset);
+		const log = el("div", "rp-chat-log");
+		log.setAttribute("role", "log");
+		log.setAttribute("aria-live", "polite");
+		log.setAttribute("aria-label", "侧边对话消息");
+		const bar = el("div", "rp-chat-bar");
+		const box = el("div", "rp-chat-box");
+		const input = el("textarea", "rp-chat-input");
+		input.rows = 1;
+		input.placeholder = "问点什么…";
+		const send = el("button", "rp-chat-send");
+		send.innerHTML = SEND_ICON;
+		send.title = "发送";
+		send.setAttribute("aria-label", "发送");
+		send.disabled = true;
+		box.append(input, send);
+		const foot = el("div", "rp-chat-foot");
+		const hint = el("span", "", "Enter 发送 · Shift+Enter 换行");
+		foot.append(hint);
+		bar.append(box, foot);
+		wrap.append(head, log, bar);
+		host.append(wrap);
+		chat = {
+			wrap, head, dot, state, log, bar, input, send, reset,
+			messages: [], empty: null, live: null, liveMd: null, liveText: "", streaming: false,
+		};
+		chat.empty = chatEmptyHint();
+		log.append(chat.empty);
+		input.addEventListener("input", () => {
+			send.disabled = !input.value.trim() || chat.streaming;
+			chatAutosize();
+		});
+		input.addEventListener("keydown", (e) => {
+			if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+				e.preventDefault();
+				chatSend();
+			}
+		});
+		send.addEventListener("click", () => {
+			if (chat.streaming) chatStop();
+			else chatSend();
+		});
+		reset.onclick = chatReset;
+		if (!chatBound) {
+			chatBound = true;
+			ctx.pi.onSideEvent?.(chatOnEvent);
+		}
+		chatAutosize();
+		chatWarmup();
+	}
+
 	// ---------- 切换 / 开关 ----------
 	function render() {
 		for (const t of TABS) {
@@ -1469,7 +1924,9 @@ export function init(ctx) {
 		}
 		if (tab === "files") renderFiles();
 		else if (tab === "changes") renderChanges();
-		else renderTree();
+		else if (tab === "tree") renderTree();
+		else if (tab === "browser") renderBrowser();
+		else renderChat();
 	}
 
 	function setTab(key) {
@@ -1477,9 +1934,15 @@ export function init(ctx) {
 		if (tab !== key) {
 			tab = key;
 			writePref(LS_TAB, tab);
+			if (tab === "chat") ensureChatWidth();
 			render();
 		}
-		load(key);
+		if (LOADABLE.has(key)) load(key);
+	}
+
+	// 对话塞在 300px 抽屉里没法用：切到对话时至少给到 420px，用户仍可拖宽
+	function ensureChatWidth() {
+		if (width < 380) setWidth(420, false);
 	}
 
 	function setOpen(next) {
@@ -1501,6 +1964,7 @@ export function init(ctx) {
 		// 先 load 后 render：load 在 await 前就同步置 busy 并画出「读取中…」，
 		// 反过来会先闪一帧「还没加载」
 		load(tab, true);
+		if (tab === "chat") ensureChatWidth();
 		render();
 	}
 
@@ -1662,7 +2126,8 @@ export function init(ctx) {
 		const cwd = String(ctx.state?.cwd || data.files?.cwd || "").replace(/[\\/]+$/, "");
 		let p = String(inputPath || "").trim().replace(/\//g, "\\");
 		if (!p || !cwd) return false;
-		if (!/^[A-Za-z]:/.test(p)) p = `${cwd}\\${p.replace(/^\\+/, "")}`;
+		// 相对路径按当前工作区补全；绝对路径也必须在工作区内，否则交给系统程序
+		if (!/^[A-Za-z]:/.test(p) && !p.startsWith("\\\\")) p = `${cwd}\\${p.replace(/^\\+/, "")}`;
 		const base = cwd.replace(/\//g, "\\");
 		if (!p.toLowerCase().startsWith(`${base.toLowerCase()}\\`)) return false;
 		if (!open) setOpen(true);
