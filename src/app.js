@@ -27,6 +27,8 @@ const state = {
 	revealRaf: 0,
 	revealTick: 0,
 	revealFinal: null, // message_end 到达但文本还没吐完时暂存
+	liveTps: null, // 流式速度指示（tokens / t/s）
+	tpsTimer: 0,
 	tools: new Map(),
 };
 
@@ -35,6 +37,18 @@ const attachments = { get: () => [], clear: () => {} };
 
 // ---------- 文本工具 ----------
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// 吐字速度估算（对齐 pi-web MessageView）：CJK 约 1 token/字，其余约 4 字符/token
+const CJK_RE = /[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}\uac00-\ud7af]/u;
+function estimateTokens(text) {
+	let cjk = 0;
+	let rest = 0;
+	for (const ch of text) {
+		if (CJK_RE.test(ch)) cjk++;
+		else rest++;
+	}
+	return cjk + rest / 4;
+}
 
 // 极简 markdown：段落、列表、标题、代码块、行内代码/加粗。不做完整解析，够用即可。
 // 相对/绝对/Windows 盘符路径（对齐 DSH isExplicitFilePath）
@@ -264,6 +278,9 @@ function clearStream() {
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
+	if (state.tpsTimer) clearInterval(state.tpsTimer);
+	state.tpsTimer = 0;
+	state.liveTps = null;
 	stream.innerHTML = "";
 	state.live = null;
 	state.liveText = null;
@@ -310,12 +327,21 @@ function addAssistantRow() {
 	state.revealFinal = null;
 	const row = document.createElement("div");
 	row.className = "row assistant fresh";
+	const meta = document.createElement("div");
+	meta.className = "meta";
+	meta.hidden = true;
+	const tps = document.createElement("span");
+	tps.className = "tps";
+	meta.append(tps);
 	const body = document.createElement("div");
 	body.className = "body";
-	row.append(body);
+	row.append(meta, body);
 	stream.append(row);
 	state.live = { row, body };
 	state.liveRaw = "";
+	if (state.tpsTimer) clearInterval(state.tpsTimer);
+	state.liveTps = { box: meta, el: tps, start: 0 };
+	state.tpsTimer = setInterval(tpsTick, 300);
 	const tn = document.createTextNode("");
 	body.append(tn);
 	const caret = document.createElement("span");
@@ -368,10 +394,33 @@ function revealStep(now) {
 	}
 }
 
+// 流式速度指示：每 300ms 按已收文本估算 tokens 与 t/s（对齐 pi-web）
+function tpsTick() {
+	const st = state.liveTps;
+	if (!st || !state.liveText) return;
+	const tokens = estimateTokens(state.liveRaw);
+	if (!st.start) {
+		if (tokens < 1) return;
+		st.start = performance.now();
+		return;
+	}
+	const elapsed = (performance.now() - st.start) / 1000;
+	if (elapsed < 0.5) return;
+	const speed = tokens / elapsed;
+	st.el.textContent = `↓ ${Math.round(tokens)} · ${speed.toFixed(1)} t/s`;
+	st.el.style.background =
+		speed >= 50 ? "#53b3cb" : speed >= 30 ? "#9bc53d" : speed >= 15 ? "#f9c22e" : "#e01a4f";
+	st.box.hidden = false;
+}
+
 function finalizeAssistant(message) {
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
+	if (state.tpsTimer) clearInterval(state.tpsTimer);
+	state.tpsTimer = 0;
+	if (state.liveTps?.box) state.liveTps.box.hidden = true;
+	state.liveTps = null;
 	if (!state.live) return;
 	const body = state.live.body;
 	const text = blockText(message?.content ?? state.liveRaw);

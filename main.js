@@ -644,6 +644,40 @@ function startDevWatch() {
 						log("[dev] acts failed", e.message);
 					}
 				}
+				if (want.includes("tps")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "从 1 数到 200，每行一个数字，不要调用工具。";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+							return true;
+						})()`);
+						const samples = [];
+						for (let i = 0; i < 20; i++) {
+							await new Promise((r) => setTimeout(r, 200));
+							const st = await win.webContents.executeJavaScript(`(() => {
+								const el = document.querySelector(".row.assistant .tps");
+								return JSON.stringify({
+									streaming: !!document.querySelector(".caret"),
+									text: el?.textContent ?? "",
+									rows: document.querySelectorAll(".row").length,
+								});
+							})()`);
+							samples.push(JSON.parse(st));
+							if (samples[samples.length - 1].text) break;
+						}
+						log("[dev] tps", JSON.stringify(samples));
+						await win.webContents.executeJavaScript(`(() => {
+							const rows = [...document.querySelectorAll(".row.assistant")];
+							rows[rows.length - 1]?.scrollIntoView({ block: "start" });
+						})()`);
+						await new Promise((r) => setTimeout(r, 200));
+					} catch (e) {
+						log("[dev] tps failed", e.message);
+					}
+				}
 				// 清掉上一张截图留下的 demo 状态（设置弹窗 / 排队 / 附件 / 右栏）
 				try {
 					await win.webContents.executeJavaScript(`(() => {
