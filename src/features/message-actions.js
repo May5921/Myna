@@ -31,16 +31,13 @@ async function writeClipboard(text) {
 	}
 }
 
-// 复制用的正文：用户消息取气泡原文；助手消息剔除工具卡与代码块工具条，
+// 复制用的正文：用户消息取气泡原文；助手消息剔除工具卡、代码块工具条与思考块，
 // 否则 bash 输出、文件名、「复制」按钮文字都会混进剪贴板。
-function rowText(row) {
-	if (row.classList.contains("mine")) {
-		return (row.querySelector(":scope > .user")?.textContent ?? "").trim();
-	}
+function bodyText(row) {
 	const body = row.querySelector(":scope > .body");
 	if (!body) return "";
 	const clone = body.cloneNode(true);
-	clone.querySelectorAll(".tool, .codebar, .acts").forEach((n) => n.remove());
+	clone.querySelectorAll(".tool, .codebar, .acts, .think").forEach((n) => n.remove());
 	const host = document.createElement("div");
 	host.style.cssText = "position:fixed;top:0;left:-9999px;max-width:640px";
 	host.append(clone);
@@ -48,6 +45,33 @@ function rowText(row) {
 	const text = (clone.innerText || clone.textContent || "").trim();
 	host.remove();
 	return text;
+}
+
+// 一段消息（回合）的正文：从最近一条用户消息之后到本条为止的所有 assistant 段落。
+// 复制键只在回合尾部出现一个，所以复制内容也应该是整段回复，而不是最后一个分片。
+function turnText(row) {
+	if (row.classList.contains("mine")) {
+		return (row.querySelector(":scope > .user")?.textContent ?? "").trim();
+	}
+	const stream = row.parentElement;
+	if (!stream) return bodyText(row);
+	const rows = [...stream.children].filter((n) => n.classList?.contains("row"));
+	const idx = rows.indexOf(row);
+	if (idx < 0) return bodyText(row);
+	let start = 0;
+	for (let i = idx; i >= 0; i--) {
+		if (rows[i].classList.contains("mine")) {
+			start = i + 1;
+			break;
+		}
+	}
+	const parts = [];
+	for (let i = start; i <= idx; i++) {
+		if (!rows[i].classList.contains("assistant")) continue;
+		const text = bodyText(rows[i]);
+		if (text) parts.push(text);
+	}
+	return parts.join("\n\n").trim() || bodyText(row);
 }
 
 const timers = new WeakMap();
@@ -142,7 +166,7 @@ export function init(ctx) {
 		copy.onclick = async (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			const text = rowText(row);
+			const text = turnText(row);
 			if (!text) {
 				feedback(copy, false, "没有可复制的内容");
 				return;
@@ -168,10 +192,38 @@ export function init(ctx) {
 		});
 	};
 
+	// 复制键只挂在一段消息的末尾：用户消息各自一个；助手消息只取「回合尾」——
+	// 本条之后到下一条用户消息之前没有别的 assistant 行。工具调用会把一个回合拆成
+	// 多条 assistant 消息，逐条挂复制键就是「一个命令行一个复制」。
+	const turnTail = (row) => {
+		let n = row.nextElementSibling;
+		while (n) {
+			if (n.classList?.contains("row")) {
+				if (n.classList.contains("mine")) return true;
+				if (n.classList.contains("assistant")) return false;
+			}
+			n = n.nextElementSibling;
+		}
+		return true;
+	};
+	const running = (row) => !!row.querySelector(".meta.running") || !!row.querySelector(".caret");
+
 	let queued = false;
 	const scan = () => {
 		queued = false;
-		for (const row of stream.querySelectorAll(".row")) attach(row);
+		const tail = stream.querySelector(".row.assistant:last-of-type");
+		for (const row of stream.querySelectorAll(".row")) {
+			if (!row.classList.contains("assistant")) {
+				attach(row);
+				continue;
+			}
+			const live = row === tail && ctx.state?.streaming;
+			if (!turnTail(row) || running(row) || live) {
+				if (!row.classList.contains("acts-pin")) row.querySelector(":scope > .acts")?.remove();
+			} else {
+				attach(row);
+			}
+		}
 	};
 	const schedule = () => {
 		if (queued) return;
@@ -182,5 +234,9 @@ export function init(ctx) {
 	// 只关心子节点增删：characterData 每次 delta 都会触发，没必要
 	const mo = new MutationObserver(schedule);
 	mo.observe(stream, { childList: true, subtree: true });
+	// 回合结束时 app.js 会改 class/删 meta，不产生 childList；显式补一次扫描
+	ctx.pi?.onEvent?.((ev) => {
+		if (ev?.type === "agent_settled" || ev?.type === "message_end") setTimeout(schedule, 0);
+	});
 	scan();
 }

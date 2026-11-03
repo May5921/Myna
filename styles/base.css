@@ -1174,6 +1174,117 @@
 				background: transparent;
 				color: var(--faint);
 			}
+
+			/* 思考块（照 DSH ReasoningRow + DisclosureRow）：折叠 24px 一行，点整行展开 */
+			.think {
+				display: flex;
+				flex-direction: column;
+				min-width: 0;
+			}
+			.think[data-open="0"] {
+				height: 24px;
+			}
+			.think-row {
+				display: flex;
+				align-items: center;
+				height: 24px;
+				min-width: 0;
+				color: var(--faint);
+				font-size: 13px;
+				line-height: 24px;
+				cursor: pointer;
+				transition: color 100ms ease;
+			}
+			@media (hover: hover) {
+				.think-row:hover {
+					color: var(--dim);
+				}
+			}
+			.think-lead {
+				position: relative;
+				flex: none;
+				width: 16px;
+				height: 16px;
+				margin-right: 6px;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.think-lead svg {
+				width: 14px;
+				height: 14px;
+			}
+			.think-ico {
+				opacity: 1;
+				transition: opacity 100ms ease;
+			}
+			.think-chev {
+				position: absolute;
+				inset: 0;
+				margin: auto;
+				opacity: 0;
+				transition:
+					opacity 100ms ease,
+					transform 120ms ease;
+			}
+			@media (hover: hover) {
+				.think-row:hover .think-ico {
+					opacity: 0;
+				}
+				.think-row:hover .think-chev {
+					opacity: 1;
+				}
+			}
+			.think[data-open="1"] .think-ico {
+				opacity: 0;
+			}
+			.think[data-open="1"] .think-chev {
+				opacity: 1;
+				transform: rotate(180deg);
+			}
+			.think-title {
+				flex: none;
+			}
+			.think-dot {
+				flex: none;
+				width: 2px;
+				height: 2px;
+				margin: 0 8px;
+				border-radius: 1px;
+				background: var(--faint);
+			}
+			.think-summary {
+				flex: 1 1 auto;
+				min-width: 0;
+				overflow: hidden;
+				white-space: nowrap;
+				text-overflow: ellipsis;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.think[data-state="running"] .think-summary {
+				mask-image: linear-gradient(to right, #000 calc(100% - 48px), transparent);
+			}
+			.think[data-open="1"] .think-dot,
+			.think[data-open="1"] .think-summary {
+				display: none;
+			}
+			.think-body {
+				padding: 4px 0 4px 22px;
+				min-width: 0;
+				color: var(--dim);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.think-body > :first-child {
+				margin-top: 0;
+			}
+			.think-body > :last-child {
+				margin-bottom: 0;
+			}
+			.think-body p {
+				margin: 8px 0;
+			}
 			@keyframes blink {
 				50% {
 					opacity: 0;

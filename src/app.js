@@ -34,6 +34,8 @@ const state = {
 	revealTick: 0,
 	revealFinal: null, // message_end 到达但文本还没吐完时暂存
 	liveTps: null, // 流式速度指示（tokens / tok/s）
+	liveThink: null, // 流式思考块（thinking_delta）
+	liveThinkRaw: "",
 	liveTokens: 0, // 已接收文本的增量 token 估算
 	tpsTimer: 0,
 	runClock: null, // 运行中状态行（思考中/生成中 + 已用时间，DSH RunningStatus）
@@ -286,6 +288,129 @@ function blockText(content) {
 		.join("");
 }
 
+// ---------- 思考（reasoning）块：照 DSH ReasoningRow/DisclosureRow ----------
+// 折叠时一行 24px：图标 + 「思考」+ 2px 点 + 首行摘要；点整行展开完整 markdown。
+const THINK_ICON =
+	'<svg class="think-ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M10.2854 5.71481C12.9673 8.39663 14.1182 11.5938 12.8562 12.8559C11.5942 14.1179 8.39706 12.9669 5.71518 10.2851C3.03333 7.60323 1.88236 4.40608 3.14441 3.14403C4.40644 1.882 7.6036 3.03297 10.2854 5.71481Z"/><path d="M10.2854 10.2851C7.6036 12.9669 4.40644 14.1179 3.14441 12.8559C1.88236 11.5938 3.03333 8.39663 5.71518 5.71481C8.39706 3.03297 11.5942 1.882 12.8562 3.14403C14.1182 4.40608 12.9673 7.60323 10.2854 10.2851Z"/><path d="M8.86291 8.0002C8.86291 8.47549 8.47762 8.86087 8.00224 8.86087C7.52694 8.86087 7.1416 8.47549 7.1416 8.0002C7.1416 7.52485 7.52694 7.13953 8.00224 7.13953C8.47762 7.13953 8.86291 7.52485 8.86291 8.0002Z" fill="currentColor" stroke="none"/></svg>';
+const THINK_CHEV =
+	'<svg class="think-chev" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 6.2 8 10.2 12 6.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function thinkText(message) {
+	const blocks = Array.isArray(message?.content) ? message.content : [];
+	return blocks
+		.filter((b) => b.type === "thinking" && b.thinking)
+		.map((b) => b.thinking)
+		.join("\n\n");
+}
+
+function firstLineOf(text) {
+	const i = text.indexOf("\n");
+	return i === -1 ? text : text.slice(0, i);
+}
+
+// 流式中取「最后一个已完成段落的首行」，避免半句话疯狂抖动（DSH latestCompletedParagraphFirstLine）
+function latestParagraphLine(text) {
+	let out = "";
+	let start = 0;
+	const sep = /\r?\n(?:[\t ]*\r?\n)+/g;
+	while (true) {
+		const next = sep.exec(text);
+		const paraEnd = next === null ? text.length : next.index + next[0].indexOf("\n");
+		const nl = text.indexOf("\n", start);
+		if (nl !== -1 && nl <= paraEnd) {
+			const cand = text.slice(start, nl).trim();
+			if (cand) out = cand;
+		}
+		if (next === null) return out;
+		start = next.index + next[0].length;
+	}
+}
+
+function thinkSummary(text, running) {
+	return (running ? latestParagraphLine(text) : firstLineOf(text)).replaceAll("**", "");
+}
+
+function makeThinkBlock(text, running = false) {
+	const wrap = document.createElement("div");
+	wrap.className = "think";
+	wrap.dataset.open = "0";
+	wrap.dataset.state = running ? "running" : "ok";
+	const row = document.createElement("div");
+	row.className = "think-row";
+	row.setAttribute("role", "button");
+	row.tabIndex = 0;
+	row.setAttribute("aria-expanded", "false");
+	const lead = document.createElement("span");
+	lead.className = "think-lead";
+	lead.innerHTML = THINK_ICON + THINK_CHEV;
+	const title = document.createElement("span");
+	title.className = "think-title";
+	title.textContent = "思考";
+	const dot = document.createElement("span");
+	dot.className = "think-dot";
+	dot.setAttribute("aria-hidden", "true");
+	const summary = document.createElement("span");
+	summary.className = "think-summary";
+	const body = document.createElement("div");
+	body.className = "think-body";
+	body.hidden = true;
+	row.append(lead, title, dot, summary);
+	wrap.append(row, body);
+
+	let raw = text || "";
+	let raf = 0;
+	const paintBody = () => {
+		raf = 0;
+		body.innerHTML = md(raw);
+	};
+	const render = () => {
+		summary.textContent = thinkSummary(raw, wrap.dataset.state === "running");
+		if (!body.hidden && !raf) raf = requestAnimationFrame(paintBody);
+	};
+	const setOpen = (open) => {
+		wrap.dataset.open = open ? "1" : "0";
+		row.setAttribute("aria-expanded", String(open));
+		body.hidden = !open;
+		if (open) paintBody();
+	};
+	const toggle = () => setOpen(wrap.dataset.open !== "1");
+	row.addEventListener("click", toggle);
+	row.addEventListener("keydown", (e) => {
+		if (e.key !== "Enter" && e.key !== " ") return;
+		e.preventDefault();
+		toggle();
+	});
+	render();
+	return {
+		wrap,
+		row,
+		summary,
+		body,
+		setOpen,
+		setText(next, isRunning = wrap.dataset.state === "running") {
+			raw = next || "";
+			wrap.dataset.state = isRunning ? "running" : "ok";
+			render();
+		},
+		finish(next) {
+			raw = next ?? raw;
+			wrap.dataset.state = "ok";
+			render();
+			if (raf) cancelAnimationFrame(raf);
+			paintBody();
+		},
+	};
+}
+
+function ensureLiveThink() {
+	if (!state.live) return null;
+	if (state.liveThink) return state.liveThink;
+	const th = makeThinkBlock("", true);
+	state.live.row.insertBefore(th.wrap, state.live.body);
+	state.liveThink = th;
+	return th;
+}
+
 // ---------- 滚动：粘底策略 + 手动回底 ----------
 let stickBottom = true;
 
@@ -318,6 +443,8 @@ function clearStream() {
 	stopReveal();
 	state.textPending = "";
 	state.revealFinal = null;
+	state.liveThink = null;
+	state.liveThinkRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
 	state.runClock = null;
@@ -399,6 +526,7 @@ function addAssistantRow() {
 	stream.append(row);
 	state.live = { row, body };
 	state.liveRaw = "";
+	state.liveThinkRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.liveTps = { box: meta, el: tps, text: runText, start: 0 };
 	// 用时按整轮算（DSH RunningStatus 的 turn startTime），工具阶段换行也不归零
@@ -533,6 +661,17 @@ function finalizeAssistant(message) {
 	}
 	if (!state.live) return;
 	const body = state.live.body;
+	const think = thinkText(message);
+	const lt = state.liveThink;
+	if (lt) {
+		// 终稿为准，补全可能被截断的流
+		lt.finish(think || state.liveThinkRaw || "");
+		state.liveThink = null;
+	} else if (think) {
+		const th = makeThinkBlock(think, false);
+		state.live.row.insertBefore(th.wrap, body);
+	}
+	state.liveThinkRaw = "";
 	const text = blockText(message?.content ?? state.liveRaw);
 	body.innerHTML = md(text);
 	state.live = null;
@@ -952,6 +1091,8 @@ function renderHistory(messages) {
 			row.className = "row assistant";
 			const body = document.createElement("div");
 			body.className = "body";
+			const think = thinkText(m);
+			if (think) row.append(makeThinkBlock(think, false).wrap);
 			body.innerHTML = md(blockText(m.content));
 			for (const b of Array.isArray(m.content) ? m.content : []) {
 				if (b.type !== "toolCall") continue;
@@ -1627,6 +1768,9 @@ async function refreshState() {
 		state.model = s.model ?? null;
 		state.thinkingLevel = s.thinkingLevel ?? state.thinkingLevel ?? null;
 		state.sessionFile = s.sessionFile ?? null;
+		// 让主进程记住当前会话：pi 崩溃重启时按它续会话
+		const active = window.pi.setActiveSession?.(state.sessionFile);
+		if (active?.catch) active.catch(() => {});
 		state.sessionName = s.sessionName ?? null;
 		state.streaming = s.isStreaming ?? false;
 		saveLastSession();
@@ -1841,6 +1985,27 @@ window.pi.onEvent((ev) => {
 		}
 		case "message_update": {
 			const a = ev.assistantMessageEvent;
+			if (a?.type === "thinking_start") {
+				ensureLiveThink();
+				break;
+			}
+			if (a?.type === "thinking_delta") {
+				const th = ensureLiveThink();
+				if (th) {
+					state.liveThinkRaw = (state.liveThinkRaw || "") + (a.delta || "");
+					th.setText(state.liveThinkRaw, true);
+					follow();
+				}
+				break;
+			}
+			if (a?.type === "thinking_end") {
+				const th = state.liveThink;
+				if (th) {
+					state.liveThinkRaw = typeof a.content === "string" && a.content ? a.content : state.liveThinkRaw;
+					th.finish(state.liveThinkRaw || "");
+				}
+				break;
+			}
 			if (a?.type === "text_delta" && state.liveText) {
 				state.liveRaw += a.delta;
 				state.textPending += a.delta;

@@ -56,6 +56,11 @@ let currentCwd = (() => {
 	const saved = loadState().cwd;
 	return typeof saved === "string" && saved && existsSync(saved) ? saved : homedir();
 })();
+// 渲染层当前打开的会话文件：pi 崩溃/重启时用它续上，避免回答跑进新会话
+let activeSessionFile = null;
+function resumeSessionFile() {
+	return activeSessionFile && existsSync(activeSessionFile) ? activeSessionFile : null;
+}
 
 // ---------- pi cli 定位 ----------
 function resolvePiCli() {
@@ -121,15 +126,19 @@ function onData(chunk) {
 	}
 }
 
-function startPi(cwd) {
+function startPi(cwd, sessionFile = null) {
 	stopPi();
 	const cli = resolvePiCli();
 	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
+	const resume = sessionFile && existsSync(sessionFile) ? sessionFile : null;
 	currentCwd = cwd;
 	saveState({ cwd });
 	buffer = "";
 	piReady = false;
-	const proc = spawn("node", [cli, "--mode", "rpc"], {
+	const args = [cli, "--mode", "rpc"];
+	if (resume) args.push("--session", resume);
+	log("[pi] spawn", resume ? "resume " + resume : "new session");
+	const proc = spawn("node", args, {
 		cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
@@ -202,7 +211,7 @@ function ensureReady() {
 	readyTask = (async () => {
 		// 冷启动前几次给足时间；之后快速失败，避免 UI 静默挂 4 分钟
 		for (let i = 0; i < 24; i++) {
-			if (!child) startPi(currentCwd);
+			if (!child) startPi(currentCwd, resumeSessionFile());
 			try {
 				await command({ type: "get_state" }, i < 4 ? 4000 : 1200);
 				piReady = true;
@@ -224,7 +233,7 @@ async function sessionCall(cmd) {
 		return await command(cmd);
 	} catch (e) {
 		if (!/进程已停止|未启动|EPIPE/.test(e.message)) throw e;
-		startPi(currentCwd);
+		startPi(currentCwd, resumeSessionFile());
 		await ensureReady();
 		return command(cmd);
 	}
@@ -1025,6 +1034,12 @@ ipcMain.handle("pi:new-session", async () => {
 	return { sessions: listSessions() };
 });
 
+// 渲染层把当前会话文件同步过来；崩溃重启时按它续会话
+ipcMain.handle("pi:set-active-session", (_e, path) => {
+	activeSessionFile = typeof path === "string" && path && existsSync(path) ? path : null;
+	return activeSessionFile;
+});
+
 // ---------- 窗口 ----------
 // 开发模式：单一目录 watcher —— 渲染文件热重载、main.js 重启、shot.request 自截屏
 function startDevWatch() {
@@ -1415,6 +1430,69 @@ function startDevWatch() {
 						log("[perf] failed", e.message);
 					}
 				}
+				if (want.includes("dumprows")) {
+					try {
+						const s = await win.webContents.executeJavaScript(
+							`JSON.stringify([...document.querySelectorAll(".row.assistant")].map(r => ({ a: !!r.querySelector(":scope > .acts"), c: r.className, hc: !!r.querySelector(".caret"), rm: !!r.querySelector(".meta.running"), nx: (r.nextElementSibling?.className || null) })))`,
+						);
+						log("[dev] dumprows", s);
+					} catch (e) {
+						log("[dev] dumprows failed", e.message);
+					}
+				}
+				if (want.includes("think")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "9.11 和 9.9 哪个大？先认真思考，分两段说明理由，最后只回答数字。";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+							return true;
+						})()`);
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							let thinkSeen = false, summary = "";
+							for (let i = 0; i < 600; i++) {
+								const t = document.querySelector(".think");
+								if (t) {
+									thinkSeen = true;
+									summary = t.querySelector(".think-summary")?.textContent || "";
+								}
+								const s = window.__piui?.state;
+								if (s && !s.streaming && thinkSeen) break;
+								await new Promise((r) => setTimeout(r, 200));
+							}
+							const t = document.querySelector(".think");
+							t?.scrollIntoView({ block: "end" });
+							return JSON.stringify({
+								thinkSeen,
+								summary,
+								open: t?.dataset.open,
+								state: t?.dataset.state,
+								rows: document.querySelectorAll(".row").length,
+							});
+						})()`);
+						log("[dev] think", st);
+						await new Promise((r) => setTimeout(r, 400));
+						const opened = await win.webContents.executeJavaScript(`(() => {
+							const t = document.querySelector(".think");
+							if (!t) return JSON.stringify({ ok: false });
+							t.querySelector(".think-row")?.click();
+							t.scrollIntoView({ block: "center" });
+							const body = t.querySelector(".think-body");
+							return JSON.stringify({
+								open: t.dataset.open,
+								expanded: t.querySelector(".think-row")?.getAttribute("aria-expanded"),
+								bodyLen: (body?.textContent || "").length,
+								bodyH: body?.getBoundingClientRect().height || 0,
+							});
+						})()`);
+						log("[dev] think open", opened);
+						await new Promise((r) => setTimeout(r, 500));
+					} catch (e) {
+						log("[dev] think failed", e.message);
+					}
+				}
 				if (want.includes("livetool")) {
 					try {
 						await win.webContents.executeJavaScript(`(() => {
@@ -1518,6 +1596,16 @@ function startDevWatch() {
 						await new Promise((r) => setTimeout(r, 500));
 					} catch (e) {
 						log("[dev] forkdemo failed", e.message);
+					}
+				}
+				if (want.includes("lasttext")) {
+					try {
+						const txt = await win.webContents.executeJavaScript(
+							"([...document.querySelectorAll('.row.assistant .body')].pop()?.innerText || '').slice(-200)",
+						);
+						log("[dev] lasttext", JSON.stringify(txt));
+					} catch (e) {
+						log("[dev] lasttext failed", e.message);
 					}
 				}
 				if (want.includes("empty")) {

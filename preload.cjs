@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("pi", {
 	highlight: (items) => ipcRenderer.invoke("pi:highlight", items),
 	switchSession: (path) => ipcRenderer.invoke("pi:switch-session", path),
 	newSession: () => ipcRenderer.invoke("pi:new-session"),
+	setActiveSession: (path) => ipcRenderer.invoke("pi:set-active-session", path),
 	onEvent: (fn) => ipcRenderer.on("pi:event", (_e, ev) => fn(ev)),
 	onStderr: (fn) => ipcRenderer.on("pi:stderr", (_e, text) => fn(text)),
 	termRun: (input) => ipcRenderer.invoke("pi:term-run", input),
