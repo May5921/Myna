@@ -1440,6 +1440,31 @@ function startDevWatch() {
 						log("[dev] dumprows failed", e.message);
 					}
 				}
+				if (want.includes("mcpcheck")) {
+					try {
+						const before = await win.webContents.executeJavaScript(`window.pi.listMcp()`);
+						const added = await win.webContents.executeJavaScript(
+							`window.pi.saveMcp({ name: "pi-mini-test", command: "node", args: ["-e", "process.exit(0)"], description: "temporary probe entry", exposure: "deferred" })`,
+						);
+						const after = await win.webContents.executeJavaScript(`window.pi.listMcp()`);
+						const removed = await win.webContents.executeJavaScript(`window.pi.deleteMcp("pi-mini-test")`);
+						const final = await win.webContents.executeJavaScript(`window.pi.listMcp()`);
+						const skills = await win.webContents.executeJavaScript(`window.pi.listSkills()`);
+						log(
+							"[dev] mcpcheck",
+							JSON.stringify({
+								before: before?.servers?.map?.((s) => s.name) ?? before,
+								added: added?.ok ?? added,
+								after: after?.servers?.map?.((s) => s.name) ?? after,
+								removed: removed?.ok ?? removed,
+								final: final?.servers?.map?.((s) => s.name) ?? final,
+								skills: (skills?.skills || []).map((s) => s.name),
+							}),
+						);
+					} catch (e) {
+						log("[dev] mcpcheck failed", e.message);
+					}
+				}
 				if (want.includes("resumecheck")) {
 					try {
 						await win.webContents.executeJavaScript(`(() => {

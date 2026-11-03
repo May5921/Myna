@@ -1953,8 +1953,12 @@ function showRunSummary() {
 	// 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后淡出，不收成对勾（用户明确不要打勾）
 	setTimeout(() => {
 		if (!pill.isConnected) return;
+		const host = pill.parentElement;
 		pill.classList.add("leaving");
-		setTimeout(() => pill.remove(), 200);
+		setTimeout(() => {
+			pill.remove();
+			if (host?.classList.contains("run-summary-row") && !host.children.length) host.remove();
+		}, 200);
 	}, 3000);
 }
 
