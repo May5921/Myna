@@ -265,7 +265,7 @@ function firstUserText(head) {
 	return null;
 }
 
-function listSessions() {
+function listSessions(perCwd = 20) {
 	const out = [];
 	if (!existsSync(SESSIONS_ROOT)) return out;
 	for (const dir of readdirSync(SESSIONS_ROOT)) {
@@ -305,7 +305,7 @@ function listSessions() {
 			});
 		}
 	}
-	// 每个工作区各保留最近 20 条，避免某个目录的会话把其他项目挤掉
+	// 每个工作区按需加载；默认 20 条，侧栏「加载更多」会请求更大的页
 	const byCwd = new Map();
 	for (const s of out) {
 		const key = s.cwd || "";
@@ -315,10 +315,10 @@ function listSessions() {
 	const picked = [];
 	for (const list of byCwd.values()) {
 		list.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-		picked.push(...list.slice(0, 20));
+		picked.push(...list.slice(0, perCwd));
 	}
 	picked.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-	return picked.slice(0, 200);
+	return picked.slice(0, 600);
 }
 
 // ---------- 文件索引（输入框 @ 补全，渲染层只拿结果） ----------
@@ -463,7 +463,10 @@ ipcMain.handle("pi:set-cwd", async (_e, cwd) => {
 	return { cwd: currentCwd, sessions: listSessions() };
 });
 
-ipcMain.handle("pi:sessions", async () => listSessions());
+ipcMain.handle("pi:sessions", async (_e, opts) => {
+	const perCwd = Math.min(200, Math.max(20, Number(opts?.perCwd) || 20));
+	return listSessions(perCwd);
+});
 
 ipcMain.handle("pi:open-path", async (_e, path) => {
 	if (!path) return false;
@@ -689,6 +692,27 @@ function startDevWatch() {
 						log("[dev] extui failed", e.message);
 					}
 				}
+				if (want.includes("sess")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							const proj = [...document.querySelectorAll(".proj")].find((p) => p.offsetParent !== null);
+							const kids = proj?.nextElementSibling;
+							if (proj && kids?.hidden) proj.click();
+							await new Promise((r) => setTimeout(r, 400));
+							const more = [...document.querySelectorAll(".kids .item-more")].find((b) => b.textContent.startsWith("显示更多"));
+							more?.click();
+							await new Promise((r) => setTimeout(r, 400));
+							const before = document.querySelectorAll(".kids .item").length;
+							const load = [...document.querySelectorAll(".kids .item-more")].find((b) => b.textContent === "加载更多会话");
+							load?.click();
+							await new Promise((r) => setTimeout(r, 1500));
+							return JSON.stringify({ proj: !!proj, more: !!more, load: !!load, before, after: document.querySelectorAll(".kids .item").length });
+						})()`);
+						log("[dev] sess", st);
+					} catch (e) {
+						log("[dev] sess demo failed", e.message);
+					}
+				}
 				if (want.includes("model")) {
 					try {
 						await win.webContents.executeJavaScript("window.__piQueueDemoClear && window.__piQueueDemoClear()");
@@ -798,6 +822,53 @@ function startDevWatch() {
 						await new Promise((r) => setTimeout(r, 1200));
 					} catch (e) {
 						log("[dev] empty state failed", e.message);
+					}
+				}
+				if (want.includes("imgdbg")) {
+					try {
+						const dbg = await win.webContents.executeJavaScript(`(() => {
+							const imgs = [...document.querySelectorAll(".tool-img")];
+							const before = document.querySelector(".imgbox")?.hidden;
+							imgs[0]?.click();
+							const b = document.querySelector(".imgbox");
+							return JSON.stringify({ n: imgs.length, api: typeof window.__piImageOpen, before, after: b?.hidden, hasBox: !!b, scrolling: window.__piui?.state?.streaming });
+						})()`);
+						log("[dev] imgdbg", dbg);
+						await new Promise((r) => setTimeout(r, 400));
+					} catch (e) {
+						log("[dev] imgdbg failed", e.message);
+					}
+				} else if (want.includes("img")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "read C:/Users/Luke/projects/pi-mini/live.png 并只回复这个词：ok";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+							return true;
+						})()`);
+						const got = await win.webContents.executeJavaScript(`(async () => {
+							for (let i = 0; i < 240; i++) {
+								if (document.querySelector(".tool-img")) return true;
+								await new Promise((r) => setTimeout(r, 250));
+							}
+							return false;
+						})()`);
+						await new Promise((r) => setTimeout(r, 700));
+						if (want.includes("imgbox")) {
+							const st = await win.webContents.executeJavaScript(`(() => {
+								const i = document.querySelector(".tool-img");
+								i?.click();
+								const b = document.querySelector(".imgbox");
+								return JSON.stringify({ n: document.querySelectorAll(".tool-img").length, box: !!b, hidden: b?.hidden });
+							})()`);
+							log("[dev] imgbox", st);
+							await new Promise((r) => setTimeout(r, 500));
+						}
+						log(`[dev] img demo ${got ? "ok" : "timeout"}`);
+					} catch (e) {
+						log("[dev] img demo failed", e.message);
 					}
 				}
 				try {

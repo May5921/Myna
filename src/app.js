@@ -520,6 +520,25 @@ function setDiff(root, stat, diff) {
 	toggleDisclosure(root, true);
 }
 
+function appendToolImages(root, content) {
+	const imgs = (Array.isArray(content) ? content : []).filter((b) => b?.type === "image" && b.data);
+	if (!imgs.length) return;
+	const inner = root?.querySelector(".inner");
+	if (!inner) return;
+	const wrap = document.createElement("div");
+	wrap.className = "tool-imgs";
+	for (const b of imgs) {
+		const img = document.createElement("img");
+		img.className = "tool-img";
+		img.loading = "lazy";
+		img.alt = "工具结果图片";
+		img.src = `data:${b.mimeType || "image/png"};base64,${b.data}`;
+		wrap.append(img);
+	}
+	inner.append(wrap);
+	toggleDisclosure(root, true);
+}
+
 function appendToolOutput(root, output) {
 	const inner = root?.querySelector(".inner");
 	if (!inner) return;
@@ -721,6 +740,7 @@ function renderHistory(messages) {
 				}
 				if (diff) setDiff(el, el.querySelector(".stat"), diff);
 				else if (text) appendToolOutput(el, text);
+				appendToolImages(el, m.content);
 			}
 		}
 	}
@@ -746,6 +766,24 @@ const PEN_ICON =
 
 const COLLAPSE_KEY = "pi-mini.collapsed";
 const PROJECTS_KEY = "pi-mini.projects";
+const LAST_SESSION_KEY = "pi-mini.lastSession";
+let sessionBootDone = false;
+
+function loadLastSession() {
+	try {
+		const raw = JSON.parse(localStorage.getItem(LAST_SESSION_KEY) || "null");
+		return raw && typeof raw.path === "string" && raw.path ? raw : null;
+	} catch {
+		return null;
+	}
+}
+
+function saveLastSession() {
+	if (!sessionBootDone || !state.cwd || !state.sessionFile) return;
+	try {
+		localStorage.setItem(LAST_SESSION_KEY, JSON.stringify({ cwd: state.cwd, path: state.sessionFile }));
+	} catch {}
+}
 
 function loadProjects() {
 	try {
@@ -1023,6 +1061,22 @@ function renderSessions() {
 				renderSessions();
 			};
 			kids.append(more);
+			const page = state.sessionPage || 20;
+			if (expanded && items.length >= page && page < 200) {
+				const load = document.createElement("button");
+				load.type = "button";
+				load.className = "item-more";
+				load.textContent = "加载更多会话";
+				load.onclick = async (e) => {
+					e.stopPropagation();
+					state.sessionPage = Math.min(200, page + 20);
+					try {
+						state.sessions = await window.pi.sessions({ perCwd: state.sessionPage });
+					} catch {}
+					renderSessions();
+				};
+				kids.append(load);
+			}
 		}
 		list.append(kids);
 	}
@@ -1098,6 +1152,7 @@ async function refreshState() {
 		state.sessionFile = s.sessionFile ?? null;
 		state.sessionName = s.sessionName ?? null;
 		state.streaming = s.isStreaming ?? false;
+		saveLastSession();
 		renderModel();
 		renderTitle();
 		renderSessions();
@@ -1120,7 +1175,11 @@ async function loadModels() {
 }
 
 async function bindWorkspace(cwd) {
-	if (!cwd || cwd === state.cwd || state.streaming) return false;
+	if (!cwd || cwd === state.cwd) return false;
+	if (state.streaming) {
+		showError("正在生成回答，先停止再切换工作区");
+		return false;
+	}
 	try {
 		const r = await window.pi.setCwd(cwd);
 		if (!r) return false;
@@ -1131,6 +1190,7 @@ async function bindWorkspace(cwd) {
 		state.sessions = r.sessions ?? [];
 		state.sessionFile = null;
 		state.sessionName = null;
+		state.sessionPage = 20;
 		state.collapsed.delete(cwd);
 		saveProjects();
 		saveCollapsed();
@@ -1302,6 +1362,7 @@ window.pi.onEvent((ev) => {
 			const diff = ev.result?.details?.diff;
 			if (diff) setDiff(el, el.querySelector(".stat"), diff);
 			else if (text) appendToolOutput(el, text);
+			appendToolImages(el, ev.result?.content);
 			break;
 		}
 		case "agent_start":
@@ -1309,9 +1370,11 @@ window.pi.onEvent((ev) => {
 			break;
 		case "agent_settled":
 			setStreaming(false);
+			// 新会话的第一轮结束后 sessionFile 才有值，刷新一次便于下次启动恢复
+			refreshState().catch(() => {});
 			break;
 		case "session_info_changed":
-			window.pi.sessions().then((s) => {
+			window.pi.sessions({ perCwd: state.sessionPage || 20 }).then((s) => {
 				state.sessions = s;
 				renderSessions();
 			});
@@ -1613,12 +1676,28 @@ window.__selftest = () => {
 	autosize();
 	updateSend();
 	await loadModels();
+	const last = loadLastSession();
 	await refreshState();
 	if (boot.restore) {
 		const r = await window.pi.switchSession(boot.restore).catch(() => null);
 		if (r && !r.cancelled) {
 			renderHistory(r.messages ?? []);
 			await refreshState();
+			sessionBootDone = true;
+			saveLastSession();
+			window.__ready = true;
+			return;
+		}
+	}
+	// 重启后回到上次会话；找不到就按新会话处理
+	if (last && last.cwd === boot.cwd) {
+		const r = await window.pi.switchSession(last.path).catch(() => null);
+		if (r && !r.cancelled) {
+			loading.remove();
+			renderHistory(r.messages ?? []);
+			await refreshState();
+			sessionBootDone = true;
+			saveLastSession();
 			window.__ready = true;
 			return;
 		}
@@ -1626,6 +1705,8 @@ window.__selftest = () => {
 	const history = await window.pi.command({ type: "get_messages" }).catch(() => null);
 	loading.remove();
 	renderHistory(history?.messages ?? []);
+	sessionBootDone = true;
+	saveLastSession();
 	window.__ready = true;
 })();
 
@@ -1651,7 +1732,7 @@ export const ctx = {
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js"];
+const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js"];
 
 for (const f of FEATURES) {
 	try {

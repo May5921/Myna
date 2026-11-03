@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld("pi", {
 	sendRaw: (payload) => ipcRenderer.invoke("pi:send-raw", payload),
 	pickFolder: () => ipcRenderer.invoke("pi:pick-folder"),
 	setCwd: (cwd) => ipcRenderer.invoke("pi:set-cwd", cwd),
-	sessions: () => ipcRenderer.invoke("pi:sessions"),
+	sessions: (opts) => ipcRenderer.invoke("pi:sessions", opts),
 	listFiles: (cwd) => ipcRenderer.invoke("pi:list-files", cwd),
 	gitChanges: () => ipcRenderer.invoke("pi:git-changes"),
 	gitDiff: (path) => ipcRenderer.invoke("pi:git-diff", path),
