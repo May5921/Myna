@@ -1051,9 +1051,11 @@ ipcMain.handle("pi:read-file", async (_e, filePath) => {
 	const real = realpathSync(full);
 	if (real !== root && !real.startsWith(root + sep)) throw new Error("文件不在当前工作区");
 	const st = statSync(real);
+	const base = { path: real, name: basename(real), size: st.size };
+	if (st.isDirectory()) return { ...base, kind: "dir" };
 	if (!st.isFile()) throw new Error("不是文件");
 	const ext = extname(real).toLowerCase();
-	const base = { path: real, name: basename(real), ext, size: st.size };
+	base.ext = ext;
 	if (PREVIEW_IMAGE_MIME[ext]) {
 		if (st.size > PREVIEW_IMAGE_MAX) return { ...base, kind: "binary" };
 		return {
@@ -1482,6 +1484,22 @@ function startDevWatch() {
 					} catch (e) {
 						log("[dev] right panel demo failed", e.message);
 					}
+				}
+				if (want.includes("linkprev")) {
+					const info = await win.webContents.executeJavaScript(`(async () => {
+						const a = document.createElement("span");
+						a.className = "flink";
+						a.dataset.path = "D:/fangzi/package.json";
+						a.textContent = "package.json";
+						document.querySelector("#stream").append(a);
+						a.click();
+						await new Promise((r) => setTimeout(r, 1800));
+						const head = document.querySelector(".rp-file-head .rp-file-name");
+						const out = JSON.stringify({ head: head ? head.textContent : "", code: !!document.querySelector(".rp-code"), open: !!document.querySelector("#rp-panel") && document.querySelector("#rp-panel").getBoundingClientRect().width > 100, chars: (document.querySelector(".rp-code")?.textContent || "").length });
+						a.remove();
+						return out;
+					})()`);
+					log("[dev] linkprev", info);
 				}
 				if (want.includes("perf")) {
 					try {

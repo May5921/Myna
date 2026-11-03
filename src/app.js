@@ -432,12 +432,17 @@ function initScroll() {
 		jump.hidden = true;
 		stream.scrollTop = stream.scrollHeight;
 	};
-	// 回答里的路径变成可点链接
-	stream.addEventListener("click", (e) => {
+	// 回答里的路径变成可点链接：优先在右栏预览，工作区外再交给系统程序
+	stream.addEventListener("click", async (e) => {
 		const link = e.target.closest(".flink");
 		if (!link) return;
 		e.preventDefault();
-		window.pi.openPath(link.dataset.path);
+		const path = link.dataset.path;
+		let opened = false;
+		try {
+			opened = !!(await ctx.rightPanel?.preview?.(path));
+		} catch {}
+		if (!opened) window.pi.openPath(path);
 	});
 }
 
@@ -841,10 +846,14 @@ function buildToolRow({ name, args, output, diff, isError, durationMs }) {
 	arg.textContent = spec.text;
 	arg.title = spec.file || spec.text;
 	if (spec.file) {
-		arg.onclick = (e) => {
+		arg.onclick = async (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			window.pi.openPath(spec.file);
+			let opened = false;
+			try {
+				opened = !!(await ctx.rightPanel?.preview?.(spec.file));
+			} catch {}
+			if (!opened) window.pi.openPath(spec.file);
 		};
 	}
 

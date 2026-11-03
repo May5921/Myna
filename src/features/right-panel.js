@@ -959,6 +959,14 @@ export function init(ctx) {
 		renderFiles();
 		try {
 			const res = await ctx.pi.readFile(full);
+			if (seq !== previewSeq) return;
+			// 目录没有可预览的内容，退回系统程序打开（和聊天里的目录链接行为一致）
+			if (res && res.kind === "dir") {
+				preview = null;
+				renderFiles();
+				Promise.resolve(ctx.pi.openPath(full)).catch(() => {});
+				return;
+			}
 			let html = null;
 			if (res && res.kind === "text" && res.content) {
 				const lang = PREVIEW_LANG[String(res.ext || "").replace(/^\./, "").toLowerCase()] || "text";
@@ -1647,6 +1655,25 @@ export function init(ctx) {
 	);
 
 	render();
+
+	// 供聊天里的路径链接调用：在右栏打开只读预览。
+	// 传绝对路径或相对 cwd 的路径；工作区外的返回 false，由调用方退回系统程序打开。
+	async function previewPath(inputPath) {
+		const cwd = String(ctx.state?.cwd || data.files?.cwd || "").replace(/[\\/]+$/, "");
+		let p = String(inputPath || "").trim().replace(/\//g, "\\");
+		if (!p || !cwd) return false;
+		if (!/^[A-Za-z]:/.test(p)) p = `${cwd}\\${p.replace(/^\\+/, "")}`;
+		const base = cwd.replace(/\//g, "\\");
+		if (!p.toLowerCase().startsWith(`${base.toLowerCase()}\\`)) return false;
+		if (!open) setOpen(true);
+		if (tab !== "files") setTab("files");
+		if (!data.files || (data.files.cwd && data.files.cwd !== cwd)) await load("files", true);
+		const rel = p.slice(base.length + 1).replace(/\\/g, "/");
+		if (!rel) return false;
+		await openFile(rel);
+		return true;
+	}
+	ctx.rightPanel = { preview: previewPath };
 
 	// ---------- 演示钩子（截图用；取不到数据也不阻塞）----------
 	window.__piRightPanelDemo = (which) => {
