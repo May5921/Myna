@@ -1950,15 +1950,12 @@ function showRunSummary() {
 		stream.append(row);
 	}
 	follow();
+	// 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后淡出，不收成对勾（用户明确不要打勾）
 	setTimeout(() => {
 		if (!pill.isConnected) return;
-		pill.classList.add("mini");
-		pill.textContent = "✓";
+		pill.classList.add("leaving");
+		setTimeout(() => pill.remove(), 200);
 	}, 3000);
-	pill.onclick = () => {
-		pill.classList.remove("mini");
-		pill.textContent = pill.title;
-	};
 }
 
 function autosize() {

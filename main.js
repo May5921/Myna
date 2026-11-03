@@ -1433,11 +1433,40 @@ function startDevWatch() {
 				if (want.includes("dumprows")) {
 					try {
 						const s = await win.webContents.executeJavaScript(
-							`JSON.stringify([...document.querySelectorAll(".row.assistant")].map(r => ({ a: !!r.querySelector(":scope > .acts"), c: r.className, hc: !!r.querySelector(".caret"), rm: !!r.querySelector(".meta.running"), nx: (r.nextElementSibling?.className || null) })))`,
+							`JSON.stringify({ summary: document.querySelectorAll(".run-summary").length, rows: [...document.querySelectorAll(".row.assistant")].map(r => ({ a: !!r.querySelector(":scope > .acts"), c: r.className, hc: !!r.querySelector(".caret"), rm: !!r.querySelector(".meta.running"), nx: (r.nextElementSibling?.className || null) })) })`,
 						);
 						log("[dev] dumprows", s);
 					} catch (e) {
 						log("[dev] dumprows failed", e.message);
+					}
+				}
+				if (want.includes("resumecheck")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "我上一条消息让你做什么？只回答原文。";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+							return true;
+						})()`);
+						let last = "";
+						for (let i = 0; i < 200; i++) {
+							await new Promise((r) => setTimeout(r, 300));
+							const st = await win.webContents.executeJavaScript(`(() => {
+								const rows = [...document.querySelectorAll(".row.assistant")];
+								const r = rows[rows.length - 1];
+								return JSON.stringify({ streaming: !!document.querySelector(".row.assistant .meta.running, .row.assistant .caret"), text: (r?.innerText || "") });
+							})()`);
+							const j = JSON.parse(st);
+							if (j.text && j.text !== last && !j.streaming) {
+								last = j.text;
+								log("[dev] resumecheck", JSON.stringify({ text: j.text.slice(0, 300), rows: 0 }));
+								break;
+							}
+						}
+					} catch (e) {
+						log("[dev] resumecheck failed", e.message);
 					}
 				}
 				if (want.includes("think")) {

@@ -936,12 +936,10 @@
 				color: var(--dim);
 				font-size: 11.5px;
 				line-height: 18px;
-				cursor: pointer;
-				transition: opacity 160ms ease, padding 160ms ease;
+				transition: opacity 180ms ease;
 			}
-			.run-summary.mini {
-				padding: 2px 5px;
-				color: var(--faint);
+			.run-summary.leaving {
+				opacity: 0;
 			}
 			/* 流式新增行的入场 */
 			.fresh {
