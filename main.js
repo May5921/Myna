@@ -1,6 +1,6 @@
 // pi-mini —— pi 的极简 Electron 前端
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync } from "node:fs";
 import { join, sep } from "node:path";
@@ -1799,9 +1799,19 @@ function startDevWatch() {
 }
 
 function createWindow() {
+	// 窗口位置/大小随上次会话恢复；working area 变了也要保证至少露出一角
+	const savedWin = loadState().window;
+	const base = { width: 1280, height: 820 };
+	if (savedWin && Number.isFinite(savedWin.width) && Number.isFinite(savedWin.height)) {
+		const area = screen.getDisplayMatching({ x: savedWin.x ?? 0, y: savedWin.y ?? 0, width: savedWin.width, height: savedWin.height }).workArea;
+		base.width = Math.max(720, Math.min(savedWin.width, area.width));
+		base.height = Math.max(480, Math.min(savedWin.height, area.height));
+		base.x = Math.max(area.x - base.width + 120, Math.min(savedWin.x ?? area.x, area.x + area.width - 120));
+		base.y = Math.max(area.y, Math.min(savedWin.y ?? area.y, area.y + area.height - 80));
+		log("[window] restore", JSON.stringify({ w: base.width, h: base.height, x: base.x, y: base.y, maximized: !!savedWin.maximized }));
+	}
 	win = new BrowserWindow({
-		width: 1280,
-		height: 820,
+		...base,
 		minWidth: 720,
 		minHeight: 480,
 		backgroundColor: "#FFFFFF",
@@ -1816,12 +1826,28 @@ function createWindow() {
 			sandbox: false,
 		},
 	});
+	// 记住窗口几何（拖动/缩放/最大化后 400ms 落盘）
+	let boundsTimer = 0;
+	const persistBounds = () => {
+		clearTimeout(boundsTimer);
+		boundsTimer = setTimeout(() => {
+			if (!win || win.isDestroyed()) return;
+			// 启动阶段的 resize/move 是窗口初始化带出来的，存下来会造成每次启动尺寸漂移
+			if (Date.now() - T0 < 4000) return;
+			const b = win.getNormalBounds();
+			saveState({ window: { width: b.width, height: b.height, x: b.x, y: b.y, maximized: win.isMaximized() } });
+		}, 400);
+	};
+	for (const ev of ["resize", "move", "maximize", "unmaximize"]) win.on(ev, persistBounds);
 	// 锁死导航：拖文件到页面空白处不得把窗口导航到 file://（preload 仍会注入）
 	win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 	win.webContents.on("will-navigate", (e) => e.preventDefault());
 	win.loadURL("app://bundle/index.html");
 	win.webContents.once("did-finish-load", () => log("[perf] window ready", Date.now() - T0, "ms"));
-	win.once("ready-to-show", () => win.show());
+	win.once("ready-to-show", () => {
+		win.show();
+		if (savedWin?.maximized) win.maximize();
+	});
 	if (process.env.PI_MINI_DEV) startDevWatch();
 
 	win.webContents.on("console-message", (event) => {

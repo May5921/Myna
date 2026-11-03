@@ -30,6 +30,7 @@ npm start
 - 队列：运行中 Enter 排队 / Ctrl+Enter 插话，按 pi 的 `follow_up` / `steer` 语义，草稿按会话持久化
 - 右栏：文件树、工作区变更（含 diff）、会话树；tab 增删、拖宽、全屏、状态持久化
 - 设置：DSH 式左导航分栏（通用/会话/提供商/技能与 MCP/行为/统计/扩展/关于/快捷操作）；提供商与 MCP 编辑写前自动备份
+- 窗口：记住大小/位置/最大化状态，启动时按上次恢复
 - 内置终端：底部抽屉，ANSI 清理、可拖高度、历史持久化、停止/复制
 - 模型菜单：按供应商分组、搜索、两级面板（模型 / 思考档位）
 - 扩展 UI：pi 扩展的 select/confirm/input/editor、notify、status/widget
