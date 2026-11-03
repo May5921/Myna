@@ -1801,6 +1801,7 @@ async function bindWorkspace(cwd) {
 		showError("正在生成回答，先停止再切换工作区");
 		return false;
 	}
+	saveDraftNow();
 	try {
 		const r = await window.pi.setCwd(cwd);
 		if (!r) return false;
@@ -1820,6 +1821,8 @@ async function bindWorkspace(cwd) {
 		emptyHint();
 		await loadModels();
 		await refreshState();
+		input.value = "";
+		loadDraft();
 		return true;
 	} catch (e) {
 		showError(e.message);
@@ -1846,11 +1849,14 @@ async function pickSession(path, cwd) {
 		const ok = await bindWorkspace(cwd);
 		if (!ok) return;
 	}
+	saveDraftNow();
 	try {
 		const r = await window.pi.switchSession(path);
 		if (r.cancelled) return;
 		renderHistory(r.messages ?? []);
 		await refreshState();
+		input.value = "";
+		loadDraft();
 	} catch (e) {
 		showError(e.message);
 	}
@@ -1858,10 +1864,13 @@ async function pickSession(path, cwd) {
 
 async function newSession() {
 	if (state.streaming) return;
+	saveDraftNow();
 	await window.pi.newSession();
 	clearStream();
 	emptyHint();
 	await refreshState();
+	input.value = "";
+	loadDraft();
 }
 
 async function pifold() {
@@ -1877,6 +1886,8 @@ async function pifold() {
 	emptyHint();
 	await loadModels();
 	await refreshState();
+	input.value = "";
+	loadDraft();
 }
 
 function showError(msg) {
@@ -1885,6 +1896,45 @@ function showError(msg) {
 	d.textContent = msg;
 	stream.append(d);
 	follow();
+}
+
+// ---------- 输入草稿：按会话落盘，切会话/重启都不丢 ----------
+const DRAFT_KEY = "pi-mini.draft";
+let draftTimer = 0;
+function currentDraftKey() {
+	return state.sessionFile ? `s:${state.sessionFile}` : `c:${state.cwd || ""}`;
+}
+function readDrafts() {
+	try {
+		const o = JSON.parse(localStorage.getItem(DRAFT_KEY) || "{}");
+		return o && typeof o === "object" ? o : {};
+	} catch {
+		return {};
+	}
+}
+function saveDraftNow() {
+	clearTimeout(draftTimer);
+	const all = readDrafts();
+	const key = currentDraftKey();
+	if (input.value.trim()) all[key] = input.value;
+	else delete all[key];
+	try {
+		localStorage.setItem(DRAFT_KEY, JSON.stringify(all));
+	} catch {}
+}
+function saveDraftSoon() {
+	clearTimeout(draftTimer);
+	draftTimer = setTimeout(saveDraftNow, 200);
+}
+function loadDraft() {
+	if (input.value.trim()) return;
+	const v = readDrafts()[currentDraftKey()];
+	if (!v) return;
+	input.value = v;
+	autosize();
+	updateSend();
+	const end = v.length;
+	input.setSelectionRange(end, end);
 }
 
 async function submit() {
@@ -1901,6 +1951,7 @@ async function submit() {
 		const cmd = { type: "prompt", message: text };
 		if (extra.length) cmd.images = extra;
 		await window.pi.command(cmd);
+		saveDraftNow();
 		attachments.clear();
 	} catch (e) {
 		// 发送失败：回滚刚插入的“假发送”气泡，并把草稿还给用户
@@ -1910,6 +1961,7 @@ async function submit() {
 			autosize();
 			updateSend();
 		}
+		saveDraftSoon();
 		showError(e.message);
 		setStreaming(false);
 	}
@@ -2126,6 +2178,7 @@ window.pi.onStderr((t) => {
 input.addEventListener("input", () => {
 	autosize();
 	updateSend();
+	saveDraftSoon();
 });
 input.addEventListener("keydown", (e) => {
 	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -2449,6 +2502,7 @@ async function bootApp() {
 				await refreshState();
 				sessionBootDone = true;
 				saveLastSession();
+				loadDraft();
 				window.__ready = true;
 				return;
 			}
@@ -2462,6 +2516,7 @@ async function bootApp() {
 				await refreshState();
 				sessionBootDone = true;
 				saveLastSession();
+				loadDraft();
 				window.__ready = true;
 				return;
 			}
@@ -2471,6 +2526,7 @@ async function bootApp() {
 		renderHistory(history?.messages ?? []);
 		sessionBootDone = true;
 		saveLastSession();
+		loadDraft();
 		window.__ready = true;
 	} catch (e) {
 		console.warn("[boot] failed", e);
@@ -2484,6 +2540,7 @@ async function bootApp() {
 window.__piBoot = bootApp;
 window.__piBootError = (msg) => showBootError(new Error(msg || "未知错误"));
 initScroll();
+window.addEventListener("beforeunload", saveDraftNow);
 bootApp();
 
 // ---------- 模块扩展点（子代理按模块接入）----------
