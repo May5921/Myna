@@ -1409,7 +1409,29 @@ function startDevWatch() {
 						log("[perf] failed", e.message);
 					}
 				}
-				if (want.includes("live")) {
+				if (want.includes("livetool")) {
+					try {
+						await win.webContents.executeJavaScript(`(() => {
+							const i = document.getElementById("input");
+							i.value = "用 bash 执行命令：ping -n 8 127.0.0.1";
+							i.dispatchEvent(new Event("input", { bubbles: true }));
+							i.focus();
+							i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+						})()`);
+						await new Promise((r) => setTimeout(r, 2600));
+						await win.webContents.executeJavaScript(`(() => {
+							const rows = [...document.querySelectorAll(".row")];
+							rows[rows.length - 1]?.scrollIntoView({ block: "end" });
+						})()`);
+						const st = await win.webContents.executeJavaScript(
+							`JSON.stringify({streaming: !!window.__piui?.state?.streaming, running: document.querySelectorAll(".tool.running").length, tools: document.querySelectorAll(".tool").length, meta: document.querySelector(".row.assistant .meta.running")?.textContent || ""})`,
+						);
+						log(`[dev] livetool ${st}`);
+					} catch (e) {
+						log("[dev] livetool failed", e.message);
+					}
+				}
+				if (want.includes("live") && !want.includes("livetool")) {
 					try {
 						await win.webContents.executeJavaScript(`(() => {
 							const i = document.getElementById("input");
