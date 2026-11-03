@@ -1035,7 +1035,8 @@ function startDevWatch() {
 	try {
 		watch(dir, { recursive: true }, async (_evt, file) => {
 			const name = String(file || "").split(String.fromCharCode(92)).join("/");
-			if (/(^|\/)(node_modules|\.git)\//.test(name)) return;
+			// dist/ 是构建产物，监听它只会造成打包时反复 reload
+			if (/(^|\/)(node_modules|\.git|dist)\//.test(name)) return;
 			if (name === "main.js") {
 				if (relaunching) return;
 				relaunching = true;
