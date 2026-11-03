@@ -86,7 +86,9 @@ export function init(ctx) {
 		transition: opacity 120ms ease;
 	}
 	/* 透明度切换保住布局，不写 height/display（DSH 同理由） */
-	.row:hover > .acts, .row > .acts:focus-within { opacity: 1; pointer-events: auto; }
+	.row:hover > .acts, .row > .acts:focus-within, .row.acts-on > .acts { opacity: 1; pointer-events: auto; }
+	/* 分支浮层打开时钉住当前行的操作条，鼠标移去浮层也不消失 */
+	.row.acts-pin > .acts { opacity: 1; pointer-events: auto; }
 	@media (hover: none) { .row > .acts { opacity: 1; pointer-events: auto; } }
 	.row.mine { flex-wrap: wrap; }
 	/* 用户消息的操作条浮在气泡下方，不参与布局（否则每条用户消息后多出 34px 空白） */
@@ -149,6 +151,21 @@ export function init(ctx) {
 		};
 		acts.append(copy);
 		row.append(acts);
+
+		// 鼠标离开后留 380ms 宽限：跨过行与操作条之间的小缝隙、或移向分支浮层时
+		// 不会立即淡出而点不到按钮（DSH 只做 hover 显隐，这里补一个容错窗口）。
+		row.addEventListener("pointerenter", () => {
+			clearTimeout(row.__actsTimer);
+			row.classList.add("acts-on");
+		});
+		row.addEventListener("pointerleave", () => {
+			clearTimeout(row.__actsTimer);
+			row.__actsTimer = setTimeout(() => {
+				if (row.matches(":hover") || row.classList.contains("acts-pin")) return;
+				if (row.contains(document.activeElement)) return;
+				row.classList.remove("acts-on");
+			}, 380);
+		});
 	};
 
 	let queued = false;

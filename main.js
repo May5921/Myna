@@ -1474,6 +1474,34 @@ function startDevWatch() {
 						log("[dev] attach demo failed", e.message);
 					}
 				}
+				if (want.includes("forkdemo")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(async () => {
+							const rows = [...document.querySelectorAll(".row.mine")];
+							const row = rows.reverse().find((r) => (r.querySelector(":scope > .user")?.textContent || "").includes("只回复")) || rows[0];
+							if (!row) return JSON.stringify({ row: false });
+							row.scrollIntoView({ block: "center" });
+							row.classList.add("acts-on");
+							const btn = row.querySelector(':scope > .acts [data-act="fork"]');
+							if (!btn) return JSON.stringify({ row: true, btn: false });
+							btn.click();
+							await new Promise((r) => setTimeout(r, 1600));
+							const pop = document.querySelector(".fork-pop");
+							const acts = row.querySelector(":scope > .acts");
+							return JSON.stringify({
+								row: true,
+								btn: true,
+								pop: pop ? !pop.hidden : false,
+								pinned: row.classList.contains("acts-pin"),
+								actsOpacity: acts ? getComputedStyle(acts).opacity : "",
+							});
+						})()`);
+						log("[dev] forkdemo", st);
+						await new Promise((r) => setTimeout(r, 500));
+					} catch (e) {
+						log("[dev] forkdemo failed", e.message);
+					}
+				}
 				if (want.includes("empty")) {
 					try {
 						await win.webContents.executeJavaScript("document.querySelector('.newchat')?.click()");

@@ -186,8 +186,21 @@ export function init(ctx) {
 	document.body.append(pop);
 
 	let anchorBtn = null; // 浮层的锚点按钮
+	let pinnedRow = null; // 浮层打开时被钉住操作条的消息行
 	let entryId = null; // 待 fork 的 entryId
 	let busy = false;
+
+	function pinRow(row) {
+		if (pinnedRow === row) return;
+		unpinRow();
+		pinnedRow = row;
+		row.classList.add("acts-pin");
+	}
+
+	function unpinRow() {
+		pinnedRow?.classList.remove("acts-pin");
+		pinnedRow = null;
+	}
 
 	function closePop() {
 		if (pop.hidden) return;
@@ -197,6 +210,7 @@ export function init(ctx) {
 		pop.hidden = true;
 		entryId = null;
 		anchorBtn = null;
+		unpinRow();
 		if (hadFocus && back?.isConnected) back.focus?.();
 	}
 
@@ -293,6 +307,7 @@ export function init(ctx) {
 
 		entryId = hit.entryId;
 		place(btn);
+		pinRow(row);
 		okBtn.focus?.();
 	}
 
@@ -406,8 +421,28 @@ export function init(ctx) {
 		dismiss();
 	});
 
-	window.addEventListener("scroll", dismiss, true);
-	window.addEventListener("resize", dismiss);
+	// 滚动/改窗口大小时跟住锚点，而不是直接关掉浮层：
+	// 原来打开浮层时 okBtn.focus() 可能触发一次滚动，浮层会瞬间自己消失。
+	let followTick = 0;
+	const follow = () => {
+		if (followTick) return;
+		followTick = requestAnimationFrame(() => {
+			followTick = 0;
+			if (pop.hidden || !anchorBtn) return;
+			if (!anchorBtn.isConnected) {
+				dismiss();
+				return;
+			}
+			const r = anchorBtn.getBoundingClientRect();
+			if (r.bottom < 0 || r.top > window.innerHeight) {
+				dismiss();
+				return;
+			}
+			place(anchorBtn);
+		});
+	};
+	window.addEventListener("scroll", follow, true);
+	window.addEventListener("resize", follow);
 
 	// 流式开始/结束：重排禁用态，顺带收起浮层
 	pi.onEvent?.((ev) => {
