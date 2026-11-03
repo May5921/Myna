@@ -1350,6 +1350,24 @@
 				font-size: 13px;
 				color: var(--faint);
 			}
+			/* 启动失败态：错误说明 + 重试（连不上 pi 时不能一直停在“正在连接”） */
+			.boot-retry {
+				margin-top: 4px;
+				height: 30px;
+				padding: 0 14px;
+				border: 1px solid var(--line-strong);
+				border-radius: var(--radius-sm);
+				background: var(--bg);
+				color: var(--text);
+				font-size: 13px;
+			}
+			.boot-retry:hover {
+				background: var(--hover);
+			}
+			.boot-retry:disabled {
+				opacity: 0.55;
+				cursor: default;
+			}
 
 			/* 模型菜单 */
 			#menu {

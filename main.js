@@ -146,7 +146,8 @@ function startPi(cwd) {
 	proc.stdin.on("error", () => {});
 	proc.on("exit", (code) => {
 		// 死进程必须及时让位：否则后续命令会写进已关闭的 stdin（EPIPE/「pi 进程已停止」）
-		if (child === proc) {
+		const wasCurrent = child === proc;
+		if (wasCurrent) {
 			child = null;
 			piReady = false;
 		}
@@ -157,7 +158,8 @@ function startPi(cwd) {
 			waiting.delete(id);
 		}
 		buffer = "";
-		send("pi:exit", code);
+		// 让渲染层能收掉流式光标并提示（下一条命令会经 ensureReady 自动重启）
+		if (wasCurrent) send("pi:event", { type: "process_exit", code: Number.isFinite(code) ? code : null });
 	});
 }
 
@@ -1073,8 +1075,11 @@ function startDevWatch() {
 						);
 						log("[dev] shot ready", String(ready));
 						if (ready) {
-							await win.webContents.executeJavaScript("window.__selftest && window.__selftest()");
-							log("[dev] shot selftest done");
+							// noselftest：保留当前会话内容（用于看崩溃/错误等真实状态，不被 selftest 清空）
+							if (!want.includes("noselftest")) {
+								await win.webContents.executeJavaScript("window.__selftest && window.__selftest()");
+								log("[dev] shot selftest done");
+							}
 							if (want.includes("sug") || want.includes("cmd")) {
 								const kind = want.includes("cmd") ? "command" : "file";
 								const root = JSON.stringify(import.meta.dirname);
@@ -1472,6 +1477,19 @@ function startDevWatch() {
 						await new Promise((r) => setTimeout(r, 1500));
 					} catch (e) {
 						log("[dev] attach demo failed", e.message);
+					}
+				}
+				if (want.includes("booterr")) {
+					try {
+						await win.webContents.executeJavaScript(`(async () => {
+							window.__piBootError && window.__piBootError("找不到 pi 的 cli.js，请确认 pi 已全局安装");
+							await new Promise((r) => setTimeout(r, 200));
+							document.querySelector(".boot-error")?.scrollIntoView({ block: "center" });
+							await new Promise((r) => setTimeout(r, 200));
+							return JSON.stringify({ error: !!document.querySelector(".boot-error"), retry: !!document.querySelector(".boot-retry") });
+						})()`).then((s) => log("[dev] booterr", s));
+					} catch (e) {
+						log("[dev] booterr failed", e.message);
 					}
 				}
 				if (want.includes("forkdemo")) {

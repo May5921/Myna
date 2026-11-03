@@ -1936,6 +1936,17 @@ window.pi.onEvent((ev) => {
 				renderSessions();
 			});
 			break;
+		case "process_exit":
+			console.warn("[pi] process exited", ev.code);
+			// pi 子进程退出：下一条消息会自动重启；先把流式态收尾，否则光标会一直转
+			if (state.streaming) {
+				setStreaming(false);
+				if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+				settleRunStatus();
+			}
+			showError("pi 进程意外退出，下一条消息会自动重启");
+			follow();
+			break;
 	}
 });
 
@@ -2223,50 +2234,89 @@ window.__selftest = () => {
 };
 
 // ---------- 启动 ----------
-(async () => {
-	initScroll();
+function showBootError(err) {
+	stream.querySelectorAll(".empty").forEach((n) => n.remove());
+	const wrap = document.createElement("div");
+	wrap.className = "empty boot-error";
+	const title = document.createElement("p");
+	title.className = "empty-title";
+	title.textContent = "连不上 pi";
+	const sub = document.createElement("p");
+	sub.className = "empty-sub";
+	sub.textContent = err?.message || String(err || "未知错误");
+	const retry = document.createElement("button");
+	retry.type = "button";
+	retry.className = "boot-retry";
+	retry.textContent = "重试";
+	retry.onclick = () => {
+		retry.disabled = true;
+		retry.textContent = "正在重试…";
+		bootApp();
+	};
+	wrap.append(title, sub, retry);
+	stream.append(wrap);
+}
+
+let booting = false;
+async function bootApp() {
+	if (booting) return;
+	booting = true;
+	stream.querySelectorAll(".empty").forEach((n) => n.remove());
 	const loading = emptyHint("正在连接 pi…");
-	const boot = await window.pi.boot();
-	state.cwd = boot.cwd;
-	state.sessions = boot.sessions;
-	renderTitle();
-	autosize();
-	updateSend();
-	await loadModels();
-	const last = loadLastSession();
-	const restore = restoreAllowed();
-	await refreshState();
-	if (restore && boot.restore) {
-		const r = await window.pi.switchSession(boot.restore).catch(() => null);
-		if (r && !r.cancelled) {
-			renderHistory(r.messages ?? []);
-			await refreshState();
-			sessionBootDone = true;
-			saveLastSession();
-			window.__ready = true;
-			return;
+	try {
+		const boot = await window.pi.boot();
+		state.cwd = boot.cwd;
+		state.sessions = boot.sessions;
+		renderTitle();
+		autosize();
+		updateSend();
+		await loadModels();
+		const last = loadLastSession();
+		const restore = restoreAllowed();
+		await refreshState();
+		if (restore && boot.restore) {
+			const r = await window.pi.switchSession(boot.restore).catch(() => null);
+			if (r && !r.cancelled) {
+				renderHistory(r.messages ?? []);
+				await refreshState();
+				sessionBootDone = true;
+				saveLastSession();
+				window.__ready = true;
+				return;
+			}
 		}
-	}
-	// 重启后回到上次会话；找不到就按新会话处理
-	if (restore && last && last.cwd === boot.cwd) {
-		const r = await window.pi.switchSession(last.path).catch(() => null);
-		if (r && !r.cancelled) {
-			loading.remove();
-			renderHistory(r.messages ?? []);
-			await refreshState();
-			sessionBootDone = true;
-			saveLastSession();
-			window.__ready = true;
-			return;
+		// 重启后回到上次会话；找不到就按新会话处理
+		if (restore && last && last.cwd === boot.cwd) {
+			const r = await window.pi.switchSession(last.path).catch(() => null);
+			if (r && !r.cancelled) {
+				loading.remove();
+				renderHistory(r.messages ?? []);
+				await refreshState();
+				sessionBootDone = true;
+				saveLastSession();
+				window.__ready = true;
+				return;
+			}
 		}
+		const history = await window.pi.command({ type: "get_messages" }).catch(() => null);
+		loading.remove();
+		renderHistory(history?.messages ?? []);
+		sessionBootDone = true;
+		saveLastSession();
+		window.__ready = true;
+	} catch (e) {
+		console.warn("[boot] failed", e);
+		loading.remove();
+		showBootError(e);
+	} finally {
+		booting = false;
 	}
-	const history = await window.pi.command({ type: "get_messages" }).catch(() => null);
-	loading.remove();
-	renderHistory(history?.messages ?? []);
-	sessionBootDone = true;
-	saveLastSession();
-	window.__ready = true;
-})();
+}
+// 开发/截图用：手动重跑启动流程 / 渲染启动失败态
+window.__piBoot = bootApp;
+window.__piBootError = (msg) => showBootError(new Error(msg || "未知错误"));
+initScroll();
+bootApp();
 
 // ---------- 模块扩展点（子代理按模块接入）----------
 export const ctx = {
