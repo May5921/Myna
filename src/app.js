@@ -23,6 +23,10 @@ const state = {
 	live: null, // 正在流式的 assistant 行
 	liveText: null, // 流式文本节点（增量追加，不重排）
 	liveRaw: "",
+	textPending: "", // 待吐出的文本（pi-web 式匀速吐字）
+	revealRaf: 0,
+	revealTick: 0,
+	revealFinal: null, // message_end 到达但文本还没吐完时暂存
 	tools: new Map(),
 };
 
@@ -257,6 +261,9 @@ function initScroll() {
 }
 
 function clearStream() {
+	stopReveal();
+	state.textPending = "";
+	state.revealFinal = null;
 	stream.innerHTML = "";
 	state.live = null;
 	state.liveText = null;
@@ -296,6 +303,11 @@ function addUser(text) {
 }
 
 function addAssistantRow() {
+	// 上一条消息还没吐完就来了新消息：先收尾，别丢尾巴
+	if (state.revealFinal) finalizeAssistant(state.revealFinal);
+	stopReveal();
+	state.textPending = "";
+	state.revealFinal = null;
 	const row = document.createElement("div");
 	row.className = "row assistant fresh";
 	const body = document.createElement("div");
@@ -314,7 +326,52 @@ function addAssistantRow() {
 	return row;
 }
 
+// ---- pi-web 式吐字：delta 先进缓冲，再按稳定速率逐帧吐出 ----
+function stopReveal() {
+	if (state.revealRaf) cancelAnimationFrame(state.revealRaf);
+	state.revealRaf = 0;
+	state.revealTick = 0;
+}
+
+function scheduleReveal() {
+	if (state.revealRaf || !state.liveText) return;
+	state.revealTick = performance.now();
+	state.revealRaf = requestAnimationFrame(revealStep);
+}
+
+function revealStep(now) {
+	state.revealRaf = 0;
+	if (!state.liveText) {
+		state.textPending = "";
+		state.revealFinal = null;
+		return;
+	}
+	const dt = Math.min(64, Math.max(8, now - (state.revealTick || now)));
+	state.revealTick = now;
+	const backlog = state.textPending.length;
+	if (backlog) {
+		// 整段约 2.6s 吐完；积压多时按比例加速，不会越落越远
+		const rate = Math.max(45, state.liveRaw.length / 2.6);
+		let n = Math.max(1, Math.round((rate * dt) / 1000));
+		if (backlog > 240) n = Math.max(n, Math.ceil(backlog / 6));
+		n = Math.min(n, backlog);
+		state.liveText.node.appendData(state.textPending.slice(0, n));
+		state.textPending = state.textPending.slice(n);
+		follow();
+	}
+	if (state.textPending.length) {
+		state.revealRaf = requestAnimationFrame(revealStep);
+	} else if (state.revealFinal) {
+		const msg = state.revealFinal;
+		state.revealFinal = null;
+		finalizeAssistant(msg);
+	}
+}
+
 function finalizeAssistant(message) {
+	stopReveal();
+	state.textPending = "";
+	state.revealFinal = null;
 	if (!state.live) return;
 	const body = state.live.body;
 	const text = blockText(message?.content ?? state.liveRaw);
@@ -1413,13 +1470,21 @@ window.pi.onEvent((ev) => {
 			const a = ev.assistantMessageEvent;
 			if (a?.type === "text_delta" && state.liveText) {
 				state.liveRaw += a.delta;
-				state.liveText.node.appendData(a.delta);
+				state.textPending += a.delta;
+				scheduleReveal();
 				follow();
 			}
 			break;
 		}
 		case "message_end": {
-			if (ev.message?.role === "assistant") finalizeAssistant(ev.message);
+			if (ev.message?.role === "assistant") {
+				if (state.textPending) {
+					state.revealFinal = ev.message;
+					scheduleReveal();
+				} else {
+					finalizeAssistant(ev.message);
+				}
+			}
 			break;
 		}
 		case "tool_execution_start": {

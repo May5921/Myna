@@ -1,58 +1,36 @@
 // 用户消息操作：悬停出现「回填」「重试」
 // 只处理 .row.mine；幂等挂载，MutationObserver 覆盖新消息与历史重绘。
 const CSS = `
-.row.mine > .retry-acts {
-	position: absolute;
-	top: 2px;
-	right: -30px;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 120ms ease;
-}
-/* message-actions 的复制条常驻右上角，这里让开一格 */
-.row.mine:has(> .acts) > .retry-acts {
-	top: 26px;
-}
-.row.mine:hover > .retry-acts,
-.retry-acts:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.retry-acts button {
-	width: 22px;
-	height: 22px;
-	border-radius: 5px;
+/* 回填/重试按钮并入行内的 .acts 横条（由 message-actions 建容器） */
+.row.mine > .acts .retry-btn {
+	width: 28px;
+	height: 28px;
+	border-radius: 7px;
 	display: grid;
 	place-items: center;
 	background: none;
 	color: var(--faint);
 	transition: background-color 120ms ease, color 120ms ease;
 }
-.retry-acts button:hover {
+.row.mine > .acts .retry-btn:hover {
 	background: var(--hover);
 	color: var(--text);
 }
-.retry-acts button:focus-visible {
+.row.mine > .acts .retry-btn:focus-visible {
 	outline: none;
 	background: var(--hover);
 	color: var(--text);
 }
-.retry-acts button[disabled] {
+.row.mine > .acts .retry-btn[disabled] {
 	opacity: 0.35;
 	cursor: default;
 }
-.retry-acts button[disabled]:hover {
+.row.mine > .acts .retry-btn[disabled]:hover {
 	background: none;
 	color: var(--faint);
 }
 @media (prefers-reduced-motion: reduce) {
-	.retry-acts,
-	.retry-acts button {
-		transition: none;
-	}
+	.row.mine > .acts .retry-btn { transition: none; }
 }
 `;
 
@@ -103,7 +81,7 @@ export function init(ctx) {
 	};
 
 	const sync = (row) => {
-		const btn = row.querySelector(':scope > .retry-acts [data-act="retry"]');
+		const btn = row.querySelector(':scope > .acts [data-act="retry"]');
 		if (!btn) return;
 		const blocked = !!ctx.state?.streaming;
 		btn.disabled = blocked;
@@ -120,17 +98,27 @@ export function init(ctx) {
 		return b;
 	};
 
+	const actsOf = (row) => {
+		let bar = row.querySelector(":scope > .acts");
+		if (!bar) {
+			bar = document.createElement("div");
+			bar.className = "acts";
+			row.append(bar);
+		}
+		return bar;
+	};
+
 	const attach = (row) => {
 		if (row.dataset.retryActs === "1") return;
 		if (!row.querySelector(":scope > .user")) return;
 		row.dataset.retryActs = "1";
 
-		const bar = document.createElement("div");
-		bar.className = "retry-acts";
+		const bar = actsOf(row);
 		bar.setAttribute("role", "group");
 		bar.setAttribute("aria-label", "消息操作");
 
 		const fillBtn = button("fill", "回填到输入框", "回填到输入框（不发送）", fillIcon);
+		fillBtn.classList.add("retry-btn");
 		fillBtn.onclick = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -138,6 +126,7 @@ export function init(ctx) {
 		};
 
 		const retryBtn = button("retry", "重试", "重试：回填并发送", RETRY_ICON);
+		retryBtn.classList.add("retry-btn");
 		retryBtn.onclick = (e) => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -147,7 +136,6 @@ export function init(ctx) {
 		bar.append(fillBtn, retryBtn);
 		bar.addEventListener("focusin", () => sync(row));
 		row.addEventListener("pointerenter", () => sync(row));
-		row.append(bar);
 		sync(row);
 	};
 

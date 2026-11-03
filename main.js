@@ -623,6 +623,27 @@ function startDevWatch() {
 						log("[dev] selftest failed", e.message);
 					}
 				}
+				if (want.includes("acts")) {
+					try {
+						const st = await win.webContents.executeJavaScript(`(() => {
+							const rows = [...document.querySelectorAll(".row")];
+							let bars = 0;
+							for (const r of rows) {
+								const a = r.querySelector(":scope > .acts");
+								if (a) { a.style.opacity = "1"; a.style.pointerEvents = "auto"; bars++; }
+							}
+							return JSON.stringify({ rows: rows.length, bars, buttons: document.querySelectorAll(".row > .acts button").length });
+						})()`);
+						log("[dev] acts", st);
+						await win.webContents.executeJavaScript(`(() => {
+							const mine = document.querySelector(".row.mine");
+							if (mine) mine.scrollIntoView({ block: "center" });
+						})()`);
+						await new Promise((r) => setTimeout(r, 250));
+					} catch (e) {
+						log("[dev] acts failed", e.message);
+					}
+				}
 				// 清掉上一张截图留下的 demo 状态（设置弹窗 / 排队 / 附件 / 右栏）
 				try {
 					await win.webContents.executeJavaScript(`(() => {

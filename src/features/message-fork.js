@@ -4,53 +4,31 @@
 //      fork({ entryId }) → { text, cancelled }
 //      get_messages     → { messages }
 const CSS = `
-.row.mine { position: relative; }
-/* 右侧操作列：复制 2–24、回填/重试 26–72，分支排在其后 */
-.row.mine > .fork-acts {
-	position: absolute;
-	top: 50px;
-	right: -30px;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 120ms ease;
-}
-/* 兜底：同列已有复制条 / 回填重试条时继续下移，避免重叠 */
-.row.mine:has(> .acts) > .fork-acts,
-.row.mine:has(> .retry-acts) > .fork-acts {
-	top: 74px;
-}
-.row.mine:hover > .fork-acts,
-.fork-acts:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.fork-acts button {
-	width: 22px;
-	height: 22px;
-	border-radius: 5px;
+/* 分支按钮并入行内的 .acts 横条（由 message-actions 建容器） */
+.row.mine > .acts .fork-btn {
+	width: 28px;
+	height: 28px;
+	border-radius: 7px;
 	display: grid;
 	place-items: center;
 	background: none;
 	color: var(--faint);
 	transition: background-color 120ms ease, color 120ms ease;
 }
-.fork-acts button:hover {
+.row.mine > .acts .fork-btn:hover {
 	background: var(--hover);
 	color: var(--text);
 }
-.fork-acts button:focus-visible {
+.row.mine > .acts .fork-btn:focus-visible {
 	outline: none;
 	background: var(--hover);
 	color: var(--text);
 }
-.fork-acts button[disabled] {
+.row.mine > .acts .fork-btn[disabled] {
 	opacity: 0.35;
 	cursor: default;
 }
-.fork-acts button[disabled]:hover {
+.row.mine > .acts .fork-btn[disabled]:hover {
 	background: none;
 	color: var(--faint);
 }
@@ -147,8 +125,7 @@ const CSS = `
 	from { opacity: 0; transform: translateY(4px); }
 }
 @media (prefers-reduced-motion: reduce) {
-	.fork-acts,
-	.fork-acts button,
+	.fork-btn,
 	.fork-pop,
 	.fork-pop-btn,
 	.fork-toast {
@@ -328,7 +305,7 @@ export function init(ctx) {
 
 	// ---------- 行挂载 ----------
 	const sync = (row) => {
-		const btn = row.querySelector(':scope > .fork-acts [data-act="fork"]');
+		const btn = row.querySelector(':scope > .acts [data-act="fork"]');
 		if (!btn) return;
 		const blocked = !!ctx.state?.streaming;
 		btn.disabled = blocked;
@@ -344,14 +321,17 @@ export function init(ctx) {
 		if (!row.querySelector(":scope > .user")) return;
 		row.dataset.forkActs = "1";
 
-		const bar = document.createElement("div");
-		bar.className = "fork-acts";
-		bar.setAttribute("role", "group");
-		bar.setAttribute("aria-label", "分支");
+		let bar = row.querySelector(":scope > .acts");
+		if (!bar) {
+			bar = document.createElement("div");
+			bar.className = "acts";
+			row.append(bar);
+		}
 
 		const btn = document.createElement("button");
 		btn.type = "button";
 		btn.dataset.act = "fork";
+		btn.classList.add("fork-btn");
 		btn.title = "从这条消息创建分支";
 		btn.setAttribute("aria-label", "从这条消息创建分支");
 		btn.innerHTML = BRANCH_ICON;
@@ -369,7 +349,6 @@ export function init(ctx) {
 		bar.append(btn);
 		bar.addEventListener("focusin", () => sync(row));
 		row.addEventListener("pointerenter", () => sync(row));
-		row.append(bar);
 		sync(row);
 	};
 

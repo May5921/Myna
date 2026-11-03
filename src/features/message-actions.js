@@ -2,27 +2,36 @@
 export function init(ctx) {
 	const CSS = `
 	.row { position: relative; }
-	.acts {
-		position: absolute;
-		top: 2px;
-		right: -30px;
+	/* 操作条在消息正文下方，横向一排（对齐 DSH MessageIconActions） */
+	.row > .acts {
 		display: flex;
-		flex-direction: column;
+		align-items: center;
 		gap: 2px;
+		margin-top: 4px;
 		opacity: 0;
+		pointer-events: none;
 		transition: opacity 120ms ease;
 	}
-	.row:hover .acts, .acts:focus-within { opacity: 1; }
-	.acts button {
-		width: 22px;
-		height: 22px;
-		border-radius: 5px;
+	.row:hover > .acts, .row > .acts:focus-within { opacity: 1; pointer-events: auto; }
+	.row.mine { flex-wrap: wrap; }
+	.row.mine > .acts { width: 100%; justify-content: flex-end; }
+	.row > .acts button {
+		width: 28px;
+		height: 28px;
+		border-radius: 7px;
 		display: grid;
 		place-items: center;
+		background: none;
 		color: var(--faint);
+		transition: background-color 120ms ease, color 120ms ease;
 	}
-	.acts button:hover { background: var(--hover); color: var(--text); }
-	@media (prefers-reduced-motion: reduce) { .acts { transition: none; } }
+	.row > .acts button:hover { background: var(--hover); color: var(--text); }
+	.row > .acts button:focus-visible { outline: none; background: var(--hover); color: var(--text); }
+	.row > .acts button[disabled] { opacity: 0.35; cursor: default; }
+	.row > .acts button[disabled]:hover { background: none; color: var(--faint); }
+	@media (prefers-reduced-motion: reduce) {
+		.row > .acts, .row > .acts button { transition: none; }
+	}
 	`;
 	const style = document.createElement("style");
 	style.textContent = CSS;
