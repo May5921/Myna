@@ -12,6 +12,7 @@ import {
 	setFontSize,
 	setThemePref,
 } from "../theme.js";
+import { THINKING_LEVELS, copyThinkingLevelMap, hasThinkingLevelMap } from "../core/thinking-level-map.js";
 
 const RETRY_KEY = "pi-mini.auto-retry";
 const ERR_MS = 3000;
@@ -24,7 +25,16 @@ const MENU_GAP = 6;
 const MAX_ERR = 120;
 
 // 档位兜底表（对齐 thinking-level.js）；真实值以 get_available_thinking_levels 为准
-const FALLBACK_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const FALLBACK_LEVELS = THINKING_LEVELS;
+const THINKING_LEVEL_LABELS = {
+	off: "关闭",
+	minimal: "最少",
+	low: "低",
+	medium: "中",
+	high: "高",
+	xhigh: "特高",
+	max: "最大",
+};
 
 const MODES = [
 	{ key: "all", label: "全部" },
@@ -99,11 +109,12 @@ const CSS = `
 
 .settings-dialog {
 	display: grid;
-	grid-template-columns: 188px minmax(0, 1fr);
+	grid-template-columns: 208px minmax(0, 1fr);
 	grid-template-rows: auto minmax(0, 1fr);
 	grid-template-areas: "title header" "nav options";
-	width: min(800px, 100vw - 48px);
-	height: min(780px, calc(100vh - 48px));
+	width: min(900px, calc(100vw - 48px));
+	height: auto;
+	min-height: min(620px, calc(100vh - 48px));
 	max-height: calc(100vh - 48px);
 	background: var(--bg);
 	border: 1px solid var(--line);
@@ -115,21 +126,27 @@ const CSS = `
 
 .settings-title {
 	grid-area: title;
-	padding: 22px 12px 8px 24px;
-	font-size: 16px;
-	font-weight: 500;
-	line-height: 24px;
+	padding: 24px 12px 12px 24px;
+	font-size: 15px;
+	font-weight: 600;
+	line-height: 22px;
+	letter-spacing: -.01em;
 	color: var(--text);
 }
 
 .settings-head {
 	grid-area: header;
-	height: 54px;
+	min-height: 68px;
 	display: flex;
-	align-items: flex-start;
-	justify-content: flex-end;
-	padding: 20px 14px 8px 10px;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 14px 18px 12px 28px;
+	border-bottom: 1px solid var(--line);
 }
+.settings-head-copy { min-width: 0; }
+.settings-head-title { font-size: 17px; font-weight: 600; line-height: 23px; letter-spacing: -.015em; color: var(--text); }
+.settings-head-sub { margin-top: 2px; font-size: 12px; line-height: 17px; color: var(--dim); }
 .settings-close {
 	width: 28px;
 	height: 28px;
@@ -146,8 +163,9 @@ const CSS = `
 	grid-area: nav;
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
-	padding: 10px 12px 12px;
+	gap: 3px;
+	padding: 12px 12px 14px;
+	background: var(--side-bg);
 	overflow-y: auto;
 }
 .settings-nav-item {
@@ -155,27 +173,40 @@ const CSS = `
 	align-items: center;
 	gap: 8px;
 	flex: none;
-	height: 40px;
-	padding: 9px 16px 9px 12px;
-	border-radius: 12px;
+	height: 36px;
+	padding: 8px 12px 8px 10px;
+	border-radius: 8px;
 	text-align: left;
-	font-size: 14px;
-	color: var(--text);
-	transition: background-color 100ms ease;
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--dim);
+	transition: background-color 100ms ease, color 100ms ease, box-shadow 100ms ease;
 }
-.settings-nav-item:hover { background: var(--hover); }
-.settings-nav-item.is-on { background: #ebebef; }
+.settings-nav-item:hover { background: var(--hover); color: var(--text); }
+.settings-nav-item.is-on { background: var(--sel); color: var(--text); box-shadow: inset 2px 0 var(--text); }
 .settings-nav-item:focus-visible { outline: 1px solid var(--faint); outline-offset: -1px; }
 .settings-nav-icon { display: grid; place-items: center; width: 16px; height: 16px; color: var(--dim); flex: none; }
 .settings-nav-item.is-on .settings-nav-icon { color: var(--text); }
+.settings-nav-group {
+	flex: none;
+	padding: 12px 10px 4px;
+	font-size: 10px;
+	font-weight: 650;
+	line-height: 14px;
+	letter-spacing: .06em;
+	color: var(--faint);
+}
+.settings-nav-group:first-child { padding-top: 2px; }
 
 .settings-body {
 	grid-area: options;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 0 24px 24px;
+	padding: 0 32px 28px;
+	background: var(--bg);
 }
 .settings-pane[hidden] { display: none; }
+.settings-pane { max-width: 720px; margin: 0 auto; padding-bottom: 8px; }
 
 
 .settings-add { display: flex; justify-content: flex-start; padding: 12px 0 0; }
@@ -231,6 +262,13 @@ const CSS = `
 .prov-head:hover { background: var(--hover); }
 .prov-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong, #d8d8d8); flex: none; }
 .prov-dot.on { background: #3d9a4e; }
+.prov-name,
+.prov-route {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 .prov-name { font-size: 13.5px; font-weight: 500; color: var(--text); }
 .prov-route { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
 .prov-sub {
@@ -261,8 +299,54 @@ const CSS = `
 .prov-field .prov-select { width: 100%; }
 .prov-models { display: flex; flex-direction: column; gap: 6px; }
 .prov-model-list { display: flex; flex-direction: column; gap: 6px; }
+.prov-model-wrap { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid transparent; border-radius: 9px; }
+.prov-model-wrap:focus-within { border-color: var(--line); background: var(--surface-2); }
 .prov-model { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 72px 72px auto 24px; gap: 6px; align-items: center; }
 .prov-model .settings-input { width: 100%; min-width: 0; height: 28px; font-size: 12px; }
+.prov-think { margin-top: 4px; border-top: 1px solid var(--line); }
+.prov-think[hidden] { display: none; }
+.prov-think > summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 0 5px;
+	font-size: 12px;
+	line-height: 17px;
+	color: var(--dim);
+	cursor: pointer;
+	list-style: none;
+	user-select: none;
+}
+.prov-think > summary::-webkit-details-marker { display: none; }
+.prov-think > summary::before { content: "›"; color: var(--faint); transition: transform 0.15s; }
+.prov-think[open] > summary::before { transform: rotate(90deg); }
+.prov-think > summary:hover { color: var(--text); }
+.prov-think-map {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 6px 14px;
+	padding: 2px 0 4px;
+	min-width: 0;
+}
+.prov-think-cell { display: grid; grid-template-columns: 32px minmax(0, 1fr) 22px; align-items: center; gap: 6px; min-width: 0; }
+.prov-think-label { font-size: 11.5px; line-height: 16px; color: var(--faint); min-width: 0; }
+.prov-think-input { width: 100%; min-width: 0; height: 26px; font-size: 11.5px; text-overflow: ellipsis; }
+/* 禁用态用 --dim：--faint 在浅色/深色底上都低于 4.5:1，标为「不支持」后已填的值仍要能读 */
+.prov-think-input:disabled { color: var(--dim); background: var(--side); cursor: default; }
+.prov-think-off {
+	width: 22px;
+	height: 22px;
+	border-radius: 5px;
+	display: grid;
+	place-items: center;
+	color: var(--faint);
+	transition: background-color 100ms ease, color 100ms ease;
+}
+.prov-think-off:hover { background: var(--hover); color: var(--text); }
+.prov-think-off[aria-pressed="true"] { color: var(--err); }
+/* 开关只有 12px 图标，1px --faint 的内描边在深色下几乎看不见；用 --link 两像素外描边 */
+.prov-think-off:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.prov-think-note { grid-column: 1 / -1; margin-top: 2px; font-size: 11px; line-height: 16px; color: var(--faint); }
 .prov-m-cap { text-align: right; }
 .prov-chip {
 	flex: none;
@@ -402,15 +486,30 @@ const CSS = `
 }
 .settings-note[hidden] { display: none; }
 
-.settings-sec { padding-top: 0; }
+.settings-sec {
+	padding-top: 0;
+	margin-top: 28px;
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+	overflow: visible;
+}
+.settings-pane > .settings-sec:first-child { margin-top: 22px; }
 .settings-sec-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
-	padding: 22px 0 10px;
+	padding: 0 0 9px;
 }
-.settings-sec-title { font-size: 16px; line-height: 24px; font-weight: 500; color: var(--text); }
+.settings-sec-title {
+	font-size: 11px;
+	line-height: 16px;
+	font-weight: 650;
+	letter-spacing: .06em;
+	color: var(--faint);
+}
 
 .settings-row {
 	display: grid;
@@ -418,11 +517,11 @@ const CSS = `
 	column-gap: 16px;
 	align-items: center;
 	min-height: 0;
-	padding: 16px 0;
+	padding: 13px 0;
 	border-bottom: 1px solid var(--line);
 	transition: none;
 }
-.settings-row:hover { background: transparent; }
+.settings-row:hover { background: var(--hover); }
 .settings-main {
 	display: flex;
 	flex-direction: column;
@@ -443,8 +542,8 @@ const CSS = `
 }
 
 .settings-btn {
-	height: 26px;
-	padding: 0 10px;
+	height: 32px;
+	padding: 0 12px;
 	border: 1px solid var(--line);
 	border-radius: 8px;
 	font: 12.5px/1 var(--ui);
@@ -471,7 +570,7 @@ const CSS = `
 
 .settings-input {
 	width: 168px;
-	height: 26px;
+	height: 32px;
 	padding: 0 8px;
 	background: var(--bg);
 	border: 1px solid var(--line);
@@ -482,7 +581,10 @@ const CSS = `
 	transition: border-color 120ms ease;
 }
 .settings-input::placeholder { color: var(--faint); }
-.settings-input:focus { border-color: var(--line-strong); }
+.settings-input:focus {
+	border-color: var(--line-strong);
+	box-shadow: 0 0 0 3px var(--accent-soft);
+}
 .settings-range { display: flex; align-items: center; gap: 10px; }
 .settings-range input[type="range"] {
 	width: 132px;
@@ -496,6 +598,17 @@ const CSS = `
 .settings-switch {
 	position: relative;
 	flex: none;
+	width: 40px;
+	height: 36px;
+	border-radius: 999px;
+	background: transparent;
+	transition: background-color 120ms ease;
+}
+.settings-switch::before {
+	content: "";
+	position: absolute;
+	top: 8px;
+	left: 3px;
 	width: 34px;
 	height: 20px;
 	border-radius: 999px;
@@ -505,15 +618,15 @@ const CSS = `
 .settings-switch::after {
 	content: "";
 	position: absolute;
-	top: 2px;
-	left: 2px;
+	top: 10px;
+	left: 5px;
 	width: 16px;
 	height: 16px;
 	border-radius: 999px;
 	background: var(--bg);
 	transition: transform 120ms ease;
 }
-.settings-switch[aria-checked="true"] { background: var(--send-bg); }
+.settings-switch[aria-checked="true"]::before { background: var(--send-bg); }
 .settings-switch[aria-checked="true"]::after { transform: translateX(14px); }
 .settings-switch:focus-visible { outline: 1px solid var(--faint); outline-offset: 2px; }
 .settings-switch[aria-busy="true"] { opacity: 0.6; }
@@ -522,7 +635,7 @@ const CSS = `
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	height: 26px;
+	height: 32px;
 	max-width: 260px;
 	padding: 0 8px;
 	border-radius: 8px;
@@ -574,7 +687,7 @@ const CSS = `
 	justify-content: space-between;
 	gap: 16px;
 	min-height: 26px;
-	padding: 2px 16px;
+	padding: 4px 16px;
 }
 .settings-stat-k { font-size: 12px; color: var(--dim); }
 .settings-stat-v {
@@ -626,6 +739,58 @@ const CSS = `
 	.settings-switch::after,
 	.settings-value,
 	.settings-row { transition: none; }
+}
+
+@media (max-width: 760px) {
+	.settings-dialog { grid-template-columns: 164px minmax(0, 1fr); }
+	.settings-title { padding-left: 16px; }
+	.settings-head { padding-left: 18px; }
+	.settings-body { padding-left: 16px; padding-right: 16px; }
+	.settings-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+	.settings-ctl { justify-self: start; }
+	.settings-err { grid-column: 1; }
+	.prov-model { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+	.prov-model-tools { grid-column: 1 / -1; }
+	.prov-model > .prov-del { grid-column: 2; justify-self: end; }
+	/* 窄窗：档位映射改单列，格子固定列收窄、开关放大到 24px 便于点按，输入框仍占满剩余宽度 */
+	.prov-think-map { grid-template-columns: minmax(0, 1fr); gap: 6px 0; }
+	.prov-think-cell { grid-template-columns: 28px minmax(0, 1fr) 24px; }
+	.prov-think-off { width: 24px; height: 24px; }
+}
+
+@media (max-width: 640px) {
+	.settings-dialog {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto auto auto minmax(0, 1fr);
+		grid-template-areas: "title" "header" "nav" "options";
+		width: calc(100vw - 24px);
+		min-height: calc(100vh - 32px);
+		max-height: calc(100vh - 32px);
+	}
+	.settings-title { padding: 18px 18px 8px; }
+	.settings-head { min-height: 56px; padding: 8px 18px 12px; }
+	.settings-nav {
+		grid-area: nav;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+		padding: 8px 12px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		border-top: 1px solid var(--line);
+		border-bottom: 1px solid var(--line);
+	}
+	.settings-nav-group,
+	.settings-version { display: none; }
+	.settings-nav-item { height: 34px; padding: 7px 10px; white-space: nowrap; }
+	.settings-nav-icon { display: none; }
+	.settings-body { padding: 0 16px 22px; }
+	.prov-model { grid-template-columns: minmax(0, 1fr); }
+	.prov-model-tools,
+	.prov-model > .prov-del { grid-column: 1; justify-self: start; }
+	.prov-think-map { grid-template-columns: minmax(0, 1fr); gap: 6px 0; }
+	.prov-think-cell { grid-template-columns: 28px minmax(0, 1fr) 24px; }
+	.prov-think-off { width: 24px; height: 24px; }
 }
 `;
 
@@ -720,6 +885,10 @@ export function init(ctx) {
 	title.id = "settings-title";
 
 	const head = el("div", "settings-head");
+	const headCopy = el("div", "settings-head-copy");
+	const headTitle = el("div", "settings-head-title", "通用偏好");
+	const headSub = el("div", "settings-head-sub", "外观、启动与会话列表");
+	headCopy.append(headTitle, headSub);
 	const closeBtn = el("button", "settings-close");
 	closeBtn.type = "button";
 	closeBtn.title = "关闭";
@@ -727,7 +896,7 @@ export function init(ctx) {
 	// 文本 "×" 的字形基线各家字体不一，居中靠猜；线框叉与顶栏图标同规格
 	closeBtn.innerHTML =
 		'<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3.6 3.6 10.4 10.4M10.4 3.6 3.6 10.4"/></svg>';
-	head.append(closeBtn);
+	head.append(headCopy, closeBtn);
 
 	const nav = el("nav", "settings-nav");
 	nav.setAttribute("role", "tablist");
@@ -890,7 +1059,30 @@ export function init(ctx) {
 		quick:
 			'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M8.8 2.4 4.6 9h2.8l-.4 4.6L11.4 7H8.6Z"/></svg>',
 	};
+	const NAV_GROUPS = {
+		general: "核心偏好",
+		session: "核心偏好",
+		behavior: "核心偏好",
+		providers: "模型服务",
+		stats: "运行状态",
+		extensions: "运行状态",
+		skillmcp: "运行状态",
+		about: "系统",
+		quick: "系统",
+	};
 	const panes = new Map();
+	const PANE_META = {
+		general: ["通用偏好", "外观、启动与会话列表"],
+		session: ["会话", "当前会话与历史操作"],
+		providers: ["提供商", "pi 使用的模型服务与凭据"],
+		behavior: ["行为", "流式期间的发送与压缩策略"],
+		stats: ["统计", "当前会话的用量与性能"],
+		extensions: ["扩展", "已加载的 pi 扩展与提示"],
+		skillmcp: ["技能与 MCP", "pi 启用的技能和外部服务"],
+		about: ["关于", "版本、路径与运行环境"],
+		quick: ["快捷操作", "常用动作与键盘入口"],
+	};
+	const navGroups = new Set();
 	let activePane = null;
 	let selectPane = null;
 
@@ -903,6 +1095,11 @@ export function init(ctx) {
 		btn.setAttribute("aria-controls", `settings-pane-${key}`);
 		btn.tabIndex = -1;
 		btn.innerHTML = `<span class="settings-nav-icon">${NAV_ICONS[key] || ""}</span><span>${label}</span>`;
+		const group = NAV_GROUPS[key];
+		if (group && !navGroups.has(group)) {
+			navGroups.add(group);
+			nav.insertBefore(el("div", "settings-nav-group", group), navFoot);
+		}
 		const box = el("div", "settings-pane");
 		box.id = `settings-pane-${key}`;
 		box.setAttribute("role", "tabpanel");
@@ -911,7 +1108,7 @@ export function init(ctx) {
 		btn.onclick = () => selectPane?.(key);
 		nav.insertBefore(btn, navFoot);
 		panelBody.append(box);
-		panes.set(key, { btn, box });
+		panes.set(key, { btn, box, label });
 		activePane = box;
 		return box;
 	};
@@ -926,8 +1123,14 @@ export function init(ctx) {
 			p.btn.tabIndex = on ? 0 : -1;
 			p.box.hidden = !on;
 		}
+		const meta = PANE_META[key] || [hit.label, ""];
+		headTitle.textContent = meta[0];
+		headSub.textContent = meta[1];
 		panelBody.scrollTop = 0;
-		if (focus) hit.btn.focus({ preventScroll: true });
+		if (focus) {
+			hit.btn.focus({ preventScroll: true });
+			hit.btn.scrollIntoView({ block: "nearest", inline: "nearest" });
+		}
 	};
 
 	nav.addEventListener("keydown", (e) => {
@@ -1016,7 +1219,7 @@ export function init(ctx) {
 		return [20, 40, 60, 100].includes(n) ? n : 20;
 	};
 
-	pane("general", "通用");
+	pane("general", "通用偏好");
 	const secLook = section("外观");
 	const themeRow = makeRow("主题", "跟随系统时随 Windows 明暗模式切换");
 	const themeSel = makeSelect(
@@ -1362,6 +1565,7 @@ export function init(ctx) {
 				id,
 				name: String(m.name || ""),
 				reasoning: Boolean(m.reasoning),
+				thinkingLevelMap: copyThinkingLevelMap(m.thinkingLevelMap),
 				contextWindow: Number(m.contextWindow) || lim.contextWindow,
 				maxTokens: Number(m.maxTokens) || lim.maxTokens,
 			};
@@ -1370,22 +1574,107 @@ export function init(ctx) {
 			const n = drafts.filter((m) => m.id.trim()).length;
 			summary.textContent = `模型 · ${n} 个`;
 		};
+		// 每个模型草稿的「思考档位映射」展开状态（WeakMap：不污染草稿对象、不落盘）
+		const thinkOpen = new WeakMap();
+		// 思考档位映射：默认折叠（高级项），只对标记为推理的模型可见。
+		// 切换“不支持”时只就地同步本格状态，不重建整个列表，避免丢焦点。
+		const renderThinkingMap = (m) => {
+			const details = document.createElement("details");
+			details.className = "prov-think";
+			details.hidden = !m.reasoning;
+			// render() 会重建整个列表（加/删模型、从 API 拉取），展开状态不记就丢。
+			// 记忆放进 WeakMap，不往草稿对象上挂字段，免得被 read() 带进 models.json。
+			if (thinkOpen.get(m)) details.open = true;
+			details.addEventListener("toggle", () => thinkOpen.set(m, details.open));
+			const summary = el("summary", "prov-think-sum");
+			const wrap = el("div", "prov-think-map");
+			const syncSummary = () => {
+				const n = m.thinkingLevelMap ? Object.keys(m.thinkingLevelMap).length : 0;
+				summary.textContent = n ? `思考档位映射 · ${n} 项` : "思考档位映射";
+				summary.title = "把 pi 的思考档位映射成上游实际参数；留空则沿用 pi / 服务商默认";
+			};
+			for (const level of THINKING_LEVELS) {
+				const cell = el("div", "prov-think-cell");
+				const label = el("span", "prov-think-label", THINKING_LEVEL_LABELS[level]);
+				const field = mkInput("settings-input prov-think-input", level, m.thinkingLevelMap?.[level] ?? "");
+				field.setAttribute("aria-label", `${THINKING_LEVEL_LABELS[level]}档位的上游参数`);
+				const toggle = el("button", "prov-think-off");
+				toggle.type = "button";
+				toggle.innerHTML =
+					'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="6" r="4.3"/><path d="M3 9 9 3"/></svg>';
+				// 标为「不支持」时输入框会被清空并禁用，上一次填的值记在这里，切回时原样还原
+				let lastValue = m.thinkingLevelMap?.[level] ?? "";
+				const syncCell = () => {
+					const off = m.thinkingLevelMap?.[level] === null;
+					field.disabled = off;
+					toggle.setAttribute("aria-pressed", off ? "true" : "false");
+					toggle.title = off ? `恢复“${THINKING_LEVEL_LABELS[level]}”档位` : `把“${THINKING_LEVEL_LABELS[level]}”标记为不支持`;
+					toggle.setAttribute("aria-label", toggle.title);
+				};
+				field.oninput = () => {
+					const value = field.value.trim();
+					lastValue = value; // 清空也算：避免「清空→标不支持→切回」把旧值复活
+					if (value) (m.thinkingLevelMap ||= {})[level] = value;
+					else if (m.thinkingLevelMap) {
+						// 出空就整键删；删空了连对象一起删，不留 {} 进 models.json
+						delete m.thinkingLevelMap[level];
+						if (!hasThinkingLevelMap(m.thinkingLevelMap)) delete m.thinkingLevelMap;
+					}
+					syncSummary();
+				};
+				toggle.onclick = () => {
+					if (m.thinkingLevelMap?.[level] === null) {
+						delete m.thinkingLevelMap[level];
+						if (!hasThinkingLevelMap(m.thinkingLevelMap)) delete m.thinkingLevelMap;
+						// 输入框回填与映射同时恢复，两者不能脱节
+						field.value = lastValue;
+						if (lastValue) (m.thinkingLevelMap ||= {})[level] = lastValue;
+					} else {
+						lastValue = field.value.trim();
+						(m.thinkingLevelMap ||= {})[level] = null;
+						field.value = "";
+					}
+					syncCell();
+					syncSummary();
+				};
+				syncCell();
+				cell.append(label, field, toggle);
+				wrap.append(cell);
+			}
+			wrap.append(
+				el("div", "prov-think-note", "留空沿用 pi / 服务商默认；右侧按钮把该档位标为不支持，会从可选档位中移除。"),
+			);
+			syncSummary();
+			details.append(summary, wrap);
+			return details;
+		};
 		const render = () => {
 			list.replaceChildren();
 			drafts.forEach((m, index) => {
+				const modelWrap = el("div", "prov-model-wrap");
 				const row = el("div", "prov-model");
 				const id = mkInput("settings-input prov-m-id", "模型 ID", m.id);
 				const name = mkInput("settings-input prov-m-name", "显示名称（可选）", m.name);
 				const ctx = mkInput("settings-input prov-m-cap", "上下文", m.contextWindow || "");
 				const max = mkInput("settings-input prov-m-cap", "最大输出", m.maxTokens || "");
+				const thinkBox = renderThinkingMap(m);
 				const reason = el("button", "prov-chip");
 				reason.type = "button";
 				reason.textContent = "推理";
 				reason.title = "标记为推理模型";
-				reason.setAttribute("aria-pressed", m.reasoning ? "true" : "false");
+				const syncReason = () => {
+					reason.setAttribute("aria-pressed", m.reasoning ? "true" : "false");
+					reason.setAttribute("aria-label", m.reasoning ? "推理模型（已开启）" : "推理模型（未开启）");
+				};
+				syncReason();
 				reason.onclick = () => {
 					m.reasoning = !m.reasoning;
-					reason.setAttribute("aria-pressed", m.reasoning ? "true" : "false");
+					syncReason();
+					// 只切换映射区的可见性，不重建整行，避免丢焦点和折叠状态
+					const hadFocus = thinkBox.contains(document.activeElement);
+					thinkBox.hidden = !m.reasoning;
+					// 隐藏含焦点的子树会让焦点掉回 body；交还给开关本身
+					if (hadFocus && thinkBox.hidden) reason.focus();
 				};
 				const del = el("button", "prov-del");
 				del.type = "button";
@@ -1421,14 +1710,15 @@ export function init(ctx) {
 					m.maxTokens = Number(max.value.replace(/[^0-9]/g, "")) || 0;
 				};
 				row.append(id, name, ctx, max, reason, del);
-				list.append(row);
+				modelWrap.append(row, thinkBox);
+				list.append(modelWrap);
 			});
 			if (!drafts.length) list.append(el("div", "prov-model-empty", "没有自定义模型；pi 内置目录照常可用"));
 			const add = el("button", "prov-model-add", "+ 添加模型");
 			add.type = "button";
 			add.onclick = () => {
 				const lim = limitsFor("");
-				drafts.push({ id: "", name: "", reasoning: false, contextWindow: lim.contextWindow, maxTokens: lim.maxTokens });
+				drafts.push({ id: "", name: "", reasoning: false, thinkingLevelMap: undefined, contextWindow: lim.contextWindow, maxTokens: lim.maxTokens });
 				render();
 				const inputs = list.querySelectorAll(".prov-m-id");
 				if (inputs.length) inputs[inputs.length - 1].focus();
@@ -1696,6 +1986,13 @@ export function init(ctx) {
 	async function loadProviders(force) {
 		if (provLoading) return;
 		if (provData && !force) return;
+		if (force && (openKey || addOpen)) {
+			const proceed = window.confirm("刷新会丢弃当前未保存的提供商编辑，继续吗？");
+			if (!proceed) return;
+			openKey = null;
+			addOpen = false;
+			addCard.hidden = true;
+		}
 		provLoading = true;
 		provRefresh.disabled = true;
 		provRefresh.textContent = "读取中";
@@ -2509,10 +2806,16 @@ export function init(ctx) {
 		if (overlay.hidden) return;
 		closeMenu();
 		disarm();
-		overlay.hidden = true;
-		gear.setAttribute("aria-expanded", "false");
+		// 归还焦点前先看焦点是不是还在弹窗里：clone / 保存这类收尾是 await 之后才关闭，
+		// 期间用户可能已经点了终端或 composer，这时再 focus(lastFocus) 就是抢焦点。
+		// 只认「焦点在弹窗内（或已掉回 body）」，其他情况一律不动。
+		const active = document.activeElement;
+		const focusInside = !active || active === document.body || overlay.contains(active);
 		const back = lastFocus && lastFocus.isConnected ? lastFocus : gear;
 		lastFocus = null;
+		overlay.hidden = true;
+		gear.setAttribute("aria-expanded", "false");
+		if (!focusInside) return;
 		try {
 			back.focus();
 		} catch {}

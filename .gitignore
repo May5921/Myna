@@ -10,3 +10,4 @@ shot.request
 .probe.in
 *.log
 .DS_Store
+.myna-e2e.json

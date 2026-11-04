@@ -21,8 +21,8 @@
 				--line-strong: rgba(26, 28, 31, 0.12);
 				--hover: rgba(26, 28, 31, 0.045);
 				--sel: rgba(26, 28, 31, 0.075);
-				--link: #2b7fd4;
-				--accent-soft: rgba(43, 127, 212, 0.12);
+				--link: #55468f;
+				--accent-soft: rgba(85, 70, 143, 0.14);
 				--err: #c0342b;
 				--code-bg: #f6f6f6;
 				--send-bg: #1a1c1f;
@@ -65,8 +65,8 @@
 				--line-strong: rgba(255, 255, 255, 0.16);
 				--hover: rgba(255, 255, 255, 0.055);
 				--sel: rgba(255, 255, 255, 0.09);
-				--link: #6aa9ee;
-				--accent-soft: rgba(106, 169, 238, 0.16);
+				--link: #b8acf0;
+				--accent-soft: rgba(184, 172, 240, 0.18);
 				--err: #ff6f66;
 				--code-bg: #242528;
 				--send-bg: #eceef1;
@@ -98,6 +98,11 @@
 				cursor: pointer;
 				padding: 0;
 			}
+			button:focus-visible,
+			[role="button"]:focus-visible {
+				outline: 2px solid var(--link);
+				outline-offset: 2px;
+			}
 			svg {
 				display: block;
 			}
@@ -121,7 +126,8 @@
 
 			#app {
 				display: grid;
-				grid-template-columns: var(--sidebar-width) 1fr;
+				/* 两侧都夹住：任何来源的 --sidebar-width（旧存档、外部脚本）都不会把布局撑坏 */
+				grid-template-columns: clamp(200px, var(--sidebar-width), 460px) 1fr;
 				height: 100%;
 			}
 			#app.rail-hidden {
@@ -867,20 +873,25 @@
 				margin-top: 0;
 			}
 			.tool {
-				margin: 4px 0;
-				border: 1px solid var(--line);
-				border-radius: 12px;
-				background: var(--bg);
+				margin: 2px 0;
+				/* Codex 式：收起时不是卡片，只是一行可点的工作记录；展开后才出现浅色块 */
+				border: 0;
+				border-radius: 8px;
+				background: transparent;
 				overflow: hidden;
 				font: 14px/1.6 var(--ui);
 				color: var(--text);
+			}
+			.tool[data-open="1"] {
+				background: var(--surface-2);
 			}
 			.tool .hdr {
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				height: 36px;
-				padding: 0 10px 0 12px;
+				height: 26px;
+				padding: 0 8px 0 6px;
+				border-radius: 6px;
 				cursor: pointer;
 				color: var(--dim);
 				transition: background-color 100ms ease, color 100ms ease;
@@ -937,7 +948,7 @@
 			}
 			.tool .name {
 				flex: none;
-				font-size: 14px;
+				font-size: 12.5px;
 				color: var(--text);
 			}
 			.tool .arg {
@@ -999,8 +1010,9 @@
 			}
 			.tool pre {
 				margin: 0;
-				padding: 9px 12px;
-				background: var(--code-bg);
+				padding: 8px 10px 10px;
+				/* 展开后的底由 .tool[data-open=1] 统一提供，内层不再叠一层色块 */
+				background: transparent;
 				border: 0;
 				border-top: 1px solid var(--line);
 				border-radius: 0;
@@ -1032,31 +1044,80 @@
 					background-position: -200% 0;
 				}
 			}
-			/* 一轮结束的状态条 */
-			.run-summary-row {
+			/* 一轮过程折叠块（Codex 式）：默认一行摘要，展开后才是思考与工具明细 */
+			.proc-row {
+				margin-bottom: var(--turn-gap);
+			}
+			.proc {
+				min-width: 0;
+			}
+			.proc-sum {
 				display: flex;
-				justify-content: flex-start;
-				padding-top: 4px;
-				padding-bottom: 2px;
-			}
-			.row.assistant > .run-summary {
-				align-self: flex-start;
-				margin-top: 10px;
-			}
-			.run-summary {
-				display: inline-block;
-				padding: 2px 8px;
-				border-radius: 999px;
-				border: 1px solid var(--line);
-				background: var(--bg);
+				align-items: center;
+				gap: 6px;
+				height: 26px;
+				margin-left: -6px;
+				padding: 0 6px;
+				border-radius: 6px;
+				font-size: 13px;
+				line-height: 26px;
 				color: var(--dim);
-				font-size: 11.5px;
-				line-height: 18px;
-				transition: opacity 180ms ease;
+				cursor: pointer;
+				list-style: none;
+				user-select: none;
+				transition: background-color 100ms ease, color 100ms ease;
 			}
-			.run-summary.leaving {
-				opacity: 0;
+			.proc-sum::-webkit-details-marker {
+				display: none;
 			}
+			.proc-sum::before {
+				content: "›";
+				display: inline-block;
+				flex: none;
+				width: 10px;
+				font-size: 13px;
+				color: var(--dim);
+				transition: transform 150ms ease;
+			}
+			.proc[open] > .proc-sum::before {
+				transform: rotate(90deg);
+			}
+			@media (hover: hover) {
+				.proc-sum:hover {
+					background: var(--hover);
+					color: var(--text);
+				}
+			}
+			.proc-sum:focus-visible {
+				outline: 2px solid var(--link);
+				outline-offset: 1px;
+			}
+			.proc-text {
+				min-width: 0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.proc-time {
+				flex: none;
+				margin-left: 2px;
+				color: var(--faint);
+				font-variant-numeric: tabular-nums;
+			}
+			/* 展开后的明细整体缩进一级，和正文拉开层次 */
+			.proc-body {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+				padding: 4px 0 6px 12px;
+				border-left: 1px solid var(--line);
+				margin-left: 5px;
+			}
+			.proc-body > .think[data-open="0"] {
+				height: auto;
+			}
+
+			/* 一轮结束的完成提示已并入「过程」折叠块的摘要，不再单独渲染胶囊 */
 			/* 流式新增行的入场 */
 			.fresh {
 				animation: rowIn 120ms ease-out;
@@ -1575,6 +1636,15 @@
 				overflow-y: auto;
 				scrollbar-width: none;
 			}
+			/* 聚焦不改变输入框外观：只保留光标，不加边框色和光晕 */
+			#input:focus {
+				outline: 0;
+			}
+			#model:focus-visible,
+			#send:focus-visible,
+			#jump:focus-visible {
+				outline-offset: 2px;
+			}
 			#input::-webkit-scrollbar {
 				display: none;
 			}
@@ -1828,12 +1898,8 @@
 				background: rgba(255, 255, 255, 0.3);
 				background-clip: content-box;
 			}
-			:root[data-theme="dark"] .tool-err,
-			:root[data-theme="dark"] .run-summary.err {
+			:root[data-theme="dark"] .tool-err {
 				background: rgba(255, 111, 102, 0.14);
-			}
-			:root[data-theme="dark"] .run-summary.ok {
-				background: rgba(78, 201, 120, 0.14);
 			}
 			:root[data-theme="dark"] .tps.spark,
 			:root[data-theme="dark"] .tps-shimmer {

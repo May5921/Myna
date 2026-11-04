@@ -101,3 +101,14 @@ test("src/app.js 的 FEATURES 每项都存在且 export init", () => {
 		);
 	}
 });
+
+test("运行时边界保持 pi-only", () => {
+	const app = readText("src/app.js");
+	const preload = readText("preload.cjs");
+	const main = readText("main.js");
+	const block = /const\s+FEATURES\s*=\s*\[([\s\S]*?)\]\s*;/.exec(app)?.[1] ?? "";
+
+	assert.doesNotMatch(block, /omp-(?:todo|tasks)\.js/i, "OMP feature 不应进入运行时加载清单");
+	assert.doesNotMatch(preload, /agentBackend/i, "pi-only preload 不应暴露后端切换 API");
+	assert.doesNotMatch(main, /opencode/i, "pi-only 主进程不应保留 OpenCode 路径");
+});

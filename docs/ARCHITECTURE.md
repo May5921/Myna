@@ -1,7 +1,37 @@
-# pi-mini 技术契约（对齐 DSH）
+# myna 技术契约（pi 原生）
 
-> 参考实现：`C:\Users\Luke\projects\deepseek-harness`（MIT，完整开源）。
-> 只抄**结构与行为**，不抄 React/CSS Modules 实现，不引入依赖。
+> 参考实现：`C:\Users\Luke\projects\deepseek-harness`（MIT）与
+> [jmfederico/pi-web](https://github.com/jmfederico/pi-web)（MIT）。
+> 借鉴状态边界、会话分层和交互规则，不复制产品外观或引入它们的运行时依赖。
+
+## 0. 产品骨架
+
+myna 只服务 pi。产品状态按 pi 的真实概念组织：
+
+```text
+工作区（cwd）
+  └─ 会话（session jsonl）
+      └─ 回合（agent start → messages/tools → settled）
+          ├─ 用户消息
+          ├─ 思考与正文
+          └─ 工具调用及结果
+```
+
+侧栏的 `src/core/session-groups.js` 只负责“工作区 → 会话”的筛选、分组和排序；
+DOM 创建、菜单和持久化仍由渲染层负责。这个边界借鉴 pi-web 对 Machine / Project /
+Workspace / Session 的分层，同时保留本地 pi 会话文件的语义。
+
+回合的 `src/core/turn-model.js` 保存生命周期、统计和回合内 assistant 消息快照；
+消息快照同时保存正文、thinking、`pendingText`、终稿和工具结果。
+`src/app.js` 通过 `currentAssistant()` 只读访问当前快照，DOM 不再维护一份 assistant 镜像。
+
+事件边界按 pi RPC 的生命周期处理：`message_end.message` 是 assistant 的权威终稿；
+`tool_execution_update.partialResult` 只替换同一 `toolCallId` 的最新预览，
+`tool_execution_end.result` 才结算工具；带 `parentToolCallId` 的嵌套调用不另画顶层卡；
+`agent_settled.aborted` 与本地停止闩锁共同决定回合结果，结算后的迟到事件丢弃。
+
+DSH 的 `conversation contract`、事件注册和工具视图是参考资料。myna 采用原生
+ES module 与 DOM，不引入 React、Cordis 或 DSH 的运行时。
 
 ## 1. 模块契约（pi-mini 既有，保持）
 
@@ -48,6 +78,9 @@ pi-mini 的等价物：`src/features/input-trigger.js` 一个模块内分三段�
 - 没有内置命令目录（`get_commands` 只有 extension/prompt/skill）
 - session 引用（`@[label](dsh-session:…)`）无法实现：pi RPC 没有 session mention 协议
 
+消息事件和历史 assistant 条目先进入 `src/core/assistant-message.js`，再由 `app.js` 驱动当前 DOM；
+这样 thinking、正文、终稿和工具结果有一个 pi 语义上的状态源。
+
 ## 3. 命令分发（`ui-commands`）
 
 DSH 按会话目录把一行 `/` 解析成三种：
@@ -73,7 +106,8 @@ pi-mini 只有 1 的简化版：把 `/name ` 写进输入框，交给 pi 当普�
 - `Enter` 发送 / `Shift+Enter` 换行；菜单打开时 `Enter` 归菜单
 - `Esc Esc` 停止（pi-mini 目前单 Esc abort，后续可加）
 - 上下文占用条（DSH 有 ring + 百分比；pi-mini 可用 `get_session_stats` 做简化版）
-- 排队/steer 不做（RPC 有 `steer`/`followUp`，但交互设计未定）
+- 排队和插话保留为本地队列语义：排队消息空闲后发送，插话消息直接发 `steer`；
+  不伪造 pi 没有的远端队列状态。
 
 ## 6. 菜单材质
 
@@ -96,9 +130,9 @@ DSH：视口内才高亮、虚拟行。pi-mini：`IntersectionObserver` + shiki 
 | React + slots + Cordis | 零构建约束 |
 | session 引用 | pi RPC 无协议 |
 | popupSelect 命令 | RPC 无命令 UI 描述 |
-| 右栏 Browser 选项卡 | 与 Codex 极简冲突；右栏只保留文件/变更/会话三个抽屉（`features/right-panel.js`） |
-| 右侧 Terminal 选项卡 | 改为底部抽屉（`features/terminal.js`），非 PTY，一次一条命令 |
-| 深色模式 | 用户明确不做 |
+| DSH 的多工作区/任务 dock | pi TUI 没有对应语义，不引入 |
+| DSH 的远端队列/自动化任务 | myna 只保留本地排队和 pi `steer` 语义 |
+| DSH 的运行时插件架构 | 保留 pi 扩展入口，但不引入 React/Cordis |
 
 附件/图片与设置页已实现：`features/attachments.js`、`features/settings.js`。
 
@@ -114,7 +148,7 @@ DSH：视口内才高亮、虚拟行。pi-mini：`IntersectionObserver` + shiki 
 | `ui-primitives/DisclosureRow` | `buildToolRow` + `toggleDisclosure` |
 | `ui-primitives/highlight` | 主进程 shiki + `applyHighlight` |
 | `ui-sidebar` | `app.js` `renderSessions` + `features/right-panel.js` |
-| `ui-settings` 分栏外壳 | `features/settings.js`（左导航 + pane，188px 网格） |
+| `ui-settings` 分栏外壳 | `features/settings.js`（左导航 + pane，208px 网格；内容驱动高度） |
 | `ui-settings-models` | `features/settings.js` 提供商分区（write-only key、最小字段保存、写前备份） |
 | 终端 | `features/terminal.js` + main.js `pi:term-run`（`powershell -Command`，非 PTY） |
 | 命令面板 | `features/shortcuts.js`（`Ctrl+K`，命令列举 + 可用性） |

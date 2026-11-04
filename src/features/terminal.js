@@ -7,7 +7,8 @@
 //   onTermExit(cb) → 退订；{ runId, code }
 //
 // 窗口钩子：__piTermToggle() 开关抽屉；__piTermDemo() 打开并跑 `echo pi-mini terminal`。
-// 键盘：Ctrl+` 全局开关（普通反引号输入不受影响）；输入框内 Enter 执行 / ↑↓ 历史 / Ctrl+L 清屏；Esc 关闭抽屉。
+// 键盘：Ctrl+` 全局开关（普通反引号输入不受影响）；输入框内 Enter 执行 / ↑↓ 历史 / Ctrl+L 清屏；
+// 拖拽条可聚焦，↑↓ 调高（Shift 大步）；Esc 只在焦点位于抽屉内时关闭抽屉，不抢聊天输入框的 Esc。
 //
 // 本地持久化（localStorage，读写全部 try/catch，隐私模式下静默降级）：
 //   pi-mini.termHistory —— 最近 200 条命令（相邻去重），刷新后 ↑↓ 仍可用；
@@ -29,6 +30,10 @@ const H_MAX = () => Math.max(H_MIN, Math.min(560, Math.round(window.innerHeight 
 
 // 半截转义序列的缓冲上限：真遇到永不完结的 OSC（比如坏掉的标题设置），直接丢，别把内存吃满。
 const ANSI_CARRY_MAX = 4096;
+
+// 按钮文案（复制按钮会临时改成「已复制」，aria-label 用这个还原）
+const COPY_TITLE = "复制全部输出";
+const GRIP_STEP = 16; // 拖拽条方向键步长（Shift 走四步）
 
 const CLOSE_ICON =
 	'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2.7 2.7 9.3 9.3M9.3 2.7 2.7 9.3"/></svg>';
@@ -106,6 +111,10 @@ const CSS = `
 	transition: background 0.12s ease;
 }
 .term-grip:hover::after, .term-grip:active::after { background: var(--dim); }
+/* 拖拽条可聚焦（方向键调高），键盘聚焦时给个可见边界，别只靠鼠标悬停。 */
+.term-grip:focus { outline: 0; }
+.term-grip:focus-visible { outline: 1px solid var(--faint); outline-offset: -2px; }
+.term-grip:focus-visible::after { background: var(--dim); }
 .term.dragging, .term.dragging * { user-select: none !important; }
 
 .term-head {
@@ -154,6 +163,9 @@ const CSS = `
 .term-btn.stop { color: var(--err, var(--term-err)); }
 .term-btn.stop:hover { background: var(--hover); color: var(--err, var(--term-err)); }
 .term-btn.ok { color: var(--text); }
+/* 不可用：没有可复制/可清的输出，或宿主没给 termKill。灰掉但仍占位，按钮不跳动。 */
+.term-btn:disabled,
+.term-btn:disabled:hover { background: none; color: var(--faint); opacity: 0.45; cursor: default; }
 .term-btn[hidden] { display: none; }
 
 .term-out {
@@ -173,6 +185,8 @@ const CSS = `
 }
 .term-out::-webkit-scrollbar { width: 8px; }
 .term-out::-webkit-scrollbar-thumb { background: var(--term-dim); border-radius: 4px; }
+/* 输出区在「运行中（输入框 disabled）」时承接焦点，程序化聚焦不该画出边框。 */
+.term-out:focus, .term-out:focus-visible { outline: 0; }
 /* 空行也要占一行高，否则 printf 的空行会被压扁 */
 .term-line { min-height: 1.55em; }
 .term-line.cmd { color: var(--term-dim); }
@@ -223,6 +237,8 @@ export function init(ctx) {
 
 	const pi = ctx?.pi || {};
 	const state = ctx?.state || {};
+	// 宿主没给 termKill 时，运行中的「停止」不可点（不是样式问题，是真的没接口）。
+	const canKill = typeof pi.termKill === "function";
 
 	const style = document.createElement("style");
 	style.textContent = CSS;
@@ -248,9 +264,13 @@ export function init(ctx) {
 
 	const grip = document.createElement("div");
 	grip.className = "term-grip";
-	grip.title = "拖动调整高度（双击恢复默认）";
+	grip.title = "拖动或按方向键调整高度（双击恢复默认）";
 	grip.setAttribute("role", "separator");
 	grip.setAttribute("aria-orientation", "horizontal");
+	grip.setAttribute("aria-label", "终端高度（上下方向键调整）");
+	grip.setAttribute("aria-valuemin", String(H_MIN));
+	grip.setAttribute("aria-valuemax", String(H_MAX()));
+	grip.tabIndex = 0; // 键盘等价操作：可聚焦才能接方向键
 
 	const head = document.createElement("div");
 	head.className = "term-head";
@@ -262,7 +282,7 @@ export function init(ctx) {
 	const cwdEl = document.createElement("span");
 	cwdEl.className = "term-cwd";
 
-	const copyBtn = mkBtn("复制", "复制全部输出", "");
+	const copyBtn = mkBtn("复制", COPY_TITLE, "");
 	const clearBtn = mkBtn("清空", "清空输出（Ctrl+L）", "");
 	const closeBtn = mkBtn("", "关闭终端（Esc）", CLOSE_ICON);
 
@@ -270,6 +290,7 @@ export function init(ctx) {
 
 	const out = document.createElement("div");
 	out.className = "term-out";
+	out.tabIndex = -1; // 运行中 input 是 disabled，打开抽屉时把焦点接在这里，别丢给 body
 
 	const foot = document.createElement("div");
 	foot.className = "term-foot";
@@ -289,9 +310,10 @@ export function init(ctx) {
 	const stateEl = document.createElement("span");
 	stateEl.className = "term-state";
 
-	const stopBtn = mkBtn("停止", "停止当前命令", "");
+	const stopBtn = mkBtn("停止", canKill ? "停止当前命令" : "当前环境不支持停止（ctx.pi.termKill 不可用）", "");
 	stopBtn.classList.add("stop");
 	stopBtn.hidden = true;
+	stopBtn.disabled = !canKill;
 
 	foot.append(prompt, input, stateEl, stopBtn);
 	root.append(grip, head, out, foot);
@@ -316,6 +338,7 @@ export function init(ctx) {
 	const history = loadHistory();
 	let hIdx = -1;
 	let draft = "";
+	let returnFocus = null; // 打开前的焦点元素：关闭后要还回去，不能丢给 body
 	const tail = { stdout: null, stderr: null }; // 未换行的尾巴节点，避免把一行拆成多行
 	const carry = { stdout: "", stderr: "" }; // 跨 chunk 的半截转义序列
 	const unsubs = [];
@@ -357,9 +380,17 @@ export function init(ctx) {
 	}
 
 	// ---------- 高度 ----------
+	// 拖拽条的 ARIA 值：hidden 时 getBoundingClientRect 全是 0，只有可见时量的 px 才是真的。
+	const syncGripAria = () => {
+		grip.setAttribute("aria-valuemin", String(H_MIN));
+		grip.setAttribute("aria-valuemax", String(H_MAX()));
+		if (root.hidden) return;
+		grip.setAttribute("aria-valuenow", String(Math.round(root.getBoundingClientRect().height)));
+	};
 	const clampH = (h) => Math.max(H_MIN, Math.min(H_MAX(), Math.round(Number(h) || 0)));
 	const applyHeight = (h) => {
 		root.style.height = `${clampH(h)}px`;
+		syncGripAria();
 	};
 	// 启动恢复：没有记录就用 CSS 默认 min(300px,45vh)。
 	const savedH = parseFloat(readStore(HKEY_H) || "");
@@ -378,10 +409,12 @@ export function init(ctx) {
 			input.setSelectionRange(n, n);
 		} catch {}
 	};
+	// 贴底与否：追加前先量一次（24px 容差），当时不在底部就不动滚动位置，
+	// 用户向上翻历史时输出不会被拽回去；滚回底部后下一次追加自然又跟上。
+	const atBottom = () => out.scrollHeight - out.scrollTop - out.clientHeight < 24;
 	const pin = () => {
 		out.scrollTop = out.scrollHeight;
 	};
-	const atBottom = () => out.scrollHeight - out.scrollTop - out.clientHeight < 24;
 
 	const makeLine = (text, kind) => {
 		const el = document.createElement("div");
@@ -402,9 +435,23 @@ export function init(ctx) {
 		if (tail.stderr && !tail.stderr.isConnected) tail.stderr = null;
 	};
 
+	// 按钮可用态跟真实状态对齐：没输出就没得复制/清空；没 termKill 就不能点停止。
+	const setOff = (el, off) => {
+		if (el.disabled !== off) el.disabled = off;
+	};
+	const syncChrome = () => {
+		const has = out.childElementCount > 0;
+		setOff(copyBtn, !has);
+		setOff(clearBtn, !has);
+		setOff(stopBtn, !canKill);
+	};
+
 	const emit = (text, kind) => {
+		const bottom = atBottom(); // 必须在 append 之前量
 		out.append(makeLine(stripAnsi(text), kind));
 		trim();
+		syncChrome();
+		if (bottom) pin();
 	};
 
 	const refreshCwd = () => {
@@ -418,18 +465,33 @@ export function init(ctx) {
 		out.textContent = "";
 		tail.stdout = tail.stderr = null;
 		carry.stdout = carry.stderr = "";
+		syncChrome(); // 清完就没东西可复制/可清了
+	};
+
+	// 焦点进抽屉：运行中 input 是 disabled、聚不上，退到输出区（tabIndex=-1），
+	// 这样「只在抽屉内生效」的键还有用，焦点也不会落到 body。
+	const focusIn = () => {
+		if (!open) return;
+		if (!input.disabled) input.focus({ preventScroll: true });
+		else out.focus({ preventScroll: true });
 	};
 
 	const setRunning = (on) => {
+		// input 被 disabled 时浏览器会把焦点挤到 body，所以先记下再挪：
+		// 运行中焦点落在输出区，抽屉内的 Esc（也只限抽屉内）才能继续生效。
+		const hadFocus = open && root.contains(document.activeElement);
 		running = on;
 		input.disabled = on;
 		stateEl.textContent = on ? "运行中…" : "";
-		stopBtn.hidden = !on; // 运行中才给停止入口
-		// 结束后把焦点还给输入框，但不从别处（比如主输入框）抢焦点
-		if (!on && open) {
-			const a = document.activeElement;
-			if (!a || a === document.body || a === input) input.focus({ preventScroll: true });
+		stopBtn.hidden = !on; // 运行中才给停止入口（没 termKill 时由 syncChrome 置 disabled）
+		syncChrome();
+		if (on) {
+			if (hadFocus) focusIn(); // 此时 input 已 disabled：focusIn 会落到输出区
+			return;
 		}
+		// 结束后把焦点还给输入框，但不从别处（比如主输入框、复制按钮）抢焦点
+		const a = document.activeElement;
+		if (open && (!a || a === document.body || a === input || a === stopBtn || a === out)) focusIn();
 	};
 
 	// ---------- 流式输出 ----------
@@ -478,6 +540,7 @@ export function init(ctx) {
 		if (frag.childElementCount) {
 			out.append(frag);
 			trim();
+			syncChrome();
 		}
 		if (bottom) pin();
 	};
@@ -485,28 +548,33 @@ export function init(ctx) {
 	// ---------- 历史 ----------
 	// 落盘在 pushHistory 里做（每条命令一次写入），启动时 loadHistory 读回。
 	const pushHistory = (cmd) => {
-		if (history[history.length - 1] !== cmd) history.push(cmd);
+		const c = String(cmd ?? "").trim();
+		if (!c) return; // 空串不进历史（否则 ↑↓ 回放出空命令）
+		if (history[history.length - 1] !== c) history.push(c);
 		if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
 		writeStore(HKEY, JSON.stringify(history));
 	};
 
+	const blank = (v) => !String(v ?? "").trim();
 	const nav = (dir) => {
-		if (!history.length) return;
+		if (!history.length) return; // 无历史：↑↓ 什么都不做，也不清空当前输入
 		if (hIdx === -1) {
-			if (dir > 0) return; // 已在草稿位
+			if (dir > 0) return; // 已在草稿位，下面没东西
 			draft = input.value;
-			hIdx = history.length - 1;
-		} else {
-			hIdx += dir;
-			if (hIdx >= history.length) {
-				hIdx = -1;
-				input.value = draft;
-				caret();
-				return;
-			}
-			if (hIdx < 0) hIdx = 0;
+			hIdx = history.length; // 从末尾往前扫
 		}
-		input.value = history[hIdx] ?? "";
+		let i = hIdx + dir;
+		while (i >= 0 && i < history.length && blank(history[i])) i += dir; // 防御：跳过空串项
+		if (i >= history.length) {
+			hIdx = -1;
+			input.value = draft;
+			caret();
+			return;
+		}
+		if (i < 0) i = history.findIndex((v) => !blank(v)); // 到最旧一条就停住
+		if (i < 0) return;
+		hIdx = i;
+		input.value = String(history[i] ?? "");
 		caret();
 	};
 
@@ -525,8 +593,7 @@ export function init(ctx) {
 		tail.stdout = tail.stderr = null;
 		carry.stdout = carry.stderr = "";
 		refreshCwd();
-		emit(`$ ${cmd}`, "cmd");
-		pin();
+		emit(`$ ${cmd}`, "cmd"); // emit 自己判是否贴底：用户在看历史就别拉他回来
 		input.value = "";
 		hIdx = -1;
 		draft = "";
@@ -564,20 +631,19 @@ export function init(ctx) {
 		stopPending = false;
 		tail.stdout = tail.stderr = null;
 		carry.stdout = carry.stderr = "";
-		emit("已停止", "dim");
-		pin();
+		emit("已停止", "dim"); // 贴底由 emit 自己判：用户在看历史就别拽
 		setRunning(false);
-		if (typeof pi.termKill === "function") {
+		if (canKill) {
 			try {
 				Promise.resolve(pi.termKill(id)).catch(() => {});
 			} catch {}
 		} else {
-			emit("ctx.pi.termKill 不存在，无法停止", "err");
+			emit("ctx.pi.termKill 不存在，无法停止", "err"); // 防御：正常到此按钮不可点
 		}
 	};
 
 	const stop = () => {
-		if (!running) return;
+		if (!running || !canKill) return; // 没有 termKill 时停止键本来就是 disabled
 		if (!current) {
 			stopPending = true; // runId 还没回来，等 run() 拿到再 kill
 			return;
@@ -592,7 +658,6 @@ export function init(ctx) {
 		carry.stdout = carry.stderr = "";
 		const n = Number.isFinite(code) ? code : -1;
 		emit(`退出 ${n}`, n === 0 ? "exit" : "exit-fail");
-		pin();
 		setRunning(false);
 	};
 
@@ -623,17 +688,36 @@ export function init(ctx) {
 	const setOpen = (next) => {
 		const want = !!next;
 		if (want === open) return;
-		open = want;
-		if (open) {
+		if (want) {
+			// 记住打开前的焦点元素：关掉时还回去，而不是丢给 body
+			const a = document.activeElement;
+			returnFocus = a && a !== document.body && !root.contains(a) ? a : null;
+			open = true;
 			refreshCwd();
 			root.hidden = false;
-			pin();
-			requestAnimationFrame(() => {
-				if (open) input.focus({ preventScroll: true });
-			});
-		} else {
-			root.hidden = true;
-			if (document.activeElement === input) input.blur();
+			syncGripAria();
+			pin(); // 打开即贴底（先量后贴：hidden 时量不出高度，放这里最稳）
+			// 不用 rAF：窗口在后台/被遮挡时 rAF 会被节流到不执行，焦点会停在原处。
+			// root.hidden 已在上面置 false，元素此刻已可聚焦，同步聚焦更可靠。
+			focusIn();
+			return;
+		}
+		// 关闭：隐藏后浏览器会把抽屉内的焦点挤到 body，所以先记下再手动还回去。
+		const hadFocus = root.contains(document.activeElement);
+		const back = returnFocus;
+		returnFocus = null;
+		open = false;
+		root.hidden = true;
+		if (!hadFocus) return; // 焦点已经不在抽屉里（比如先点了别处再关）：不抢
+		if (back && back.isConnected && typeof back.focus === "function") {
+			back.focus({ preventScroll: true });
+			return;
+		}
+		// 无元素可还（比如由 api.open() 打开）：退回主输入框，至少别落在 body 上。
+		if (typeof ctx?.input?.focus === "function") {
+			try {
+				ctx.input.focus({ preventScroll: true });
+			} catch {}
 		}
 	};
 
@@ -680,11 +764,14 @@ export function init(ctx) {
 			toggle();
 			return;
 		}
-		// Esc 只在抽屉打开时关抽屉；别的浮层已经处理过（defaultPrevented）就不抢。
-		if (e.key === "Escape" && open && !e.defaultPrevented) {
-			e.preventDefault();
-			setOpen(false);
-		}
+		// Esc 只在「抽屉已开且焦点在抽屉内」时关抽屉：
+		// 聊天输入框里按 Esc 不能再顺手把终端关掉（Ctrl+K 等也同理，不在 document 上拦）。
+		if (e.key !== "Escape" || !open || e.defaultPrevented) return;
+		const a = document.activeElement;
+		if (!a || !root.contains(a)) return;
+		e.preventDefault();
+		e.stopPropagation(); // 已处理：别再让 app.js 的 Esc（中断流式）也跑一遍
+		setOpen(false);
 	};
 
 	// ---------- 复制 ----------
@@ -715,14 +802,21 @@ export function init(ctx) {
 		const text = Array.from(out.children)
 			.map((el) => el.textContent)
 			.join("\n");
+		if (!text) {
+			copyBtn.disabled = true; // 真没东西可复制（api.copy() 也可能走到这里）
+			return false;
+		}
 		const ok = await copyText(text);
 		clearTimeout(copyTimer);
 		copyBtn.textContent = ok ? "已复制" : "复制失败";
+		copyBtn.setAttribute("aria-label", ok ? "已复制全部输出" : "复制失败");
 		copyBtn.classList.toggle("ok", ok);
 		copyTimer = setTimeout(() => {
 			copyBtn.textContent = "复制";
+			copyBtn.setAttribute("aria-label", COPY_TITLE);
 			copyBtn.classList.remove("ok");
 		}, 1200);
+		return ok;
 	};
 
 	// ---------- 拖拽调高 ----------
@@ -731,7 +825,8 @@ export function init(ctx) {
 	const onGripDown = (e) => {
 		if (e.pointerType === "mouse" && e.button !== 0) return;
 		e.preventDefault();
-		drag = { y: e.clientY, h: root.getBoundingClientRect().height };
+		// 拖之前在底部就跟着贴底，否则别把正在看的历史拽走
+		drag = { y: e.clientY, h: root.getBoundingClientRect().height, bottom: atBottom() };
 		root.classList.add("dragging");
 		try {
 			grip.setPointerCapture(e.pointerId);
@@ -740,6 +835,7 @@ export function init(ctx) {
 	const onGripMove = (e) => {
 		if (!drag) return;
 		applyHeight(drag.h + (drag.y - e.clientY));
+		if (drag.bottom) pin();
 	};
 	const onGripUp = (e) => {
 		if (!drag) return;
@@ -754,13 +850,34 @@ export function init(ctx) {
 	};
 	const onGripReset = () => {
 		// 双击回默认：删键而不是存默认值，这样窗口尺寸变了仍跟 CSS 的 min(300px,45vh) 一致。
+		const bottom = atBottom();
 		applyHeight(H_DEFAULT());
 		dropStore(HKEY_H);
+		if (bottom) pin();
+	};
+	// 键盘等价操作：↑ 变高、↓ 变矮（Shift 大步），上下限跟拖拽共用 clampH。
+	const onGripKey = (e) => {
+		if (e.isComposing) return;
+		const step = e.shiftKey ? GRIP_STEP * 4 : GRIP_STEP;
+		// 先用内联 px（applyHeight 写的），没有再用实测高度，免得 border-top 的 1px 每次累加
+		const cur = parseFloat(root.style.height) || root.getBoundingClientRect().height || H_DEFAULT();
+		let next = null;
+		if (e.key === "ArrowUp") next = cur + step; // 抽屉贴底：往上 = 更高
+		else if (e.key === "ArrowDown") next = cur - step;
+		else return;
+		e.preventDefault(); // 方向键归拖拽条，不去滚输出区
+		const bottom = atBottom();
+		applyHeight(next);
+		if (bottom) pin();
+		writeStore(HKEY_H, String(clampH(parseFloat(root.style.height))));
 	};
 	// 窗口缩小后旧的 px 高度可能超过 70vh，随手夹一下（不写盘，保留用户原值）。
 	const onWinResize = () => {
 		const cur = parseFloat(root.style.height);
+		const bottom = root.hidden ? false : atBottom();
 		if (Number.isFinite(cur) && cur > H_MAX()) applyHeight(H_MAX());
+		syncGripAria(); // 70vh 随窗口变了，上下限值重新播报
+		if (bottom) pin();
 	};
 
 	// ---------- 接线 ----------
@@ -777,6 +894,7 @@ export function init(ctx) {
 	grip.addEventListener("pointerup", onGripUp);
 	grip.addEventListener("pointercancel", onGripUp);
 	grip.addEventListener("dblclick", onGripReset);
+	grip.addEventListener("keydown", onGripKey);
 	window.addEventListener("resize", onWinResize);
 	document.addEventListener("keydown", onDocKey, true);
 
@@ -792,6 +910,7 @@ export function init(ctx) {
 	}
 
 	refreshCwd();
+	syncChrome(); // 初始无输出：复制/清空 灰掉；无 termKill 时停止也不可点
 
 	const demo = () => {
 		setOpen(true);
@@ -827,6 +946,7 @@ export function init(ctx) {
 			grip.removeEventListener("pointerup", onGripUp);
 			grip.removeEventListener("pointercancel", onGripUp);
 			grip.removeEventListener("dblclick", onGripReset);
+			grip.removeEventListener("keydown", onGripKey);
 			root.remove();
 			style.remove();
 			if (window.__piTermToggle === toggle) delete window.__piTermToggle;

@@ -7,9 +7,31 @@ import {
 	summarizeMetrics,
 } from "./core/metrics.js";
 import { imagesFromContent } from "./core/content-images.js";
+import {
+	applyHistoryToolResult,
+	assistantTextFromContent,
+	assistantFromHistory,
+	createAssistantMessage,
+} from "./core/assistant-message.js";
+import {
+	applyAssistantEventToTurn,
+	beginTurn,
+	createTurnState,
+	currentAssistantMessage,
+	finishAssistantMessageInTurn,
+	noteAssistantMessage,
+	noteToolStart,
+	requestAbort,
+	revealAllAssistantTextInTurn,
+	revealAssistantTextInTurn,
+	resetTurn,
+	settleTurn,
+} from "./core/turn-model.js";
 import { initTheme, isDark } from "./theme.js";
 
 initTheme();
+
+import { buildSessionGroups } from "./core/session-groups.js";
 
 const $ = (id) => document.getElementById(id);
 const stream = $("stream");
@@ -45,20 +67,15 @@ const state = {
 	projectsSeeded: false,
 	live: null, // 正在流式的 assistant 行
 	liveText: null, // 流式 markdown 增量渲染器（append/flush + caret）
-	liveRaw: "",
-	textPending: "", // 待吐出的文本（pi-web 式匀速吐字）
 	revealRaf: 0,
 	revealTick: 0,
-	revealFinal: null, // message_end 到达但文本还没吐完时暂存
 	liveTps: null, // 实时吐字仪表：滑动窗口 + EMA + 迷你曲线
 	runTps: 0, // 本轮平均 tok/s，结算条用
 	runSpeed: { tokens: 0, ms: 0 }, // 多段 assistant 回合的累计解码时间/ token
 	liveThink: null, // 流式思考块（thinking_delta）
-	liveThinkRaw: "",
 	liveTokens: 0, // 已接收文本的增量 token 估算
 	tpsTimer: 0,
 	runClock: null, // 运行中状态行（思考中/生成中 + 已用时间，DSH RunningStatus）
-	pendingTools: [], // 正文还没落定时先排队的工具卡，finalize 写完 innerHTML 再插入
 	aborted: false, // 用户主动中断：settle 时画“已停止”标记（DSH 的 stopped tag）
 	abortRow: null, // 被中断的那一行；只标自己，别标到上一条历史回答
 	pendingUserEcho: "", // submit 已乐观插入的用户消息，等 pi 回显时跳过
@@ -71,13 +88,18 @@ const state = {
 	newBucketEpoch: -1, // _new 桶属于哪一次会话切换（防串桶）
 	sessionEpoch: 0,
 	streamSeq: 0, // 流式状态版本号：过期的 get_state 回包不许覆盖它
-	runStart: 0,
-	runTools: 0,
+	turn: createTurnState(),
+	turnRows: [], // 本轮实时渲染出的 assistant 行，供整轮过程折叠使用
 	tools: new Map(),
 };
 
 // 图片附件桥：features/attachments.js 覆盖 get/clear
 const attachments = { get: () => [], clear: () => {} };
+
+const emptyAssistant = createAssistantMessage();
+function currentAssistant() {
+	return currentAssistantMessage(state.turn) || emptyAssistant;
+}
 
 // ---------- 文本工具 ----------
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -154,7 +176,9 @@ function linkifyPaths(html) {
 	return html.replace(BARE_PATH, wrapPath);
 }
 
-const inlineMd = (s) =>
+// 行内渲染：代码、链接、裸路径。粗体在外面先抽成占位符再还原，
+// 否则 `**a `code` b**` 会被行内代码切断，双星号原样漏出来。
+const inlineCore = (s) =>
 	esc(s)
 		.split(/(`[^`\n]+`)/)
 		.map((part) => {
@@ -172,10 +196,22 @@ const inlineMd = (s) =>
 				slots.push(html);
 				return `%%SLOT${slots.length - 1}%%`;
 			});
-			text = linkifyPaths(text).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+			text = linkifyPaths(text);
 			return text.replace(/%%SLOT(\d+)%%/g, (_m, i) => slots[Number(i)] ?? "");
 		})
 		.join("");
+
+const BOLD_SLOT = /\u0000B(\d+)\u0000/g;
+
+const inlineMd = (s) => {
+	const bolds = [];
+	const withSlots = String(s).replace(/\*\*([\s\S]+?)\*\*/g, (_m, inner) => {
+		bolds.push(inner);
+		return `\u0000B${bolds.length - 1}\u0000`;
+	});
+	if (!bolds.length) return inlineCore(withSlots);
+	return inlineCore(withSlots).replace(BOLD_SLOT, (_m, i) => `<strong>${inlineCore(bolds[Number(i)])}</strong>`);
+};
 
 function splitTableRow(line) {
 	let s = line.trim();
@@ -488,6 +524,14 @@ function restoreScroll(key) {
 
 function initScroll() {
 	const jump = $("jump");
+	const composer = $("composer");
+	const syncJumpPosition = () => {
+		if (!composer || !jump) return;
+		jump.style.bottom = `${Math.max(12, composer.offsetHeight + 10)}px`;
+	};
+	syncJumpPosition();
+	window.addEventListener("resize", syncJumpPosition);
+	if (typeof ResizeObserver === "function") new ResizeObserver(syncJumpPosition).observe(composer);
 	stream.addEventListener("scroll", () => {
 		const gap = stream.scrollHeight - stream.scrollTop - stream.clientHeight;
 		stickBottom = gap < 48;
@@ -520,28 +564,23 @@ function initScroll() {
 
 function clearStream() {
 	stopReveal();
-	state.textPending = "";
-	state.revealFinal = null;
 	state.liveThink = null;
-	state.liveThinkRaw = "";
 	state.aborted = false;
 	state.abortRow = null;
 	state.pendingUserEcho = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.tpsTimer = 0;
 	state.runClock = null;
-	state.pendingTools = [];
 	state.liveTps = null;
 	state.runTps = 0;
-	state.runStart = 0;
-	state.runTools = 0;
 	state.runSpeed = { tokens: 0, ms: 0 };
 	state.liveTokens = 0;
 	stream.innerHTML = "";
 	state.live = null;
 	state.liveText = null;
-	state.liveRaw = "";
 	state.tools.clear();
+	state.turn = resetTurn();
+	state.turnRows = [];
 }
 
 function emptyHint(text = "选个目录，说句话。") {
@@ -590,10 +629,8 @@ function addUser(text, images = []) {
 
 function addAssistantRow() {
 	// 上一条消息还没吐完就来了新消息：先收尾，别丢尾巴
-	if (state.revealFinal) finalizeAssistant(state.revealFinal);
+	if (state.live && currentAssistant().finalMessage) finalizeAssistant(currentAssistant().finalMessage);
 	stopReveal();
-	state.textPending = "";
-	state.revealFinal = null;
 	// 一轮里只挂一行运行状态：新行接手，旧行先收摊，别两行同时闪
 	settleRunStatus();
 	// 上一段的最终读数也让位给新行，避免一轮里并排两个仪表（结算时会被清掉）
@@ -621,9 +658,8 @@ function addAssistantRow() {
 	body.className = "body";
 	row.append(meta, body);
 	stream.append(row);
+	state.turnRows.push(row);
 	state.live = { row, body };
-	state.liveRaw = "";
-	state.liveThinkRaw = "";
 	if (state.tpsTimer) clearInterval(state.tpsTimer);
 	state.liveTps = {
 		...gauge,
@@ -636,7 +672,7 @@ function addAssistantRow() {
 		peak: 0,
 	};
 	// 用时按整轮算（DSH RunningStatus 的 turn startTime），工具阶段换行也不归零
-	state.runClock = { text: runText, clock: runClock, start: state.runStart || performance.now() };
+	state.runClock = { text: runText, clock: runClock, start: state.turn.startedAt || performance.now() };
 	state.liveTokens = 0;
 	state.tpsTimer = setInterval(tpsTick, 100);
 	state.liveText = createLiveMarkdown(body);
@@ -682,13 +718,10 @@ function settleRunStatus() {
 	});
 }
 
-// 工具卡落到最新一条 assistant 的正文里；正文还在吐字/等重写时先排队，
-// 等 finalizeAssistant 写完 innerHTML 再插回去，否则会被整块覆盖（卡片凭空消失）
+// 工具卡落到最新一条 assistant 的正文里；正文还在吐字/等重写时先留在
+// state.tools，定稿后把尚未挂载的卡片补回去，避免 innerHTML 覆盖工具卡。
 function mountTool(el) {
-	if (state.live || state.revealFinal) {
-		state.pendingTools.push(el);
-		return;
-	}
+	if (state.live && (!currentAssistant().finalMessage || currentAssistant().pendingText.length)) return;
 	let body = [...stream.querySelectorAll(".row.assistant")].pop()?.querySelector(":scope > .body");
 	if (!body) {
 		const row = document.createElement("div");
@@ -701,10 +734,13 @@ function mountTool(el) {
 	body.append(el);
 }
 
-function flushPendingTools(body) {
-	if (!body || !state.pendingTools.length) return;
-	body.append(...state.pendingTools);
-	state.pendingTools = [];
+function flushUnattachedTools(body) {
+	if (!body) return;
+	for (const [id, el] of state.tools) {
+		if (el.isConnected) continue;
+		body.append(el);
+		if (!el.classList.contains("running")) state.tools.delete(id);
+	}
 }
 
 // ---- 流式 markdown：按空行切块，冻结已完成段落，只重渲染尾部 ----
@@ -813,29 +849,26 @@ function scheduleReveal() {
 function revealStep(now) {
 	state.revealRaf = 0;
 	if (!state.liveText) {
-		state.textPending = "";
-		state.revealFinal = null;
 		return;
 	}
 	const dt = Math.min(64, Math.max(8, now - (state.revealTick || now)));
 	state.revealTick = now;
-	const backlog = state.textPending.length;
+	const backlog = currentAssistant().pendingText.length;
 	if (backlog) {
 		// 整段约 2.6s 吐完；积压多时按比例加速，不会越落越远
-		const rate = Math.max(45, state.liveRaw.length / 2.6);
+		const rate = Math.max(45, currentAssistant().text.length / 2.6);
 		let n = Math.max(1, Math.round((rate * dt) / 1000));
 		if (backlog > 240) n = Math.max(n, Math.ceil(backlog / 6));
 		n = Math.min(n, backlog);
-		state.liveText.append(state.textPending.slice(0, n));
-		state.textPending = state.textPending.slice(n);
+		const chunk = currentAssistant().pendingText.slice(0, n);
+		state.liveText.append(chunk);
+		state.turn = revealAssistantTextInTurn(state.turn, chunk);
 		follow();
 	}
-	if (state.textPending.length) {
+	if (currentAssistant().pendingText.length) {
 		state.revealRaf = requestAnimationFrame(revealStep);
-	} else if (state.revealFinal) {
-		const msg = state.revealFinal;
-		state.revealFinal = null;
-		finalizeAssistant(msg);
+	} else if (currentAssistant().finalMessage) {
+		finalizeAssistant(currentAssistant().finalMessage);
 	}
 }
 
@@ -1080,8 +1113,6 @@ function finalizeAssistant(message) {
 	// 幂等：多条 assistant 消息/中断/进程退出可能重复调用，统计副作用只能算一次
 	if (!state.live) return;
 	stopReveal();
-	state.textPending = "";
-	state.revealFinal = null;
 	// 计时器不在这里停：正文定型后运行中状态行还要继续走到 agent_settled
 	const st = state.liveTps;
 	// 优先用 pi 上报的 output tokens；流式期只有估算
@@ -1107,23 +1138,24 @@ function finalizeAssistant(message) {
 	recordStepMetrics({ tokens: total, decodeMs, ttftMs });
 	if (st?.card) st.card.hidden = true;
 	const body = state.live.body;
-	const think = thinkText(message);
+	const think = thinkText(message) || currentAssistant().thinking;
 	const lt = state.liveThink;
 	if (lt) {
 		// 终稿为准，补全可能被截断的流
-		lt.finish(think || state.liveThinkRaw || "");
+		lt.finish(think || currentAssistant().thinking || "");
 		state.liveThink = null;
 	} else if (think) {
 		const th = makeThinkBlock(think, false);
 		state.live.row.insertBefore(th.wrap, body);
 	}
-	state.liveThinkRaw = "";
-	const text = blockText(message?.content ?? state.liveRaw);
+	state.turn = finishAssistantMessageInTurn(state.turn, message ?? currentAssistant().finalMessage);
+	state.turn = revealAllAssistantTextInTurn(state.turn);
+	const text = currentAssistant().text || assistantTextFromContent(message?.content);
 	body.innerHTML = md(text);
 	state.live = null;
 	state.liveText = null;
-	// 流式期间到的工具卡在 innerHTML 写完后再插回（DSH 里工具排在正文之后）
-	flushPendingTools(body);
+	// 流式期间到的工具卡在 innerHTML 写完后再插回（工具排在正文之后）
+	flushUnattachedTools(body);
 	applyHighlight(body);
 	follow();
 	// 窗口在后台时给系统通知（Electron 渲染层 HTML5 Notification）
@@ -1277,6 +1309,74 @@ function bindDisclosure(root) {
 	});
 }
 
+// 一轮结束后，把这一轮的过程（思考 + 工具调用）收成一个可展开块，只留最终回答。
+// 阅读顺序按 Codex：先看结论，需要追溯时再展开过程。
+function foldTurnProcess(rows, stats = null) {
+	const list = (rows || []).filter((r) => r?.isConnected && !r.classList.contains("proc-row"));
+	if (!list.length) return null;
+	const proc = [];
+	let thinkCount = 0;
+	let toolCount = 0;
+	for (const row of list) {
+		// 思考块挂在 row 上（实时与历史都是插入到 row，而不是 body）
+		for (const el of [...row.children]) {
+			if (!el.classList?.contains("think")) continue;
+			proc.push(el);
+			thinkCount += 1;
+		}
+		// 工具卡在 body 里，和正文混排
+		const body = row.querySelector(":scope > .body");
+		if (!body) continue;
+		for (const el of [...body.children]) {
+			if (!el.classList?.contains("tool")) continue;
+			proc.push(el);
+			toolCount += 1;
+		}
+	}
+	if (!proc.length) return null;
+
+	const parts = [];
+	if (thinkCount) parts.push(`${thinkCount} 次思考`);
+	if (toolCount) parts.push(`${toolCount} 个工具`);
+	const seconds = Number(stats?.seconds) || 0;
+	const tps = Number(stats?.tps) || 0;
+
+	const wrap = document.createElement("div");
+	wrap.className = "row assistant proc-row";
+	const details = document.createElement("details");
+	details.className = "proc";
+	const summary = document.createElement("summary");
+	summary.className = "proc-sum";
+	const label = document.createElement("span");
+	label.className = "proc-text";
+	label.textContent = `过程 · ${parts.join(" · ")}`;
+	summary.append(label);
+	const tail = [seconds ? `${seconds.toFixed(1)}s` : "", tps > 0 ? `${fmtTokSpeed(tps)} tok/s` : ""].filter(Boolean).join(" · ");
+	if (tail) {
+		const time = document.createElement("span");
+		time.className = "proc-time";
+		time.textContent = tail;
+		summary.append(time);
+	}
+	const procBody = document.createElement("div");
+	procBody.className = "proc-body";
+	procBody.append(...proc);
+	details.append(summary, procBody);
+	wrap.append(details);
+
+	list[0].before(wrap);
+
+	// 摘完只剩空壳的行（本轮只有工具、没有正文）整行收掉，避免留下空白
+	for (const row of list) {
+		row.querySelector(":scope > .meta")?.remove();
+		const body = row.querySelector(":scope > .body");
+		if (!body) continue;
+		const visible = body.textContent.trim() || body.querySelector("img, pre, table, .stopped");
+		if (!visible) row.remove();
+	}
+	return wrap;
+}
+
 // 一轮结束：工具卡、命令输出、思考块统一折回去（用户展开过的也收）
 function collapseTurnBlocks() {
 	for (const el of stream.querySelectorAll('.tool[data-open="1"]')) toggleDisclosure(el, false);
@@ -1353,6 +1453,7 @@ function buildToolRow({ name, args, output, diff, isError, durationMs }) {
 
 	root.append(hdr, body);
 	bindDisclosure(root);
+	toggleDisclosure(root, false);
 
 	if (diff) setDiff(root, stat, diff);
 	else if (output) appendToolOutput(root, output);
@@ -1364,7 +1465,7 @@ function setDiff(root, stat, diff) {
 	const block = buildDiffBlock(diff);
 	stat.textContent = `+${block.dataset.added} −${block.dataset.removed}`;
 	root.querySelector(".inner")?.append(block);
-	toggleDisclosure(root, true);
+	// diff 也保持折叠，避免一条编辑结果撑开整轮内容。
 }
 
 function appendToolImages(root, content) {
@@ -1383,7 +1484,7 @@ function appendToolImages(root, content) {
 		wrap.append(img);
 	}
 	inner.append(wrap);
-	toggleDisclosure(root, true);
+	// 工具结果默认保持折叠；标题行承担摘要、状态和耗时，用户主动点击再看详情。
 }
 
 function appendToolOutput(root, output) {
@@ -1410,6 +1511,28 @@ function appendToolOutput(root, output) {
 		};
 		inner.append(more);
 	}
+}
+
+// pi 的 partialResult 是“当前最新预览”，不能把每次更新简单追加成重复输出。
+function paintToolResult(root, result, isError = false, durationMs) {
+	if (!root) return;
+	root.classList.toggle("err", Boolean(isError));
+	const badge = root.querySelector(".badge");
+	if (badge) {
+		badge.hidden = !isError;
+	}
+	if (durationMs !== undefined) {
+		const dur = root.querySelector(".dur");
+		if (dur) dur.textContent = fmtDuration(durationMs);
+	}
+	const inner = root.querySelector(".inner");
+	if (inner) inner.replaceChildren();
+	const stat = root.querySelector(".stat");
+	const diff = result?.details?.diff;
+	const text = blockText(result?.content);
+	if (diff) setDiff(root, stat, diff);
+	else if (text) appendToolOutput(root, text);
+	appendToolImages(root, result?.content);
 }
 
 // ---------- ReadBlock：补行号 + 截断提示 ----------
@@ -1625,6 +1748,8 @@ function paintHistory(keepAnchor) {
 	}
 	const toolRows = new Map();
 	let lastTs = 0;
+	// 历史也按「一轮」折过程：遇到下一条用户消息前，把这一轮的思考与工具收成一个块
+	let groupRows = [];
 	state.paintingHistory = true;
 	try {
 		for (const m of all.slice(from)) {
@@ -1637,41 +1762,51 @@ function paintHistory(keepAnchor) {
 			lastTs = m.timestamp;
 		}
 		if (m.role === "user") {
+			if (groupRows.length) {
+				foldTurnProcess(groupRows);
+				groupRows = [];
+			}
 			addUser(blockText(m.content), imagesFromContent(m.content));
 		} else if (m.role === "assistant") {
+			const model = assistantFromHistory(m);
 			const row = document.createElement("div");
 			row.className = "row assistant";
 			const body = document.createElement("div");
 			body.className = "body";
-			const think = thinkText(m);
-			if (think) row.append(makeThinkBlock(think, false).wrap);
-			body.innerHTML = md(blockText(m.content));
-			for (const b of Array.isArray(m.content) ? m.content : []) {
-				if (b.type !== "toolCall") continue;
-				const el = buildToolRow({ name: b.name, args: b.arguments });
-				if (b.id) toolRows.set(b.id, el);
+			if (model.thinking) row.append(makeThinkBlock(model.thinking, false).wrap);
+			body.innerHTML = md(model.text);
+			const record = { model, row };
+			for (const tool of model.tools) {
+				const el = buildToolRow({ name: tool.name, args: tool.args });
+				if (tool.id) toolRows.set(tool.id, { el, record });
 				body.append(el);
 			}
 			row.append(body);
 			stream.append(row);
+			groupRows.push(row);
 		} else if (m.role === "toolResult") {
 			// 历史里的工具结果补回到对应的调用行
 			const id = m.toolCallId ?? m.tool_call_id ?? m.id;
-			const el = id ? toolRows.get(id) : null;
-			const text = blockText(m.content);
-			const diff = m.details?.diff;
+			const entry = id ? toolRows.get(id) : null;
+			const el = entry?.el;
 			if (el) {
-				if (m.isError) {
+				entry.record.model = applyHistoryToolResult(entry.record.model, m);
+				const tool = entry.record.model.tools.find((item) => item.id === String(id));
+				const result = tool?.result || m;
+				const text = blockText(result.content);
+				const diff = result.details?.diff;
+				if (tool?.isError) {
 					el.classList.add("err");
 					const badge = el.querySelector(".badge");
 					if (badge) badge.hidden = false;
 				}
 				if (diff) setDiff(el, el.querySelector(".stat"), diff);
 				else if (text) appendToolOutput(el, text);
-				appendToolImages(el, m.content);
+				appendToolImages(el, result.content);
 			}
 		}
 		}
+		if (groupRows.length) foldTurnProcess(groupRows);
 	} finally {
 		state.paintingHistory = false;
 	}
@@ -2297,30 +2432,17 @@ function renderSessions() {
 		saveProjects();
 	}
 
-	const byCwd = new Map();
-	for (const s of state.sessions) {
-		const key = s.cwd || "";
-		if (q) {
-			const text = `${sessionLabel(s)} ${s.name || ""} ${s.title || ""}`.toLowerCase();
-			if (!text.includes(q)) continue;
-		}
-		const isArc = state.archived.has(s.path);
-		if (isArc && s.path !== state.sessionFile && state.archiveFilter === "hide") continue;
-		if (!isArc && s.path !== state.sessionFile && state.archiveFilter === "only") continue;
-		if (!byCwd.has(key)) byCwd.set(key, []);
-		byCwd.get(key).push(s);
-	}
-	// 置顶会话排在分组最前，其余保持列表原有顺序
-	for (const items of byCwd.values()) {
-		items.sort((a, b) => (state.pinned.has(b.path) ? 1 : 0) - (state.pinned.has(a.path) ? 1 : 0));
-	}
-
-	const ordered = [];
-	if (state.cwd) ordered.push([state.cwd, byCwd.get(state.cwd) || []]);
-	for (const cwd of state.projects) {
-		if (cwd === state.cwd) continue;
-		ordered.push([cwd, byCwd.get(cwd) || []]);
-	}
+	const ordered = buildSessionGroups({
+		sessions: state.sessions,
+		cwd: state.cwd,
+		projects: state.projects,
+		query: q,
+		archiveFilter: state.archiveFilter,
+		archived: state.archived,
+		pinned: state.pinned,
+		currentSession: state.sessionFile,
+		getText: (session) => `${sessionLabel(session)} ${session.name || ""} ${session.title || ""}`,
+	}).map((group) => [group.workspace, group.sessions]);
 
 	// 首次加载且没有持久化折叠状态时，除当前项目外默认折叠
 	if (!state.groupsSeeded) {
@@ -2943,6 +3065,7 @@ function watchPromptStart() {
 function abortRun() {
 	if (!state.streaming) return;
 	state.aborted = true;
+	state.turn = requestAbort(state.turn);
 	// 只标本轮自己创建的行；没有 live 行就不标，别把上一条历史回答写成“已停止”
 	state.abortRow = state.live?.row || null;
 	window.pi.command({ type: "abort" })
@@ -2966,15 +3089,14 @@ function abortRun() {
 function finishAbortedTurn() {
 	if (!state.streaming) return;
 	setStreaming(false);
-	if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+	if (state.live) finalizeAssistant(currentAssistant().finalMessage);
+	state.turn = settleTurn(state.turn, "aborted");
 	settleRunStatus();
 	collapseTurnBlocks();
 	markStopped();
 	state.aborted = false;
 	state.lastTurnAborted = true; // 队列不要在被中断后自动接力
 	state.abortRow = null;
-	state.runStart = 0;
-	state.runTools = 0;
 	state.runTps = 0;
 	state.runSpeed = { tokens: 0, ms: 0 };
 	refreshState().catch(() => {});
@@ -2999,43 +3121,17 @@ function setStreaming(on) {
 	updateSend();
 }
 
-// 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后收成小圆点，点击可展开
-function showRunSummary() {
-	if (!state.runStart) return;
-	const seconds = (performance.now() - state.runStart) / 1000;
-	const tools = state.runTools;
+// 取本轮统计并重置运行态。展示交给 foldTurnProcess 的「过程」块，不再另插一条完成提示。
+function takeRunStats() {
+	const turn = state.turn;
+	const startedAt = turn.startedAt;
+	const seconds = startedAt ? (performance.now() - startedAt) / 1000 : 0;
+	const tools = turn.toolCount;
 	const tps = state.runTps;
-	state.runStart = 0;
-	state.runTools = 0;
 	state.runTps = 0;
 	state.runSpeed = { tokens: 0, ms: 0 };
-	const row = document.createElement("div");
-	row.className = "row run-summary-row";
-	const pill = document.createElement("span");
-	pill.className = "run-summary";
-	pill.textContent = `完成 · ${seconds.toFixed(1)}s${tools ? ` · ${tools} 工具` : ""}${tps > 0 ? ` · ${fmtTokSpeed(tps)} tok/s` : ""}`;
-	pill.title = pill.textContent;
-	// 优先挂在最后一条助手消息里，跟正文同属一个 flow item（DSH 的 tail slot 行为）
-	const last = [...stream.querySelectorAll(".row.assistant")].pop();
-	if (last) {
-		const acts = last.querySelector(":scope > .acts");
-		if (acts) last.insertBefore(pill, acts);
-		else last.append(pill);
-	} else {
-		row.append(pill);
-		stream.append(row);
-	}
-	follow();
-	// 一轮结束的状态条：完成 · 12.4s · 6 工具；3 秒后淡出，不收成对勾（用户明确不要打勾）
-	setTimeout(() => {
-		if (!pill.isConnected) return;
-		const host = pill.parentElement;
-		pill.classList.add("leaving");
-		setTimeout(() => {
-			pill.remove();
-			if (host?.classList.contains("run-summary-row") && !host.children.length) host.remove();
-		}, 200);
-	}, 3000);
+	state.turn = resetTurn();
+	return { seconds, tools, tps };
 }
 
 function autosize() {
@@ -3053,7 +3149,7 @@ function updateSend() {
 
 // ---------- 事件 ----------
 window.pi.onEvent((ev) => {
-	// 后端原生事件旁路：OMP 的 todo/ask/task/plan 等专属事件由独立模块消费
+	// 广播原始 pi 事件，供只读扩展 UI 观察；产品状态仍由下方 pi 事件模型驱动
 	try {
 		window.dispatchEvent(new CustomEvent("myna:event", { detail: ev }));
 	} catch {}
@@ -3063,10 +3159,11 @@ window.pi.onEvent((ev) => {
 			if (m?.role === "assistant") {
 				// 一轮里可能有多条 assistant 消息（文本→工具→文本）：每条各自成行。
 				// 旧行还有没吐完/没定稿的内容就先收尾，否则 msg2 的 message_end 会把 msg1 冲掉。
-				if (state.live && (state.liveRaw || state.liveThinkRaw || state.liveThink || state.textPending)) {
-					finalizeAssistant(state.revealFinal);
+				if (state.live && (currentAssistant().text || currentAssistant().thinking || state.liveThink || currentAssistant().pendingText)) {
+					finalizeAssistant(currentAssistant().finalMessage);
 				}
 				if (!state.live) addAssistantRow();
+				state.turn = noteAssistantMessage(state.turn, m);
 				// 请求已发出：作为 TTFT 的起点（DSH 的 stepStartTime）
 				if (state.liveTps && !state.liveTps.start) state.liveTps.start = performance.now();
 			} else if (m?.role === "user") {
@@ -3082,7 +3179,13 @@ window.pi.onEvent((ev) => {
 			break;
 		}
 		case "message_update": {
+			// agent_settled 后的迟到事件不能重新创建空 assistant 行。
+			if (state.turn.phase === "settled" && !state.live) break;
 			const a = ev.assistantMessageEvent;
+			if (!state.live && ["thinking_start", "thinking_delta", "thinking_end", "text_delta"].includes(a?.type)) {
+				addAssistantRow();
+			}
+			state.turn = applyAssistantEventToTurn(state.turn, a);
 			if (a?.type === "thinking_start") {
 				ensureLiveThink();
 				break;
@@ -3091,8 +3194,7 @@ window.pi.onEvent((ev) => {
 				markOutputTokens(a.delta);
 				const th = ensureLiveThink();
 				if (th) {
-					state.liveThinkRaw = (state.liveThinkRaw || "") + (a.delta || "");
-					th.setText(state.liveThinkRaw, true);
+					th.setText(currentAssistant().thinking, true);
 					follow();
 				}
 				break;
@@ -3100,16 +3202,11 @@ window.pi.onEvent((ev) => {
 			if (a?.type === "thinking_end") {
 				const th = state.liveThink;
 				if (th) {
-					state.liveThinkRaw = typeof a.content === "string" && a.content ? a.content : state.liveThinkRaw;
-					th.finish(state.liveThinkRaw || "");
+					th.finish(currentAssistant().thinking || "");
 				}
 				break;
 			}
 			if (a?.type === "text_delta") {
-				// 行被上一段收尾后又有增量：补建一行，别把文本丢掉
-				if (!state.live) addAssistantRow();
-				state.liveRaw += a.delta;
-				state.textPending += a.delta;
 				markOutputTokens(a.delta);
 				scheduleReveal();
 				follow();
@@ -3118,10 +3215,10 @@ window.pi.onEvent((ev) => {
 		}
 		case "message_end": {
 			if (ev.message?.role === "assistant") {
+				state.turn = finishAssistantMessageInTurn(state.turn, ev.message);
 				// 解码结束时间要在事件到达时记，不能等吐字动画放完
 				if (state.liveTps) state.liveTps.endAt = performance.now();
-				if (state.textPending) {
-					state.revealFinal = ev.message;
+				if (currentAssistant().pendingText) {
 					scheduleReveal();
 				} else {
 					finalizeAssistant(ev.message);
@@ -3130,48 +3227,82 @@ window.pi.onEvent((ev) => {
 			break;
 		}
 		case "tool_execution_start": {
-			state.runTools += 1;
+			// pi TUI 将嵌套 ctx.executeTool() 调用收在父卡里，不单独显示顶层卡。
+			if (ev.parentToolCallId) break;
+			if (state.tools.has(ev.toolCallId)) break;
+			state.turn = noteToolStart(state.turn, ev.toolCallId);
+			state.turn = applyAssistantEventToTurn(state.turn, {
+				type: "tool_execution_start",
+				toolCallId: ev.toolCallId,
+				toolName: ev.toolName,
+				args: ev.args,
+			});
 			const el = buildToolRow({ name: ev.toolName, args: ev.args });
 			el.classList.add("running", "fresh");
-			// 正文可能还在吐字（message_end 之后才开始的工具）：先排队，别被 finalize 的 innerHTML 冲掉
-			mountTool(el);
 			state.tools.set(ev.toolCallId, el);
+			// 正文可能还在吐字（message_end 之后才开始的工具）：先留在映射里，
+			// 别被 finalize 的 innerHTML 冲掉
+			mountTool(el);
 			follow();
 			break;
 		}
+		case "tool_execution_update": {
+			if (ev.parentToolCallId) break;
+			state.turn = applyAssistantEventToTurn(state.turn, {
+				type: "tool_execution_update",
+				toolCallId: ev.toolCallId,
+				partialResult: ev.partialResult,
+			});
+			const el = state.tools.get(ev.toolCallId);
+			if (!el) break;
+			paintToolResult(el, ev.partialResult, false);
+			break;
+		}
 		case "tool_execution_end": {
+			if (ev.parentToolCallId) break;
+			state.turn = applyAssistantEventToTurn(state.turn, {
+				type: "tool_execution_end",
+				toolCallId: ev.toolCallId,
+				result: ev.result,
+				isError: ev.isError,
+				durationMs: ev.durationMs,
+			});
 			const el = state.tools.get(ev.toolCallId);
 			if (!el) break;
 			el.classList.remove("running");
-			el.classList.toggle("err", !!ev.isError);
-			const badge = el.querySelector(".badge");
-			if (badge) badge.hidden = !ev.isError;
-			const dur = el.querySelector(".dur");
-			if (dur) dur.textContent = fmtDuration(ev.durationMs);
-			const text = blockText(ev.result?.content);
-			const diff = ev.result?.details?.diff;
-			if (diff) setDiff(el, el.querySelector(".stat"), diff);
-			else if (text) appendToolOutput(el, text);
-			appendToolImages(el, ev.result?.content);
+			paintToolResult(el, ev.result, ev.isError, ev.durationMs);
+			// 已挂载的结果不再需要主进程事件映射；尚未挂载的卡片留到 finalize。
+			if (el.isConnected) state.tools.delete(ev.toolCallId);
 			break;
 		}
-			case "agent_start":
-				setStreaming(true);
-				// pi 的 continue 会再次发 agent_start：整轮只在第一次开始计时/计数
-				if (!state.runStart) {
-					state.runStart = performance.now();
-					state.runSpeed = { tokens: 0, ms: 0 };
-					state.runTools = 0;
-				}
-			stream.querySelector(".run-summary-row")?.remove();
+		case "agent_start": {
+			const wasRunning = state.turn.phase === "running";
+			state.turn = beginTurn(state.turn, performance.now());
+			setStreaming(true);
+			// pi 的 continue 会再次发 agent_start：整轮只在第一次开始计时/计数
+			if (!wasRunning) {
+				state.runSpeed = { tokens: 0, ms: 0 };
+				state.turnRows = [];
+			}
+			// 上一轮的过程块保持折叠态，不因新一轮开始而展开
 			// 不等 message_start：发送后立刻出「思考中… 0.0s」，工具阶段也有反馈
-			if (!state.live && !state.revealFinal) addAssistantRow();
+			if (!state.live && !currentAssistant().finalMessage) addAssistantRow();
 			break;
-		case "agent_settled":
+		}
+		case "agent_settled": {
+			// 以 pi 的事件字段为权威，同时保留本地 abort 的即时闩锁。
+			const aborted = Boolean(ev.aborted || state.aborted);
+			if (!state.streaming && state.turn.phase === "settled") break;
+			if (aborted) {
+				state.aborted = true;
+				if (!state.abortRow) state.abortRow = state.live?.row || null;
+			}
+			const outcome = aborted ? "aborted" : "ok";
 			setStreaming(false);
 			// 中断时 finalize 会重写 body.innerHTML：先把没吐完的尾巴收掉，再画「已停止」，
 			// 顺序反了标记会被冲掉（长文本吐字比 message_end 晚，settle 可能先到）
-			if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+			if (state.live) finalizeAssistant(currentAssistant().finalMessage);
+			state.turn = settleTurn(state.turn, outcome);
 			// 运行中状态行只在运行期存在，一轮结束就收掉
 			settleRunStatus();
 			// 队列接力要用：settle 后 state.aborted 就被清掉了。
@@ -3180,6 +3311,8 @@ window.pi.onEvent((ev) => {
 			if (state.aborted) state.lastTurnAborted = true;
 			// 回话结束：工具卡、命令输出、思考块统一折回去
 			collapseTurnBlocks();
+			for (const tool of state.tools.values()) tool.classList.remove("running");
+			state.tools.clear();
 			if (state.aborted) {
 				markStopped();
 				state.aborted = false;
@@ -3190,10 +3323,15 @@ window.pi.onEvent((ev) => {
 			const lastRow = [...stream.querySelectorAll(".row.assistant")].pop();
 			const lastBody = lastRow?.querySelector(":scope > .body");
 			if (lastBody && !lastBody.textContent.trim() && !lastBody.querySelector("img, .tool, pre, table, .stopped")) lastRow.remove();
-			showRunSummary();
+			// 整轮过程收成一个可展开块，正文留在外面
+			const runStats = takeRunStats();
+			foldTurnProcess(state.turnRows, runStats);
+			state.turnRows = [];
+			follow();
 			// 新会话的第一轮结束后 sessionFile 才有值，刷新一次便于下次启动恢复
 			refreshState().catch(() => {});
 			break;
+		}
 		case "session_info_changed":
 			window.pi.sessions({ perCwd: state.sessionPage || readPageSize() }).then((s) => {
 				state.sessions = s;
@@ -3201,29 +3339,34 @@ window.pi.onEvent((ev) => {
 			}).catch(() => {});
 			break;
 		case "error":
-			// 适配器后端（IR 投影）的可见错误；pi 直连路径不会发这个事件。
+			// pi 桥的可见错误。
 			showError(ev.message || "发生错误");
 			break;
-		case "process_exit":
+		case "process_exit": {
+			window.__piExitSeen = true;
+			window.__piLastExit = Number.isFinite(ev.code) ? ev.code : null;
 			console.warn("[pi] process exited", ev.code);
 			// pi 子进程退出：下一条消息会自动重启；先把流式态收尾，否则光标会一直转
 			if (state.streaming) {
 				setStreaming(false);
-				if (state.live || state.revealFinal) finalizeAssistant(state.revealFinal);
+				if (state.live) finalizeAssistant(currentAssistant().finalMessage);
 				settleRunStatus();
 				collapseTurnBlocks();
 			}
+			// 半轮也要收起来，否则思考与工具会散在界面上
+			foldTurnProcess(state.turnRows, null);
+			state.turnRows = [];
+			state.turn = settleTurn(state.turn, "failed");
 			state.aborted = false;
 			state.abortRow = null;
 			state.pendingUserEcho = "";
 			state.lastTurnAborted = true; // 进程死了，队列先停，别自动乱发
-			state.runStart = 0;
-			state.runTools = 0;
 			state.runTps = 0;
 			state.runSpeed = { tokens: 0, ms: 0 };
 			showError(ev.message || "pi 进程意外退出，下一条消息会自动重启");
 			follow();
 			break;
+		}
 	}
 });
 
@@ -3439,6 +3582,8 @@ new MutationObserver(() => {
 // 吐字仪表验收：不调用模型，按 text_delta 的真实路径喂合成增量
 window.__piTpsDemo = (durationMs = 4000) => {
 	if (state.streaming || state.live) return false;
+	state.turn = beginTurn(state.turn, performance.now());
+	state.turn = noteAssistantMessage(state.turn, { id: "tps-demo" });
 	addAssistantRow();
 	stream.scrollTop = stream.scrollHeight;
 	// 模拟 0.8s 的首字延迟，让 TTFT 读数可见
@@ -3452,8 +3597,7 @@ window.__piTpsDemo = (durationMs = 4000) => {
 		}
 		const delta = "这是一段用于验证实时吐字仪表的示例文本，速度会自然起伏。".slice(0, 10 + (i % 20));
 		i++;
-		state.liveRaw += delta;
-		state.textPending += delta;
+		state.turn = applyAssistantEventToTurn(state.turn, { type: "text_delta", delta });
 		const n = estimateTokens(delta);
 		state.liveTokens += n;
 		const st = state.liveTps;
@@ -3476,13 +3620,10 @@ window.__piTpsDemoClear = () => {
 	state.live?.row?.remove();
 	state.live = null;
 	state.liveText = null;
-	state.liveRaw = "";
-	state.textPending = "";
-	state.revealFinal = null;
 	state.liveTokens = 0;
 	state.liveTps = null;
-	state.runStart = 0;
 	state.runSpeed = { tokens: 0, ms: 0 };
+	state.turn = resetTurn();
 	state.runTps = 0;
 	settleRunStatus();
 };
@@ -3511,6 +3652,8 @@ window.__selftest = () => {
 		[
 			"这是 **加粗** 和 `行内代码`，路径 C:/Users/Luke/projects/pi-mini/app.js",
 			"",
+			"跨行内代码的粗体：**这套从来没装过快捷方式，一直是终端 `npm start` 启动的。**",
+			"",
 			f + "typescript",
 			"const answer: number = 42;",
 			"export function add(a: number, b: number) {",
@@ -3529,12 +3672,21 @@ window.__selftest = () => {
 	stream.append(mdRow);
 	applyHighlight(mdBody);
 
-	// ReadBlock / SearchBlock 样例
+	// 过程折叠样例：一轮 = 思考 + 工具 + 最终回答。
+	// 第一轮保持默认收起，第二轮预先展开，一张图同时看两种状态。
 	const LS = String.fromCharCode(10);
-	const extra = document.createElement("div");
-	extra.className = "row assistant";
-	const extraBody = document.createElement("div");
-	extraBody.className = "body";
+	const makeTurn = (text, tools, think) => {
+		const row = document.createElement("div");
+		row.className = "row assistant";
+		if (think) row.append(makeThinkBlock(think, false).wrap);
+		const body = document.createElement("div");
+		body.className = "body";
+		body.innerHTML = md(text);
+		for (const t of tools) body.append(t);
+		row.append(body);
+		stream.append(row);
+		return row;
+	};
 	const readEl = buildToolRow({
 		name: "read",
 		args: { path: "C:/Users/Luke/projects/pi-mini/app.js", offset: 120 },
@@ -3551,11 +3703,25 @@ window.__selftest = () => {
 		].join(LS),
 		durationMs: 9,
 	});
-	toggleDisclosure(readEl, true);
-	toggleDisclosure(grepEl, true);
-	extraBody.append(readEl, grepEl);
-	extra.append(extraBody);
-	stream.append(extra);
+	const turnA = [
+		makeTurn("先看一下导出位置。", [readEl], "需要找 export 的位置。"),
+		makeTurn("确认完毕，**结论**在下面。", [], null),
+	];
+	const foldedA = foldTurnProcess(turnA, { seconds: 12.4, tps: 48 });
+
+	const readEl2 = buildToolRow({
+		name: "read",
+		args: { path: "C:/Users/Luke/projects/pi-mini/main.js" },
+		output: ["const T0 = Date.now();", "// 窗口与 IPC"].join(LS),
+		durationMs: 3,
+	});
+	const turnB = [
+		makeTurn("接着看主进程入口。", [readEl2, grepEl], "主进程才是真正要改的。"),
+		makeTurn("到这里就够了。", [], null),
+	];
+	const foldedB = foldTurnProcess(turnB, { seconds: 6.8, tps: 61 });
+	foldedB?.querySelector(".proc")?.setAttribute("open", "");
+	foldedA?.querySelector(".proc")?.setAttribute("aria-label", "上一轮的过程");
 
 	stickBottom = true;
 	stream.scrollTop = stream.scrollHeight;
@@ -3684,7 +3850,7 @@ export const ctx = {
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/turn-rail.js"];
+const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/sidebar-resize.js", "./features/turn-rail.js"];
 
 for (const f of FEATURES) {
 	try {

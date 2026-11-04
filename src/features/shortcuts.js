@@ -6,8 +6,14 @@
 //   - 只登记在源码里真实存在的按键，逐条核对过 app.js / queue.js / terminal.js /
 //     input-trigger.js / settings.js / 本文件的实现；不写“应该存在”的快捷键。
 //   - 搜索过滤覆盖动作名、分组、按键与关键词（大小写不敏感）；↑/↓ 移动，Enter 关闭，
-//     Esc / 点遮罩关闭，Tab 焦点陷阱，关闭后焦点回到打开前的元素。
+//     Esc 分层（有搜索词先清空，再按一次才关）／ 点遮罩关闭，Tab 焦点陷阱，
+//     关闭后焦点回到打开前的元素（目标已失效则落到输入框，不留 body）。
 //   - 已经有设置 / 命令面板 / 其他 dialog 时直接忽略，不叠层。
+//
+// 命令面板（Mod+K，开时再按一次收起）：
+//   - 不可用项不进可执行列表，Enter 永远不会执行它们；列表里无可执行项时
+//     Enter 会把首个不可用原因（或“没有匹配的命令”）toast 出来，不静默吞键。
+//   - Esc 分层：有搜索词先清空，再按一次才关面板；底栏提示跟着切换。
 //
 // 命令可用性每次渲染都重查：顶栏按钮由 settings.js / right-panel.js / export-html.js
 // 异步插入，取不到就禁用并在行尾写原因，不静默失败。
@@ -17,7 +23,7 @@
 //   - 新会话：index.html 里没有；app.js renderSessions() 里是 #list .newchat，
 //     当前项目行是 [aria-label="在此工作区新建会话"]；都没有时回退 ctx.pi.newSession()
 //   - 导出：export-html.js 的按钮只有 class .export-btn（无 id、无公开钩子），点它即走它自己的导出
-//   - 终端：terminal.js 挂了 window.__piTermToggle（尚未进 FEATURES）；未接入时禁用并写明原因
+//   - 终端：terminal.js 已登记进 FEATURES 并挂了 window.__piTermToggle；未接入时禁用并写明原因
 
 const PANEL_ID = "cmdk-panel";
 const LIST_ID = "cmdk-list";
@@ -321,7 +327,7 @@ const SHORTCUT_GROUPS = [
 			{
 				label: "打开 / 关闭快捷键参考",
 				keys: [["MOD", "/"]],
-				hint: "也接受 Shift+/",
+				hint: "也接受 Shift+/（输入框外）",
 				keywords: ["shortcuts", "help", "keyboard", "/", "?", "斜杠", "问号", "快捷键", "帮助"],
 			},
 		],
@@ -330,15 +336,15 @@ const SHORTCUT_GROUPS = [
 		id: "input",
 		label: "输入",
 		items: [
-			// app.js:3208-3213 —— 输入框 keydown，Enter 且非 Shift 才 submit
+			// app.js 输入框 keydown —— Enter 且非 Shift 才 submit
 			{ label: "发送消息", keys: [["Enter"]], hint: "输入框内", keywords: ["send", "submit", "发送", "提交"] },
 			// app.js 同一处理器：Shift+Enter 不拦截，走 textarea 默认换行
 			{ label: "换行（不发送）", keys: [["Shift", "Enter"]], hint: "输入框内", keywords: ["newline", "linebreak", "换行"] },
-			// queue.js:674-685 —— 仅流式中且有草稿；默认 Enter 排队
-			{ label: "排队发送", keys: [["Enter"]], hint: "流式回答中", keywords: ["queue", "busy", "排队", "流式"] },
-			// queue.js:680 —— Ctrl/Cmd 反转 busyEnter，默认 Enter 排队时它就是插话
-			{ label: "插话发送", keys: [["MOD", "Enter"]], hint: "流式回答中", keywords: ["steer", "busy", "插话", "流式"] },
-			// app.js:3214-3228 —— 生成中 Esc = abortRun；模型菜单开着时先收菜单
+			// queue.js onKeyDown —— 仅流式中且有草稿；默认 Enter 排队
+			{ label: "排队发送", keys: [["Enter"]], hint: "流式回答中（设置可互换）", keywords: ["queue", "busy", "排队", "流式"] },
+			// queue.js onKeyDown 的 steer 分支 —— Ctrl/Cmd 反转 busyEnter，默认 Enter 排队时它就是插话
+			{ label: "插话发送", keys: [["MOD", "Enter"]], hint: "流式回答中（设置可互换）", keywords: ["steer", "busy", "插话", "流式"] },
+			// app.js 的 document keydown —— 生成中 Esc = abortRun；模型菜单开着时先收菜单
 			{
 				label: "停止生成",
 				keys: [["Esc"]],
@@ -351,7 +357,7 @@ const SHORTCUT_GROUPS = [
 		id: "panel",
 		label: "面板",
 		items: [
-			// terminal.js:669-682 —— 全局 Ctrl/Cmd+` 开关抽屉
+			// terminal.js onDocKey —— 全局 Ctrl/Cmd+` 开关抽屉
 			{ label: "显示 / 隐藏终端", keys: [["MOD", "`"]], hint: "全局", keywords: ["terminal", "toggle", "终端", "抽屉"] },
 		],
 	},
@@ -359,24 +365,24 @@ const SHORTCUT_GROUPS = [
 		id: "view",
 		label: "视图",
 		items: [
-			// 本文件 onKey；main.js:504-520 负责 clamp 0.7–1.6
-			{ label: "放大界面", keys: [["MOD", "="]], hint: "每次 10%", keywords: ["zoom", "in", "放大"] },
-			{ label: "缩小界面", keys: [["MOD", "-"]], hint: "每次 10%", keywords: ["zoom", "out", "缩小"] },
-			{ label: "还原为 100%", keys: [["MOD", "0"]], hint: "", keywords: ["zoom", "reset", "还原", "重置"] },
+			// 本文件 onKey；main.js 的 pi:set-zoom 负责 clamp 0.7–1.6
+			{ label: "放大界面", keys: [["MOD", "="]], hint: "每次 10%", keywords: ["zoom", "in", "放大", "缩放", "界面缩放"] },
+			{ label: "缩小界面", keys: [["MOD", "-"]], hint: "每次 10%", keywords: ["zoom", "out", "缩小", "缩放", "界面缩放"] },
+			{ label: "还原为 100%", keys: [["MOD", "0"]], hint: "", keywords: ["zoom", "reset", "还原", "重置", "缩放", "界面缩放"] },
 		],
 	},
 	{
 		id: "menu",
 		label: "菜单",
 		items: [
-			// input-trigger.js:683-692（补全菜单）、命令面板本文件 onKey、settings.js:776-801（下拉菜单）
+			// input-trigger.js onKeyDown（补全菜单）、命令面板本文件 onKey、settings.js onMenuKey（下拉菜单）
 			{
 				label: "高亮菜单项",
 				keys: [["↑"], ["↓"]],
 				hint: "补全菜单 / 命令面板 / 设置菜单",
 				keywords: ["navigate", "move", "menu", "移动", "选择", "高亮"],
 			},
-			// 命令面板本文件 onKey；settings.js:776-801
+			// 命令面板本文件 onKey；settings.js:945-975
 			{
 				label: "跳到首 / 末项",
 				keys: [["Home"], ["End"]],
@@ -390,7 +396,7 @@ const SHORTCUT_GROUPS = [
 				hint: "补全菜单 / 命令面板 / 设置菜单",
 				keywords: ["run", "accept", "confirm", "选择", "执行", "确认"],
 			},
-			// input-trigger.js:702-716 —— 有高亮时 Tab 接受补全；命令面板里 Tab 回到搜索框
+			// input-trigger.js onKeyDown 的 Tab 分支 —— 有高亮时接受补全；命令面板里 Tab 回到搜索框
 			{
 				label: "接受补全项",
 				keys: [["Tab"]],
@@ -555,6 +561,8 @@ export function init(ctx) {
 	// ---------- DOM ----------
 	const overlay = doc.createElement("div");
 	overlay.className = "cmdk-overlay";
+	// 遮罩自己带 id：真正控制显隐的是它，不是内层 dialog（测试/调试要能直接取）
+	overlay.id = "cmdk-overlay";
 	overlay.hidden = true;
 
 	const dialog = doc.createElement("div");
@@ -614,8 +622,9 @@ export function init(ctx) {
 	keysEl.className = "cmdk-foot-keys";
 	const hNav = keyHint(["↑", "↓"], "选择");
 	const hGo = keyHint(["Enter"], "执行");
+	const hEscClear = keyHint(["Esc"], "清空搜索");
 	const hEsc = keyHint(["Esc"], "关闭");
-	keysEl.append(hNav, hGo, hEsc);
+	keysEl.append(hNav, hGo, hEscClear, hEsc);
 	foot.append(countEl, keysEl);
 
 	dialog.append(head, list, foot);
@@ -678,6 +687,16 @@ export function init(ctx) {
 			.every((t) => hay.includes(t));
 	};
 
+	// 可用性检查自己也可能抛（桥没起来 / 选择器写错），别让它把整次渲染带崩、
+	// 把面板留在“开着但没有焦点”的半死状态
+	const availabilityOf = (cmd) => {
+		try {
+			return cmd.available?.() || "";
+		} catch (err) {
+			return `可用性检查失败：${brief(err?.message || err)}`;
+		}
+	};
+
 	const render = () => {
 		const q = input.value.trim().toLowerCase();
 		const matched = COMMANDS.filter((c) => matchQuery(c, q));
@@ -706,7 +725,7 @@ export function init(ctx) {
 				host = wrap;
 			}
 
-			const reason = cmd.available?.() || "";
+			const reason = availabilityOf(cmd);
 			const el = doc.createElement("div");
 			el.className = reason ? "cmdk-item is-off" : "cmdk-item";
 			el.id = `cmdk-opt-${rows.length}`;
@@ -752,11 +771,24 @@ export function init(ctx) {
 		countEl.textContent = matched.length ? `${matched.length} 项` : "无匹配";
 		hNav.hidden = !selectable.length;
 		hGo.hidden = !selectable.length;
+		// 底栏提示跟着 Esc 的分层行为走：有搜索词时 Esc 是「清空」，不是「关闭」
+		hEscClear.hidden = !q;
+		hEsc.hidden = !!q;
 		sel = 0;
 		setActive(0, false);
 	};
 
 	// ---------- 开 / 关 ----------
+	// 归还焦点：目标还在、还能接收焦点就还给它；否则落到输入框，绝不把焦点留给 body
+	// （目标可能已经 disabled / display:none，此时 focus() 静默无效）
+	const restoreFocus = (back) => {
+		if (back && back.isConnected && back !== doc.body && typeof back.focus === "function") {
+			back.focus({ preventScroll: true });
+			if (doc.activeElement === back) return;
+		}
+		ctx?.input?.focus?.({ preventScroll: true });
+	};
+
 	const openPanel = () => {
 		if (open) return;
 		open = true;
@@ -764,6 +796,7 @@ export function init(ctx) {
 		input.value = "";
 		overlay.hidden = false;
 		render();
+		list.scrollTop = 0; // 上一次可能滚过，重开时从顶部开始
 		input.focus({ preventScroll: true });
 	};
 
@@ -773,11 +806,16 @@ export function init(ctx) {
 		overlay.hidden = true;
 		const back = lastFocus;
 		lastFocus = null;
-		if (back && back.isConnected && back !== doc.body && typeof back.focus === "function") {
-			back.focus({ preventScroll: true });
-			return;
-		}
-		ctx?.input?.focus?.({ preventScroll: true });
+		restoreFocus(back);
+	};
+
+	// Esc 分层：有搜索词先清空（回到完整列表）；返回 true 表示这一下 Esc 已被消费
+	const clearQuery = () => {
+		if (!input.value) return false;
+		input.value = "";
+		render();
+		input.focus({ preventScroll: true });
+		return true;
 	};
 
 	// ---------- 执行 ----------
@@ -788,6 +826,12 @@ export function init(ctx) {
 		} catch (err) {
 			toast(brief(err?.message || err), { error: true });
 		}
+	};
+
+	// Enter 没有可执行项时别静默吞键：把「为什么不可用」说出来
+	const explainBlocker = () => {
+		const why = rows[0]?.reason || (rows.length ? "" : "没有匹配的命令");
+		if (why) toast(why, { error: true });
 	};
 
 	// ---------- 键盘 ----------
@@ -830,7 +874,8 @@ export function init(ctx) {
 			case "Escape":
 				e.preventDefault();
 				e.stopPropagation();
-				closePanel();
+				// Esc 分层：先清搜索词，再关面板
+				if (!clearQuery()) closePanel();
 				return;
 			case "ArrowDown":
 				e.preventDefault();
@@ -866,6 +911,7 @@ export function init(ctx) {
 				e.preventDefault();
 				e.stopPropagation();
 				if (selectable[sel]) run(selectable[sel].cmd);
+				else explainBlocker();
 				return;
 			case "Tab":
 				// 面板里只有输入框一个焦点目标，导航靠 aria-activedescendant
@@ -896,6 +942,14 @@ export function init(ctx) {
 		if (e.target === overlay) closePanel();
 	});
 	dialog.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+	// 焦点陷阱兜底：面板开着时，任何跑到面板外的焦点都拉回搜索框（和快捷键参考一致）。
+	// closePanel 会先置 open=false 再归焦，所以这里不会被归还动作自己触发。
+	doc.addEventListener("focusin", (e) => {
+		if (!open) return;
+		if (dialog.contains(e.target)) return;
+		input.focus({ preventScroll: true });
+	});
 
 	// ======================================================================
 	// 快捷键参考（Ctrl/Cmd+/）
@@ -1111,11 +1165,16 @@ export function init(ctx) {
 		const back = helpLastFocus;
 		helpLastFocus = null;
 		helpSel = -1;
-		if (back && back.isConnected && back !== doc.body && typeof back.focus === "function") {
-			back.focus({ preventScroll: true });
-			return;
-		}
-		ctx?.input?.focus?.({ preventScroll: true });
+		restoreFocus(back);
+	};
+
+	// Esc 分层：参考面板里同样先清搜索词，再关（返回 true 表示这一下 Esc 已被消费）
+	const clearHelpQuery = () => {
+		if (!helpInput.value) return false;
+		helpInput.value = "";
+		renderHelp();
+		helpInput.focus({ preventScroll: true });
+		return true;
 	};
 
 	// ---------- 键盘 ----------
@@ -1153,7 +1212,8 @@ export function init(ctx) {
 				case "Escape":
 					e.preventDefault();
 					e.stopPropagation();
-					closeHelp();
+					// Esc 分层：先清搜索词，再关
+					if (!clearHelpQuery()) closeHelp();
 					return;
 				case "ArrowDown":
 					e.preventDefault();

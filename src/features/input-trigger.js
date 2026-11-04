@@ -199,7 +199,12 @@ export function init(ctx) {
 	let mode = "file";
 	let range = null;
 	let isOpen = false;
-	let dismissedValue = null;
+	// Esc / Shift+Tab 关闭去重：按「模式 + token 原文 + query」记账（ARCHITECTURE.md §2）：
+	// 同 token 同 query 保持关闭，换 token 或 query 变了才允许重开。
+	// 不用整段 value 比较：那样在草稿别处敲字会误解除，而光标挪到另一个同值 token 又不重开。
+	let dismissedSig = null;
+	// 弹层内非候选行（滚动条 / 外壳 / 页脚）按下时置位，用来让 blur 别把菜单关掉
+	let popPressAt = 0;
 	let demoTimer = 0;
 	let demoActive = false;
 	let demoPrev = "";
@@ -243,8 +248,33 @@ export function init(ctx) {
 		pop.append(list, foot);
 		document.body.append(pop);
 
-		// 点选时不让 textarea 失焦（否则 blur 会先关弹层，click 落空）
-		pop.addEventListener("mousedown", (e) => e.preventDefault());
+		// 只在候选行上阻止默认行为：保住 textarea 焦点，click 才能落到行上。
+		// 整个弹层 preventDefault 会把滚动条的原生拖动也一起吃掉。
+		pop.addEventListener("mousedown", (e) => {
+			const row = e.target instanceof Element ? e.target.closest(".sug-item") : null;
+			if (row && list.contains(row)) {
+				e.preventDefault();
+				popPressAt = 0;
+				return;
+			}
+			// 滚动条 / 外壳 / 页脚：放行默认行为，松手后由 mouseup 把焦点还给输入框
+			popPressAt = performance.now();
+		});
+		document.addEventListener(
+			"mouseup",
+			(e) => {
+				if (!popPressAt) return;
+				popPressAt = 0;
+				const inside = e.target instanceof Element && pop.contains(e.target);
+				if (!inside) {
+					// 松手在弹层外：按 blur 的语义关掉，别把焦点抢回来
+					close();
+					return;
+				}
+				if (isOpen && document.activeElement !== input) input.focus({ preventScroll: true });
+			},
+			true,
+		);
 		pop.addEventListener("click", (e) => {
 			const row = e.target instanceof Element ? e.target.closest(".sug-item") : null;
 			if (!row || !list.contains(row)) return;
@@ -267,13 +297,31 @@ export function init(ctx) {
 		ensurePop();
 		const r = box.getBoundingClientRect();
 		const vw = window.innerWidth;
+		const vh = window.innerHeight;
+		const GAP = 8; // 弹层与输入框的间距
+		const EDGE = 8; // 视口边缘留白
+		// 行高 30（.sug-item）+ 组标题 26（.sug-group 6+16+4）+ 外壳 padding 8 + 页脚 26：
+		// 150px 是「至少 3 行候选完整可见（含组标题与页脚）」的下限
+		const MIN_H = 30 * 3 + 26 + 8 + 26;
+		const CAP_H = 320;
 		const w = Math.max(160, Math.min(r.width, vw - 16));
 		const left = Math.max(8, Math.min(r.left, vw - w - 8));
+		const spaceUp = r.top - GAP - EDGE;
+		const spaceDown = vh - r.bottom - GAP - EDGE;
+		// 默认向上长（贴近输入框）；上方连 3 行都放不下且下方更宽裕时改向下长，别把菜单顶出视口
+		const up = spaceUp >= MIN_H || spaceUp >= spaceDown;
+		const room = up ? spaceUp : spaceDown;
+		const h = Math.min(Math.max(MIN_H, Math.min(CAP_H, room)), Math.max(MIN_H, vh - EDGE * 2));
 		pop.style.left = `${left}px`;
 		pop.style.width = `${w}px`;
-		pop.style.bottom = `${Math.max(8, window.innerHeight - r.top + 8)}px`;
-		// 只向上长，给输入框留出 8px 间距
-		pop.style.maxHeight = `${Math.max(96, Math.min(320, r.top - 24))}px`;
+		pop.style.maxHeight = `${h}px`;
+		if (up) {
+			pop.style.top = "auto";
+			pop.style.bottom = `${Math.max(EDGE, vh - r.top + GAP)}px`;
+		} else {
+			pop.style.bottom = "auto";
+			pop.style.top = `${Math.max(EDGE, r.bottom + GAP)}px`;
+		}
 	};
 
 	const openPopup = () => {
@@ -287,28 +335,39 @@ export function init(ctx) {
 	const close = () => {
 		if (!isOpen) return;
 		isOpen = false;
+		index = -1;
+		popPressAt = 0;
 		if (pop) pop.hidden = true;
 		if (list) list.replaceChildren();
 		items = [];
 		rowEls = [];
+		// 三个 aria 状态成对收尾：展开态、当前行、行上的 aria-selected（行已随 replaceChildren 移除）
 		input.setAttribute("aria-expanded", "false");
 		input.removeAttribute("aria-activedescendant");
 	};
 
 	const setIndex = (i, scroll = true) => {
-		if (!items.length) return;
-		index = i < 0 ? -1 : Math.max(0, Math.min(items.length - 1, i));
+		if (!items.length) {
+			index = -1;
+			input.removeAttribute("aria-activedescendant");
+			return;
+		}
+		const last = items.length - 1;
+		// -1 = 未预选；其余钳制在 [0, last]，NaN / Infinity 一律当未预选处理
+		index = Number.isFinite(i) ? (i < 0 ? -1 : Math.min(last, Math.max(0, Math.trunc(i)))) : -1;
 		for (let k = 0; k < rowEls.length; k++) {
 			const on = k === index;
 			rowEls[k].classList.toggle("on", on);
 			rowEls[k].setAttribute("aria-selected", on ? "true" : "false");
 		}
-		if (index < 0) {
+		const row = index >= 0 ? rowEls[index] || null : null;
+		if (!row) {
+			// 行没建出来时宁可不设，也别把 aria-activedescendant 设成空串
 			input.removeAttribute("aria-activedescendant");
 			return;
 		}
-		input.setAttribute("aria-activedescendant", rowEls[index]?.id || "");
-		if (scroll) rowEls[index]?.scrollIntoView({ block: "nearest" });
+		input.setAttribute("aria-activedescendant", row.id);
+		if (scroll) row.scrollIntoView({ block: "nearest" });
 	};
 
 	const rowFor = (item, i) => {
@@ -509,7 +568,11 @@ export function init(ctx) {
 
 	const renderFiles = () => {
 		if (mode !== "file" || !range) return;
-		items = rankFiles().map((f) => ({ kind: "file", path: f.path, dir: !!f.dir }));
+		items = rankFiles().map((f) => {
+			const raw = typeof f.path === "string" ? f.path : "";
+			// 目录统一去掉尾部斜杠：钻取拼接时只补一个，显示也不会出现 "a//"
+			return { kind: "file", path: f.dir ? raw.replace(/\/+$/, "") : raw, dir: !!f.dir };
+		});
 		render();
 	};
 
@@ -612,37 +675,47 @@ export function init(ctx) {
 			});
 	};
 
+	// 关闭去重指纹：模式 + token 原文（含 @ / /）+ query
+	const rangeSig = (m, r) =>
+		r ? `${m}\u0000${input.value.slice(r.start, r.end)}\u0000${String(r.query ?? "")}` : "";
+
+	// 当前光标处的触发态指纹（无触发态时为空串）
+	const currentSig = () => {
+		const cmd = commandRange();
+		if (cmd) return rangeSig("command", cmd);
+		const at = atRange();
+		return at ? rangeSig("file", at) : "";
+	};
+
 	const update = () => {
 		if (!demoActive && document.activeElement !== input) {
 			close();
 			return;
 		}
-		if (dismissedValue !== null) {
-			if (input.value === dismissedValue) {
+		const cmd = commandRange();
+		const at = cmd ? null : atRange();
+		const nextMode = cmd ? "command" : at ? "file" : "";
+		const nextRange = cmd || at;
+		const sig = nextRange ? rangeSig(nextMode, nextRange) : "";
+		if (dismissedSig !== null) {
+			// 不在触发态（sig 为空）：只关，不解除记账；仍是同一个 token+query：保持关闭
+			if (!sig || sig === dismissedSig) {
 				close();
 				return;
 			}
-			dismissedValue = null;
+			// 换了 token 或 query 变了：解除
+			dismissedSig = null;
 		}
-		const cmd = commandRange();
-		if (cmd) {
-			mode = "command";
-			range = cmd;
-			index = -1;
+		if (!nextRange) {
 			close();
-			ensureCommands();
 			return;
 		}
-		const at = atRange();
-		if (at) {
-			mode = "file";
-			range = at;
-			index = -1;
-			close();
-			ensureFiles();
-			return;
-		}
+		mode = nextMode;
+		range = nextRange;
+		index = -1;
 		close();
+		if (nextMode === "command") ensureCommands();
+		else ensureFiles();
 	};
 
 	// ---------- 插入 ----------
@@ -665,7 +738,8 @@ export function init(ctx) {
 			return;
 		}
 		const path = item.path;
-		const value = item.dir ? `${path}/` : path;
+		// 目录拼一个斜杠就够（path 在 renderFiles 里已去掉尾斜杠，这里再兜一道）；根目录不补
+		const value = item.dir && path && !path.endsWith("/") ? `${path}/` : path;
 		const quoted = range.quoted || /\s/.test(path);
 		// 光标后已有闭合引号：目录复用它（光标留在引号内继续补全），文件连引号一起替换
 		const tailQuote = range.quoted && input.value[range.end] === '"';
@@ -691,7 +765,8 @@ export function init(ctx) {
 			case "ArrowUp":
 				e.preventDefault();
 				e.stopPropagation();
-				setIndex(index < 0 ? items.length - 1 : index - 1);
+				// 未预选时从末尾进入；已预选时到顶就留在顶部（与 ArrowDown 到底一致）
+				setIndex(index < 0 ? items.length - 1 : Math.max(0, index - 1));
 				break;
 			case "Enter":
 				if (e.shiftKey) return;
@@ -704,7 +779,7 @@ export function init(ctx) {
 					// Shift+Tab 只关菜单，不消费补全
 					e.preventDefault();
 					e.stopPropagation();
-					dismissedValue = input.value;
+					dismissedSig = rangeSig(mode, range);
 					close();
 					break;
 				}
@@ -717,7 +792,7 @@ export function init(ctx) {
 			case "Escape":
 				e.preventDefault();
 				e.stopPropagation();
-				dismissedValue = input.value;
+				dismissedSig = rangeSig(mode, range);
 				close();
 				break;
 		}
@@ -735,7 +810,11 @@ export function init(ctx) {
 	input.addEventListener("keyup", (e) => {
 		if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") update();
 	});
-	input.addEventListener("blur", close);
+	input.addEventListener("blur", () => {
+		// 在弹层里按滚动条会短暂夺焦（滚动条不阻止默认行为）：此时不关，等 mouseup 把焦点还回来
+		if (popPressAt) return;
+		close();
+	});
 	window.addEventListener("resize", () => {
 		if (isOpen) place();
 	});
@@ -752,16 +831,19 @@ export function init(ctx) {
 		demoCwd = "";
 		clearTimeout(demoTimer);
 		input.value = demoPrev;
-		dismissedValue = demoPrev;
-		input.dispatchEvent(new Event("input", { bubbles: true }));
 		try {
 			input.setSelectionRange(demoPrevCaret, demoPrevCaret);
 		} catch {}
+		// 还原草稿别把菜单弹回来：先按还原后的光标重算一遍触发态，记成「已被关闭」
+		dismissedSig = currentSig();
+		input.dispatchEvent(new Event("input", { bubbles: true }));
 	};
 
 	window.__piSuggestDemo = (kind = "file", cwd = "") => {
 		endDemo();
 		demoActive = true;
+		// 截图钩子要强制弹出：清掉上一轮 Esc 留下的关闭记账
+		dismissedSig = null;
 		demoCwd = String(cwd || "");
 		demoPrev = input.value;
 		demoPrevCaret = input.selectionStart ?? demoPrev.length;

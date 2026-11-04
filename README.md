@@ -2,7 +2,7 @@
 
 给 pi CLI（`@earendil-works/pi-coding-agent`）做的极简桌面 GUI：Electron + 原生 ES module，零构建，运行时只依赖 `electron` 和 `shiki`。
 
-视觉参照 Codex，交互与技术实现参照 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（MIT）与 pi TUI。
+视觉语言是 myna 自己的：安静中性、回合状态优先、工具结果可追溯；交互语义以 pi TUI 为准，外部项目只作为实现研究资料。
 
 ## 运行
 
@@ -29,7 +29,7 @@ npm start
 - 消息：流式匀速吐字、思考（reasoning）折叠行与首行摘要、Markdown（含 GFM 表格）、shiki 懒高亮、工具卡片（运行微光/耗时，整轮结束统一折回）、diff、JSON 折叠树、工具图片缩略图与全屏预览、t/s 徽标与整轮用时、停止标记、完成摘要淡出、每回合末尾一个复制键、历史消息分页渲染（默认最近 80 条，可向上加载更早）
 - 队列：运行中 Enter 排队 / Ctrl+Enter 插话；队列本地持久化、空闲自动发送，插话走 pi 的 `steer`，草稿按会话持久化
 - 右栏：文件树（点文件在面板内只读预览，代码走 shiki、图片直接显示，可改用系统程序打开）；消息里的文件路径点击同样进右栏预览，工作区外回退系统程序；工作区变更（含 diff）、会话树；浏览器 tab（`<webview>`，仅 http/https）；四个固定 tab、拖宽、全屏、状态持久化；默认收起，打开文件或 tab 时才展开，面板无独立标题行
-- 设置：DSH 式左导航分栏（通用/会话/提供商/技能与 MCP/行为/统计/扩展/关于/快捷操作）；提供商与 MCP 编辑写前自动备份
+- 设置：左导航分栏（通用/会话/提供商/技能与 MCP/行为/统计/扩展/关于/快捷操作）；提供商与 MCP 编辑写前自动备份
 - 窗口：记住大小/位置/最大化状态，启动时按上次恢复
 - 内置终端：底部抽屉，ANSI 清理、可拖高度、历史持久化、停止/复制
 - 模型菜单：按供应商分组、搜索、两级面板（模型 / 思考档位）
@@ -42,9 +42,25 @@ npm start
 ```powershell
 npm test          # 行为/契约测试
 npm run check     # 全量 node --check
+npm run e2e       # 端到端：启动真实 Electron 跑断言，约 30s，不调模型
+node scripts/probe-pi-rpc.mjs  # 只读 state/models/commands，不发 prompt
 npm run build:portable   # dist/pi-mini 便携目录
 npm run build:zip        # dist/pi-mini-win64.zip（约 153 MB）
 ```
+
+### 端到端测试
+
+`npm run e2e` 启动真实 Electron，在渲染进程里跑 DOM/交互断言，输出每条断言的通过情况，失败时返回非零退出码。它不截图、不调用模型，因此不消耗 API 费用。
+
+```powershell
+npm run e2e                    # 跑全部验收场景
+npm run e2e -- fold terminal   # 只跑指定场景
+$env:E2E_VERBOSE=1; npm run e2e  # 打印全部断言明细，而不只是失败项
+```
+
+场景定义在 `scripts/e2e/scenarios.mjs`，每个场景是一段在渲染进程执行的代码，用 `ok(name, cond, detail)` 记录断言。`debug` 开头的场景（`debugSettings`、`debugPalette`）只用于排查，不进入 `all`。
+
+当前覆盖：启动健康、整轮过程折叠、左栏拖宽、右栏开合与拖宽、设置页思考档位映射、输入框触发菜单、命令面板、终端抽屉、主题切换。
 
 便携版不需要安装：解压后双击 `pi-mini/electron.exe`，要求 PATH 里有 `pi` 命令。
 
@@ -65,7 +81,7 @@ powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
 main.js          主进程：窗口、app:// 协议、pi 子进程、IPC、截图钩子
 preload.cjs      contextBridge → window.pi
 index.html       单页骨架（CSP script-src 'self'）
-styles/base.css  Codex 风格 token 与全局样式
+styles/base.css  myna 全局 token 与基础样式
 src/app.js       状态、渲染、事件、启动；导出 ctx 给功能模块
 src/features/     每个文件 export function init(ctx)，自带 CSS
 assets/          应用图标（icon.ico / icon.png）

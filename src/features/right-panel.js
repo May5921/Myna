@@ -281,8 +281,10 @@ body.rp-full #composer { margin-right: 0; }
 	transition: opacity 120ms ease;
 }
 .rp-grip:hover::after,
-.rp-grip:focus-visible::after { opacity: 0.5; }
+.rp-grip:focus-visible::after,
+.rp-grip.is-dragging::after { opacity: 0.5; }
 .rp-grip:focus-visible { outline: none; }
+.rp-grip.is-dragging::after { opacity: 1; width: 2px; left: 2.5px; }
 
 /* 拖拽中：让位宽度必须跟手，120ms 的 margin 过渡会拖出一段橡皮筋 */
 body.rp-resizing { cursor: col-resize; user-select: none; }
@@ -823,6 +825,9 @@ export function init(ctx) {
 	// 宽度上限 min(560px, 50vw)。窗口窄到 50vw < 260 时让 260 赢——
 	// 低于 260 面板里的文件名和 diff 都没法看了，宁可覆盖半个屏幕。
 	const maxWidth = () => Math.max(MIN_W, Math.min(MAX_W, Math.round(window.innerWidth / 2)));
+	// 窄窗阀值：低于这个宽度时右栏不再挤主对话，直接占满整块区域
+	const NARROW_W = 768;
+	const isNarrow = () => window.innerWidth < NARROW_W;
 	const clampWidth = (n) => {
 		const v = Math.round(Number(n));
 		if (!Number.isFinite(v)) return DEFAULT_W;
@@ -2086,6 +2091,8 @@ export function init(ctx) {
 			if (panel.contains(document.activeElement)) toggle.focus({ preventScroll: true });
 			return;
 		}
+		// 窄窗口下不挤主对话：直接占满（同 DSH：低于 768px 自动全屏）
+		if (isNarrow() && !full) setFull(true);
 		// 先 load 后 render：load 在 await 前就同步置 busy 并画出「读取中…」，
 		// 反过来会先闪一帧「还没加载」
 		load(tab, true);
@@ -2104,6 +2111,16 @@ export function init(ctx) {
 		expandBtn.setAttribute("aria-label", expandBtn.title);
 		grip.hidden = full; // 全屏宽度 100%，没有可拖的余量
 	}
+
+	// 窄屏退出全屏时收起右栏（同 DSH）：窄窗全屏退出后留一个压住内容的抽屉没意义。
+	// 只在「即将退出全屏」这一下生效：窗口变宽不自动重新打开。
+	expandBtn.addEventListener(
+		"click",
+		() => {
+			if (full && isNarrow()) setOpen(false);
+		},
+		true,
+	);
 
 	// ---------- 「+」视图菜单 ----------
 	const onDocDown = (e) => {
@@ -2144,8 +2161,9 @@ export function init(ctx) {
 		dragging = true;
 		dragX0 = e.clientX;
 		dragW0 = width;
+		grip.classList.add("is-dragging");
 		document.body.classList.add("rp-resizing");
-		grip.focus({ preventScroll: true });
+		// 不在这里 focus()：鼠标拖宽不应该把焦点从文件树/预览里抢走
 	});
 
 	// 监听挂在 window 上：不依赖 pointer capture，指针甩出面板外也收得到 up
@@ -2158,12 +2176,19 @@ export function init(ctx) {
 	const endDrag = () => {
 		if (!dragging) return;
 		dragging = false;
+		grip.classList.remove("is-dragging");
 		document.body.classList.remove("rp-resizing");
 		writePref(LS_WIDTH, width); // 松手才落盘，拖拽途中不写
 	};
 
 	window.addEventListener("pointerup", endDrag);
 	window.addEventListener("pointercancel", endDrag);
+
+	// 双击复位：宽度来回拉之后给一条确定性退路
+	grip.addEventListener("dblclick", (e) => {
+		e.preventDefault();
+		setWidth(DEFAULT_W, true);
+	});
 
 	// 键盘等价操作：方向键 16px 一步，Home/End 到两端（每次即落盘）
 	grip.addEventListener("keydown", (e) => {
@@ -2172,6 +2197,7 @@ export function init(ctx) {
 		else if (e.key === "ArrowRight") next = width - 16;
 		else if (e.key === "Home") next = MIN_W;
 		else if (e.key === "End") next = maxWidth();
+		else if (e.key === "Enter" || e.key === " ") next = DEFAULT_W;
 		if (next == null) return;
 		e.preventDefault();
 		setWidth(next, true);

@@ -6,6 +6,8 @@ import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameS
 import { join, sep, resolve, extname, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { sanitizePiEnv } from "./src/core/pi-env.js";
+import { copyThinkingLevelMap, normalizeThinkingLevelMap, hasThinkingLevelMap } from "./src/core/thinking-level-map.js";
 
 const T0 = Date.now();
 
@@ -39,7 +41,8 @@ const PREVIEW_IMAGE_MIME = {
 	".avif": "image/avif",
 };
 // 应用状态改名 myna；首次启动从旧文件复制（旧文件保留作备份）
-let STATE_FILE = join(homedir(), ".myna.json");
+// 端到端测试用独立的状态文件，不污染用户真实的窗口/会话指针
+let STATE_FILE = join(homedir(), process.env.PI_MINI_E2E ? ".myna-e2e.json" : ".myna.json");
 const STATE_LEGACY = join(homedir(), ".pi-mini.json");
 if (!existsSync(STATE_FILE) && existsSync(STATE_LEGACY)) {
 	try {
@@ -68,9 +71,11 @@ let quitConfirmed = false;
 let quitPending = false;
 
 // 单实例：两个实例同时跑 pi 会写同一个 session 文件，直接拒绝第二个进程
-if (!app.requestSingleInstanceLock()) {
+// 端到端测试是特例：要独占启动，不能被用户正开着的实例挤掉。
+const IS_E2E = Boolean(process.env.PI_MINI_E2E);
+if (!IS_E2E && !app.requestSingleInstanceLock()) {
 	app.exit(0);
-} else {
+} else if (!IS_E2E) {
 	// 第二个实例直接把隐藏到托盘的窗口拉回来
 	app.on("second-instance", () => showMainWindow());
 }
@@ -193,7 +198,7 @@ function startPi(cwd, sessionFile = null) {
 		cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
-		env: { ...process.env },
+		env: sanitizePiEnv(process.env),
 	});
 	child = proc;
 	proc.stdout.setEncoding("utf8");
@@ -591,8 +596,7 @@ function writeModelsFile(raw, previous) {
 	renameSync(tmp, MODELS_JSON);
 }
 
-// 只接受 id/name/reasoning/contextWindow/maxTokens/input 这几个能稳定表达的字段；
-// 模型条目里其它字段（compat 等）按 id 从旧配置里原样保留。
+// 接受 pi models.schema.json 的思考等级映射；其它高级模型字段按 id 从旧配置保留。
 function cleanProviderModels(list, previous, allowEmpty = false) {
 	const prev = new Map((Array.isArray(previous) ? previous : []).map((m) => [String(m?.id || ""), m]));
 	const seen = new Set();
@@ -608,6 +612,9 @@ function cleanProviderModels(list, previous, allowEmpty = false) {
 		if (name) next.name = name;
 		else delete next.name;
 		next.reasoning = Boolean(m?.reasoning);
+		const map = copyThinkingLevelMap(m?.thinkingLevelMap ?? base.thinkingLevelMap);
+		if (hasThinkingLevelMap(map)) next.thinkingLevelMap = map;
+		else delete next.thinkingLevelMap;
 		const ctx = Number(m?.contextWindow);
 		if (Number.isFinite(ctx) && ctx > 0) next.contextWindow = Math.round(ctx);
 		else delete next.contextWindow;
@@ -712,6 +719,7 @@ ipcMain.handle("pi:providers", async () => {
 				id: String(m?.id || ""),
 				name: String(m?.name || ""),
 				reasoning: Boolean(m?.reasoning),
+				thinkingLevelMap: normalizeThinkingLevelMap(m?.thinkingLevelMap),
 				input: Array.isArray(m?.input) ? m.input : [],
 				contextWindow: Number(m?.contextWindow) || 0,
 				maxTokens: Number(m?.maxTokens) || 0,
@@ -968,18 +976,23 @@ let restorePending = process.env.PI_MINI_SESSION || null;
 let relaunching = false;
 
 ipcMain.handle("pi:boot", async () => {
+	const tBoot = Date.now();
 	if (!child) startPi(currentCwd, resumeSessionFile());
 	try {
 		await ensureReady();
 	} catch (e) {
-		log("[boot] pi not ready", e.message);
+		log("[boot] pi not ready", e.message, "after", Date.now() - tBoot, "ms");
 		// 让渲染层看到真实失败（showBootError 有重试按钮），而不是空白可用态
 		throw e;
 	}
+	const tReady = Date.now();
 	// 只在本进程第一次 boot 时恢复指定会话；renderer 热重载后直接用当前会话
 	const restore = restorePending;
 	restorePending = null;
-	return { cwd: currentCwd, sessions: listSessions(), restore };
+	const sessions = listSessions();
+	const tSessions = Date.now();
+	log("[boot] pi ready", tReady - tBoot, "ms; listSessions", tSessions - tReady, "ms; total", tSessions - tBoot, "ms");
+	return { cwd: currentCwd, sessions, restore };
 });
 
 ipcMain.handle("pi:command", async (_e, cmd) => {
@@ -1351,6 +1364,13 @@ function startDevWatch() {
 				} catch {}
 				if (!want.trim()) return;
 				shotBusy = true;
+				// 截图流程里有十几个分支，任何一处抛未捕获异常都会让 shotBusy 永久为 true，
+				// 之后就再也不会响应 shot.request。加一个兜底定时器，正常结束时会清掉。
+				const shotGuard = setTimeout(() => {
+					if (!shotBusy) return;
+					shotBusy = false;
+					log("[dev] shot guard released busy flag");
+				}, 30000);
 				log("[dev] shot start", JSON.stringify(want));
 				try {
 					unlinkSync(join(dir, "shot.request"));
@@ -1658,7 +1678,12 @@ function startDevWatch() {
 				}
 				if (want.includes("settings")) {
 					try {
-						await win.webContents.executeJavaScript("window.__piSettingsDemo && window.__piSettingsDemo()");
+						const ready = await win.webContents.executeJavaScript(
+							`(async () => { for (let i = 0; i < 80; i++) { if (window.__piSettingsDemo) return true; await new Promise((r) => setTimeout(r, 100)); } return false; })()`,
+						);
+						log("[dev] settings demo ready", String(ready));
+						if (!ready) throw new Error("settings demo unavailable");
+						await win.webContents.executeJavaScript("window.__piSettingsDemo()");
 						const navKey = want.match(/setnav-([a-z]+)/)?.[1];
 						if (navKey) {
 							await new Promise((r) => setTimeout(r, 400));
@@ -1679,6 +1704,25 @@ function startDevWatch() {
 						if (want.includes("provmodel")) {
 							await new Promise((r) => setTimeout(r, 300));
 							await win.webContents.executeJavaScript(`document.querySelector('.prov-model-add')?.click()`);
+						}
+						// 模型列表在面板下方；需要看思考档位映射时确保面板打开、滚到底，并回报结构
+						if (want.includes("scrollend")) {
+							await new Promise((r) => setTimeout(r, 400));
+							const probe = await win.webContents.executeJavaScript(`(() => {
+								const ov = document.querySelector('.settings-overlay');
+								if (!ov || ov.hidden) document.getElementById('settings-btn')?.click();
+								const body = document.querySelector('.settings-body');
+								if (body) body.scrollTop = body.scrollHeight;
+								const cells = document.querySelectorAll('.prov-think-cell');
+								return JSON.stringify({
+									overlay: !!ov && !ov.hidden,
+									cells: cells.length,
+									first: (cells[0]?.textContent || '').trim().slice(0, 40),
+									disabled: document.querySelectorAll('.prov-think-cell .settings-input:disabled').length,
+								});
+							})()`);
+							log("[dev] think map", probe);
+							await new Promise((r) => setTimeout(r, 300));
 						}
 						await new Promise((r) => setTimeout(r, 900));
 					} catch (e) {
@@ -1728,6 +1772,33 @@ function startDevWatch() {
 						return out;
 					})()`);
 					log("[dev] linkprev", info);
+				}
+				if (want.includes("sbar")) {
+					try {
+						const r = await win.webContents.executeJavaScript(`(() => {
+							const grip = document.querySelector('.sbar-grip');
+							const side = document.getElementById('side');
+							const root = document.documentElement;
+							const before = getComputedStyle(root).getPropertyValue('--sidebar-width').trim();
+							const beforeW = Math.round(side?.getBoundingClientRect().width || 0);
+							root.style.setProperty('--sidebar-width', '360px');
+							const afterW = Math.round(side?.getBoundingClientRect().width || 0);
+							root.style.setProperty('--sidebar-width', before || '275px');
+							return JSON.stringify({
+								grip: !!grip,
+								role: grip?.getAttribute('role') || '',
+								tabindex: grip?.tabIndex,
+								label: grip?.getAttribute('aria-label') || '',
+								before,
+								beforeW,
+								afterW,
+								composerRing: getComputedStyle(document.getElementById('input')).outlineStyle,
+							});
+						})()`);
+						log("[dev] sbar", r);
+					} catch (e) {
+						log("[dev] sbar failed", e.message);
+					}
 				}
 				if (want.includes("perf")) {
 					try {
@@ -2177,6 +2248,7 @@ function startDevWatch() {
 				} catch (e) {
 					log("[dev] shot failed", e.message);
 				} finally {
+					clearTimeout(shotGuard);
 					shotBusy = false;
 				}
 			}
@@ -2402,6 +2474,74 @@ function createWindow() {
 		log("[did-fail-load]", code, description, url);
 	});
 
+
+	// ---------- 端到端：PI_MINI_E2E=<name,name> 跑完断言就退出，不截图、不调模型 ----------
+	const e2eTargets = String(process.env.PI_MINI_E2E || "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (e2eTargets.length) {
+		const consoleErrors = [];
+		win.webContents.on("console-message", (event) => {
+			if (event.level === "error") consoleErrors.push(String(event.message).slice(0, 200));
+		});
+		const startE2E = () => {
+			// 先哨兵一行：管道/时序出问题时，至少能分辨“没启动”和“启动了但结果丢了”
+			process.stdout.write(`E2E_START ${e2eTargets.join(",")}\n`);
+			log("[e2e] start", e2eTargets.join(","));
+			setTimeout(async () => {
+				const report = { scenarios: [], ok: true, consoleErrors };
+				try {
+					const { scenarios } = await import("./scripts/e2e/scenarios.mjs");
+					const names = e2eTargets.includes("all")
+						? Object.keys(scenarios).filter((n) => !/^debug/.test(n))
+						: e2eTargets;
+					for (const name of names) {
+						const source = scenarios[name];
+						if (!source) {
+							report.scenarios.push({ name, ok: false, checks: [{ name: "scenario exists", ok: false, detail: name }] });
+							report.ok = false;
+							continue;
+						}
+						const started = Date.now();
+						try {
+							// 崩溃恢复场景：先在主进程侧杀掉 pi 子进程，再让渲染层验证自愈
+							if (name === "crashRecovery") {
+								const pid = child?.pid;
+								log("[e2e] killing pi child", String(pid));
+								try {
+									process.kill(pid);
+								} catch (e) {
+									log("[e2e] kill failed", e.message);
+								}
+								await new Promise((r) => setTimeout(r, 1500));
+							}
+							const checks = await win.webContents.executeJavaScript(source);
+							const passed = Array.isArray(checks) && checks.every((c) => c.ok);
+							report.scenarios.push({ name, ok: passed, ms: Date.now() - started, checks });
+							if (!passed) report.ok = false;
+						} catch (err) {
+							report.scenarios.push({ name, ok: false, ms: Date.now() - started, checks: [{ name: "throws", ok: false, detail: err.message }] });
+							report.ok = false;
+						}
+					}
+				} catch (err) {
+					report.ok = false;
+					report.error = err.message;
+				}
+				// 结果同时落盘 + 走管道：Windows 上 stdout 时序不可靠，文件才是权威来源
+				try {
+					writeFileSync(join(app.getPath("temp"), "myna-e2e.json"), JSON.stringify(report), "utf8");
+				} catch {}
+				process.stdout.write(`E2E_RESULT ${JSON.stringify(report)}\n`, () => {
+					setTimeout(() => app.exit(report.ok ? 0 : 1), 60);
+				});
+			}, Number(process.env.PI_MINI_E2E_DELAY || 2500));
+		};
+		// 页面可能在我们注册之前就已经加载完（loadURL 上面已经调过）：两种都接上
+		if (win.webContents.isLoadingMainFrame()) win.webContents.once("did-finish-load", startE2E);
+		else startE2E();
+	}
 
 	if (process.env.PI_MINI_PROBE) {
 		win.webContents.once("did-finish-load", () => {
