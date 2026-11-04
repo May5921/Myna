@@ -82,19 +82,19 @@ console.log("\n[4/7] 打包便携版");
 run("node", ["scripts/build-portable.mjs"]);
 run("node", ["scripts/build-zip.mjs"]);
 
-console.log("\n[5/7] 提交并打 tag");
-run("git", ["add", "package.json"]);
-run("git", ["commit", "-m", `chore: 发布 v${version}`]);
-run("git", ["tag", `v${version}`]);
-
+console.log("\n[5/7] 校验产物并提交");
 const setup = join(root, "dist-installer", `Myna-Setup-${version}.exe`);
 const zip = join(root, "dist", `Myna-${version}-win64.zip`);
+// 产物不齐就不要打 tag，否则还得手工删
 for (const f of [setup, zip]) {
 	if (!existsSync(f)) {
 		console.error("缺少产物：" + f);
 		process.exit(1);
 	}
 }
+run("git", ["add", "package.json"]);
+run("git", ["commit", "-m", `chore: 发布 v${version}`]);
+run("git", ["tag", `v${version}`]);
 const mb = (f) => (statSync(f).size / 1024 / 1024).toFixed(1) + " MB";
 console.log(`  ${setup}  ${mb(setup)}`);
 console.log(`  ${zip}  ${mb(zip)}`);
