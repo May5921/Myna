@@ -12,7 +12,10 @@ export function imagesFromContent(content) {
 			block.source?.media_type ||
 			block.source?.mimeType ||
 			"image/png";
-		out.push({ url: `data:${mime};base64,${data}`, name: "图片" });
+		// data 可能已经是完整 data URL（不同来源写法不一），再拼前缀会得到无效 src
+		const raw = String(data);
+		const url = raw.startsWith("data:") ? raw : `data:${mime};base64,${raw}`;
+		out.push({ url, name: "图片" });
 	}
 	return out;
 }

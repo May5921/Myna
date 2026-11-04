@@ -1,19 +1,108 @@
-# myna
+# Myna
 
-给 pi CLI（`@earendil-works/pi-coding-agent`）做的极简桌面 GUI：Electron + 原生 ES module，零构建，运行时只依赖 `electron` 和 `shiki`。
+**给 [pi](https://github.com/earendil-works/pi) 编程 agent 做的桌面壳。** 只做一件事：把 pi 的思考、工具调用和会话，变成一屏能读懂的界面。
 
-视觉语言是 myna 自己的：安静中性、回合状态优先、工具结果可追溯；交互语义以 pi TUI 为准，外部项目只作为实现研究资料。
+![Myna 主界面](docs/images/main.png)
 
-## 运行
+> Myna 是 [pi CLI](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 的图形前端 —— 一个安静、克制、几乎不打断你的桌面客户端。
 
-要求：Node 20+、全局安装 `pi`（`@earendil-works/pi-coding-agent`，有 `dist/cli.js`）。
+---
+
+## 为什么做这个
+
+终端里的 pi 很强，但一屏塞满思考流、工具输出、diff 和回答时，"刚才它到底干了什么"就变得难读。
+
+Myna 只有四条原则：
+
+1. **壳要薄。** 不发明 pi 没有的能力，不重写 agent。pi 升级，Myna 跟着走。
+2. **一轮一屏。** 一轮结束后，思考和工具调用收进一个可展开的「过程」块，最终回答留在外面。想追溯细节，点开就是原始记录。
+3. **状态真实。** 显示的是 pi 上报的真实数值 —— 每轮耗时、tok/s、工具执行时间。不模拟、不美化。
+4. **不打断。** pi 崩了自动按原 session 续跑；启动时先用本地会话文件把历史画出来，不让窗口白屏等 4 秒。
+
+## 特性
+
+**对话**
+- 整轮折叠：`过程 · 3 次思考 · 5 个工具 · 12.4s · 48 tok/s`，点开是完整时间线
+- 流式吐字、思考折叠行、Markdown + GFM 表格、shiki 代码高亮
+- 工具卡片：运行微光、耗时、diff、JSON 折叠树、图片缩略图与全屏预览
+- 历史分页（默认最近 80 条，向上加载更早）
+
+**输入**
+- 图片粘贴 / 拖拽（走 `prompt.images`）
+- **文档拖入**：PDF、Word、PPT、Excel 自动抽成纯文本随消息发出（不保留排版、不做 OCR）
+- `@` 文件引用、`/` 斜杠命令、按会话持久化的草稿
+- 运行中 Enter 排队、Ctrl+Enter 插话（走 pi 的 `steer`）
+
+**工作区**
+- 会话按工作区分组、搜索、置顶、重命名、归档
+- 左栏可拖宽（双击复位）
+- 右栏：文件树预览、diff、会话树、内嵌浏览器、内置终端
+- `Ctrl/Cmd+K` 命令面板，`Ctrl/Cmd+/` 快捷键总览
+
+**工程**
+- 零构建、原生 ES module；运行时依赖只有 `shiki`、`fflate`、`pdfjs-dist`
+- 端到端测试直接在真 Electron 里跑：`npm run e2e`（14 场景 / 122 断言，不调用模型）
+
+## 安装
+
+### 方式一：下载便携版（推荐）
+
+1. 从 [Releases](../../releases) 下载 `Myna-0.1.0-win64.zip`
+2. 解压，双击 `Myna.exe`
+3. 前提：系统里已经装好 pi，命令行能运行 `pi`
+
+不需要安装 Node，不需要编译。
+
+### 方式二：从源码跑
 
 ```powershell
 npm install
 npm start
 ```
 
-开发模式（热重载 + `shot.request` 截图钩子）：
+要求 Node 20+，以及全局安装的 pi：
+
+```powershell
+npm install -g @earendil-works/pi-coding-agent
+```
+
+## 配置
+
+Myna 读写的就是 pi 自己的配置，没有另一套平行世界：
+
+| 内容 | 位置 |
+|---|---|
+| 会话 | `~/.pi/agent/sessions/` |
+| 模型与提供商 | `~/.pi/agent/models.json` |
+| 设置 | `~/.pi/agent/settings.json` |
+| 扩展 / 技能 / MCP | `~/.pi/agent/` |
+
+在 Myna 设置页里改提供商或 MCP，写之前会自动备份原文件。
+
+## 快捷键
+
+| 操作 | 快捷键 |
+|---|---|
+| 命令面板 | `Ctrl/Cmd+K` |
+| 快捷键总览 | `Ctrl/Cmd+/` |
+| 发送 | `Enter` |
+| 换行 | `Shift+Enter` |
+| 排队 | 生成中 `Enter` |
+| 插话 | 生成中 `Ctrl+Enter` |
+| 停止生成 | `Esc` |
+| 切换左栏 | `Ctrl/Cmd+B` |
+
+## 开发
+
+```powershell
+npm test          # 单元测试
+npm run check     # 语法与契约检查
+npm run e2e       # 端到端（真 Electron，不调用模型）
+npm run build:portable   # 生成 dist/Myna/Myna.exe
+npm run build:zip        # 打包 dist/Myna-*.zip
+```
+
+开发模式（热重载）：
 
 ```powershell
 $env:PI_MINI_DEV = 1
@@ -22,78 +111,12 @@ npm start
 
 日志固定写到 `%LOCALAPPDATA%\Temp\pi-mini.log`。
 
-## 功能
+架构说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，视觉规范见 [`docs/STYLE.md`](docs/STYLE.md)。
 
-- 会话：按工作区分组、手动绑定项目白名单、折叠状态与标题持久化、重启恢复上次会话、pi 崩溃后按原 session 自动续跑、分页加载、归档/取消归档、置顶、行内重命名、侧栏全文搜索
-- 输入框：`@` 文件引用、`/` 斜杠命令、图片粘贴/拖拽（`prompt.images`）、按会话持久化的草稿、`Ctrl+K` 命令面板
-- 消息：流式匀速吐字、思考（reasoning）折叠行与首行摘要、Markdown（含 GFM 表格）、shiki 懒高亮、工具卡片（运行微光/耗时，整轮结束统一折回）、diff、JSON 折叠树、工具图片缩略图与全屏预览、t/s 徽标与整轮用时、停止标记、完成摘要淡出、每回合末尾一个复制键、历史消息分页渲染（默认最近 80 条，可向上加载更早）
-- 队列：运行中 Enter 排队 / Ctrl+Enter 插话；队列本地持久化、空闲自动发送，插话走 pi 的 `steer`，草稿按会话持久化
-- 右栏：文件树（点文件在面板内只读预览，代码走 shiki、图片直接显示，可改用系统程序打开）；消息里的文件路径点击同样进右栏预览，工作区外回退系统程序；工作区变更（含 diff）、会话树；浏览器 tab（`<webview>`，仅 http/https）；四个固定 tab、拖宽、全屏、状态持久化；默认收起，打开文件或 tab 时才展开，面板无独立标题行
-- 设置：左导航分栏（通用/会话/提供商/技能与 MCP/行为/统计/扩展/关于/快捷操作）；提供商与 MCP 编辑写前自动备份
-- 窗口：记住大小/位置/最大化状态，启动时按上次恢复
-- 内置终端：底部抽屉，ANSI 清理、可拖高度、历史持久化、停止/复制
-- 模型菜单：按供应商分组、搜索、两级面板（模型 / 思考档位）
-- 外观：浅色/深色/跟随系统，正文字号/代码字号/终端字号/字体族；首屏前应用，避免闪白
-- 快捷键：`Ctrl/Cmd+/` 打开只读快捷键总览，支持搜索
-- 扩展 UI：pi 扩展的 select/confirm/input/editor、notify、status/widget
+## License
 
-## 开发与验证
+MIT
 
-```powershell
-npm test          # 行为/契约测试
-npm run check     # 全量 node --check
-npm run e2e       # 端到端：启动真实 Electron 跑断言，约 30s，不调模型
-node scripts/probe-pi-rpc.mjs  # 只读 state/models/commands，不发 prompt
-npm run build:portable   # dist/pi-mini 便携目录
-npm run build:zip        # dist/pi-mini-win64.zip（约 153 MB）
-```
+---
 
-### 端到端测试
-
-`npm run e2e` 启动真实 Electron，在渲染进程里跑 DOM/交互断言，输出每条断言的通过情况，失败时返回非零退出码。它不截图、不调用模型，因此不消耗 API 费用。
-
-```powershell
-npm run e2e                    # 跑全部验收场景
-npm run e2e -- fold terminal   # 只跑指定场景
-$env:E2E_VERBOSE=1; npm run e2e  # 打印全部断言明细，而不只是失败项
-```
-
-场景定义在 `scripts/e2e/scenarios.mjs`，每个场景是一段在渲染进程执行的代码，用 `ok(name, cond, detail)` 记录断言。`debug` 开头的场景（`debugSettings`、`debugPalette`）只用于排查，不进入 `all`。
-
-当前覆盖：启动健康、整轮过程折叠、左栏拖宽、右栏开合与拖宽、设置页思考档位映射、输入框触发菜单、命令面板、终端抽屉、主题切换。
-
-便携版不需要安装：解压后双击 `pi-mini/electron.exe`，要求 PATH 里有 `pi` 命令。
-
-也可以用一个 PowerShell 脚本“安装”到用户目录（复制文件 + 开始菜单/桌面快捷方式 + 卸载入口，不需要管理员权限）：
-
-```powershell
-npm run build:portable
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
-# 卸载
-powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1
-```
-
-脚本不签名，也没有自动更新；升级等于重新跑一次 `build:portable` 和 `install.ps1`。
-
-## 结构
-
-```
-main.js          主进程：窗口、app:// 协议、pi 子进程、IPC、截图钩子
-preload.cjs      contextBridge → window.pi
-index.html       单页骨架（CSP script-src 'self'）
-styles/base.css  myna 全局 token 与基础样式
-src/app.js       状态、渲染、事件、启动；导出 ctx 给功能模块
-src/features/     每个文件 export function init(ctx)，自带 CSS
-assets/          应用图标（icon.ico / icon.png）
-docs/            STYLE.md / ARCHITECTURE.md / RPC-MATRIX.md / PERF.md
-```
-
-新增功能 = 建一个 `src/features/xxx.js`，导出 `init(ctx)`，在 `src/app.js` 的 `FEATURES` 里加一行；功能自带 `document.createElement("style")`，不改 `styles/base.css`。
-
-pi 通过 `pi --mode rpc` 子进程接入，不监听 HTTP 端口；所有 RPC 覆盖情况见 [docs/RPC-MATRIX.md](docs/RPC-MATRIX.md)。
-
-## 约束
-
-- 不引入 React / 打包器 / TypeScript，保持零构建
-- 渲染层不使用内联脚本（CSP）
-- 不新增运行时依赖（electron + shiki 之外）
+**English**: Myna is a desktop shell for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent). It folds each turn's reasoning and tool calls into a single expandable block, renders the real numbers pi reports, and never lets a crashed pi take the UI down with it. Zero build step, plain ES modules, three runtime dependencies.

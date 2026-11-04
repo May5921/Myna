@@ -601,6 +601,16 @@ function emptyHint(text = "选个目录，说句话。") {
 }
 
 // ---------- 渲染 ----------
+// 图片 src 统一出口：历史块可能是 {url} / {data,mimeType} / 已是 data URL
+function normalizeSrc(item) {
+	const url = String(item?.url || "");
+	if (url) return url;
+	const data = String(item?.data || "");
+	if (!data) return "";
+	if (data.startsWith("data:")) return data;
+	return `data:${item?.mimeType || item?.mime_type || "image/png"};base64,${data}`;
+}
+
 function addUser(text, images = []) {
 	stream.querySelector(".empty")?.remove();
 	const row = document.createElement("div");
@@ -612,10 +622,24 @@ function addUser(text, images = []) {
 		const box = document.createElement("div");
 		box.className = "user-imgs";
 		for (const item of images) {
+			if (item.kind === "doc") {
+				// 文档以文件名胶囊呈现，正文已经拼进 message
+				const chip = document.createElement("span");
+				chip.className = "user-doc";
+				chip.textContent = item.name || "文档";
+				chip.title = `${item.name || "文档"}${item.truncated ? "（内容已截断）" : ""}`;
+				box.append(chip);
+				continue;
+			}
 			const img = document.createElement("img");
 			img.className = "tool-img";
-			img.src = item.url;
+			img.src = normalizeSrc(item);
 			img.alt = item.name || "图片";
+			// 加载失败留痕：不静默破图，便于定位是哪一类来源
+			img.addEventListener("error", () => {
+				img.dataset.broken = "1";
+				console.warn("[image] 加载失败", item.name || "", String(img.getAttribute("src") || "").slice(0, 40));
+			});
 			box.append(img);
 		}
 		bubble.append(box);
@@ -3009,7 +3033,11 @@ async function submit() {
 	input.value = "";
 	autosize();
 	updateSend();
-	addUser(text || `[${extra.length} 张图片]`, extra);
+	// 文档：抽出的纯文本拼在正文后面，跟图片一起作为一次 prompt
+	const documents = extra.filter((it) => it.kind === "doc");
+	const images = extra.filter((it) => it.kind !== "doc");
+	const body = [text, ...documents.map((d) => `[${d.name}]\n${d.text}`)].filter(Boolean).join("\n\n");
+	addUser(text || `[${extra.length} 个附件]`, extra);
 	state.pendingUserEcho = text;
 	state.aborted = false;
 	state.abortRow = null;
@@ -3019,8 +3047,9 @@ async function submit() {
 	if (extra.length && row?.classList.contains("mine")) row.dataset.images = String(extra.length);
 	setStreaming(true);
 	try {
-		const cmd = { type: "prompt", message: text };
-		if (extra.length) cmd.images = extra;
+		const cmd = { type: "prompt", message: body };
+		// pi 只认 {type,data,mimeType}；url/name/w/h 是本地渲染用的，别塞进 RPC
+		if (images.length) cmd.images = images.map((it) => ({ type: "image", data: it.data, mimeType: it.mimeType }));
 		const res = await window.pi.command(cmd);
 		saveDraftNow();
 		attachments.clear();
@@ -3116,6 +3145,8 @@ function markStopped() {
 function setStreaming(on) {
 	state.streaming = on;
 	window.__piStreaming = on;
+	// 端到端专用：不经侧栏直接打开某个会话（侧栏加载依赖展开时序，测试里不稳定）
+	window.__mynaPickSession = (path, cwd) => pickSession(path, cwd);
 	state.streamSeq += 1; // 让在途的 get_state 回包知道状态已经变了
 	sendBtn.classList.toggle("stop", on);
 	updateSend();
@@ -3759,6 +3790,23 @@ async function bootApp() {
 	stream.querySelectorAll(".empty").forEach((n) => n.remove());
 	const loading = emptyHint("正在连接…");
 	input.placeholder = "使用 pi";
+	// pi 冷启动要 4~5 秒（加载扩展与模型目录）。这段时间先用本地会话文件把历史画出来，
+	// 否则窗口从出现到有内容之间是一整块白屏。
+	let prefilledPath = null;
+	try {
+		const local = await window.pi.localHistory().catch(() => null);
+		if (local?.messages?.length) {
+			state.cwd = local.cwd || state.cwd;
+			state.sessionFile = local.path;
+			state.sessionName = local.name;
+			loading.remove();
+			renderHistory(local.messages);
+			renderTitle();
+			prefilledPath = local.path;
+			// 打点：这行日志就是「白屏结束」的时刻
+			console.warn("[perf] local history painted", local.messages.length, "msgs at", Math.round(performance.now()), "ms");
+		}
+	} catch {}
 	try {
 		const boot = await window.pi.boot();
 		state.cwd = boot.cwd;
@@ -3773,7 +3821,7 @@ async function bootApp() {
 		if (restore && boot.restore) {
 			const r = await window.pi.switchSession(boot.restore).catch(() => null);
 			if (r && !r.cancelled) {
-				renderHistory(r.messages ?? []);
+				if (prefilledPath !== boot.restore) renderHistory(r.messages ?? []);
 				await refreshState();
 				sessionBootDone = true;
 				saveLastSession();
@@ -3787,7 +3835,7 @@ async function bootApp() {
 			const r = await window.pi.switchSession(last.path).catch(() => null);
 			if (r && !r.cancelled) {
 				loading.remove();
-				renderHistory(r.messages ?? []);
+				if (prefilledPath !== last.path) renderHistory(r.messages ?? []);
 				await refreshState();
 				sessionBootDone = true;
 				saveLastSession();

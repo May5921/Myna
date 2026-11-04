@@ -4,6 +4,7 @@ dist/
 !assets/icon.png
 !assets/icon-256.png
 !assets/brand.png
+!docs/images/*.png
 !assets/icon-source.png
 shot.request
 .dev-quiet

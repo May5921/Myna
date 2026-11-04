@@ -1,7 +1,7 @@
 {
 	"name": "myna",
 	"version": "0.1.0",
-	"description": "Minimal desktop GUI for the pi agent",
+	"description": "Desktop shell for the pi coding agent",
 	"license": "MIT",
 	"type": "module",
 	"main": "main.js",
@@ -14,9 +14,12 @@
 		"e2e": "node scripts/e2e.mjs"
 	},
 	"devDependencies": {
-		"electron": "^45.2.1"
+		"electron": "^45.2.1",
+		"rcedit": "^5.0.1"
 	},
 	"dependencies": {
+		"fflate": "^0.8.3",
+		"pdfjs-dist": "^6.5.438",
 		"shiki": "^4.6.0"
 	}
 }

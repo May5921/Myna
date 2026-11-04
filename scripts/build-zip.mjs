@@ -2,15 +2,15 @@ import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-// 把 dist/pi-mini 打成 zip（Windows 用 PowerShell Compress-Archive，不引入第三方打包依赖）。
+// 把 dist/Myna 打成 zip（Windows 用 PowerShell Compress-Archive，不引入第三方打包依赖）。
 // 需要先跑 npm run build:portable。
 
 const root = process.cwd();
-const src = join(root, "dist", "pi-mini");
-const out = join(root, "dist", "pi-mini-win64.zip");
+const src = join(root, "dist", "Myna");
+const out = join(root, "dist", `Myna-${process.env.MYNA_VERSION || "0.1.0"}-win64.zip`);
 
 if (!existsSync(src)) {
-	console.error("找不到 dist/pi-mini，请先 npm run build:portable");
+	console.error("找不到 dist/Myna，请先 npm run build:portable");
 	process.exit(1);
 }
 
@@ -19,7 +19,7 @@ if (process.platform !== "win32") {
 	process.exit(0);
 }
 
-console.log("压缩 dist/pi-mini …");
+console.log("压缩 dist/Myna …");
 execFileSync(
 	"powershell",
 	["-NoProfile", "-Command", `Compress-Archive -Path '${src}' -DestinationPath '${out}' -Force`],

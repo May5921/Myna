@@ -273,6 +273,66 @@ export const scenarios = {
 	`,
 
 	// 终端抽屉：开合焦点、关闭后归还、手柄键盘、空历史不写空命令
+	// 图片附件：用户气泡必须真的渲染出图（曾因 get() 丢 url 变成破图）
+	attach: `
+		(async () => {
+			${HARNESS}
+			window.__piAttachClear();
+			const n = await window.__piAttachDemo();
+			ok("attachment queued", n === 1, "n=" + n);
+			const snap = window.__piAttachSnapshot();
+			const first = snap && snap[0];
+			ok("snapshot keeps url", !!first && String(first.url || "").startsWith("data:image/"), String((first && first.url) || "").slice(0, 24));
+			ok("snapshot keeps name", !!(first && first.name), String(first && first.name));
+			ok("snapshot keeps mimeType", !!(first && first.mimeType), String(first && first.mimeType));
+			const railImg = document.querySelector(".att-rail img");
+			ok("rail preview renders", !!railImg && railImg.complete && railImg.naturalWidth > 0, railImg ? railImg.naturalWidth + "x" + railImg.naturalHeight : "no img");
+			// 发送：主进程在 e2e 的 attach 场景会拦截 prompt（contextBridge 对象只读，渲染层覆盖无效）
+			document.getElementById("send").click();
+			await until(() => document.querySelector(".row.mine .user img"), 5000);
+			await wait(300);
+			const bubbleImg = document.querySelector(".row.mine .user img");
+			ok("bubble image renders", !!bubbleImg && bubbleImg.complete && bubbleImg.naturalWidth > 0, bubbleImg ? "alt=" + bubbleImg.alt + " " + bubbleImg.naturalWidth + "x" + bubbleImg.naturalHeight : "no img");
+			ok("bubble image not broken", !!bubbleImg && bubbleImg.naturalWidth > 0);
+			ok("streaming released", window.__piStreaming === false);
+			document.querySelector(".row.mine")?.remove();
+			window.__piAttachClear();
+			return checks;
+		})()
+	`,
+
+	// 文档附件：拖入 pdf/docx/pptx/xlsx 后抽出纯文本，随 prompt 正文发出
+	doc: `
+		(async () => {
+			${HARNESS}
+			window.__piAttachClear();
+			const box = document.querySelector("#composer .box");
+			const names = ["report.docx", "slides.pptx", "budget.xlsx", "notes.pdf"];
+			for (const n of names) {
+				const res = await fetch("app://bundle/tests/fixtures/" + n);
+				const blob = await res.blob();
+				const f = new File([blob], n, { type: blob.type || "application/octet-stream" });
+				const dt = new DataTransfer();
+				dt.items.add(f);
+				box.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+			}
+			const got = await until(() => document.querySelectorAll('.att-item[data-doc="1"]').length === 4, 30000);
+			const cards = [...document.querySelectorAll('.att-item[data-doc="1"]')];
+			ok("four doc cards", got && cards.length === 4, "cards=" + cards.length);
+			const metas = cards.map((c) => (c.querySelector(".att-doc-name")?.textContent || "") + "/" + (c.querySelector(".att-doc-meta")?.textContent || ""));
+			ok("cards show name+size", metas.every((m) => m.includes("/") && /字/.test(m)), metas.join(" | "));
+			document.getElementById("send").click();
+			await until(() => document.querySelector(".row.mine"), 5000);
+			await wait(400);
+			const chips = [...document.querySelectorAll(".row.mine .user-doc")];
+			ok("bubble shows doc chips", chips.length === 4, "chips=" + chips.length);
+			ok("streaming released", window.__piStreaming === false);
+			document.querySelector(".row.mine")?.remove();
+			window.__piAttachClear();
+			return checks;
+		})()
+	`,
+
 	terminal: `
 		(async () => {
 			${HARNESS}
@@ -416,6 +476,71 @@ export const scenarios = {
 	`,
 
 	// 真实会话回归：用启动时已经渲染的会话内容（不是合成数据）验证折叠与行结构
+	// 调试：加载真实会话，检查用户消息里的图片到底渲染成了什么
+	// 调试：把真实会话里的图片 base64 直接喂给 <img>，判断是数据问题还是渲染路径问题
+	debugImg: `
+		(async () => {
+			${HARNESS}
+			await until(() => window.__ready === true, 20000);
+			const probe = window.__e2eImageProbe;
+			if (!probe) { checks.push({ name: "probe injected by main", ok: false, detail: "missing" }); return checks; }
+			checks.push({ name: "base64 length", ok: probe.data.length > 1000, detail: String(probe.data.length) + " chars, mime=" + probe.mime });
+			const im = new Image();
+			const loaded = await new Promise((resolve) => {
+				im.onload = () => resolve(true);
+				im.onerror = () => resolve(false);
+				im.src = "data:" + probe.mime + ";base64," + probe.data;
+				setTimeout(() => resolve(false), 5000);
+			});
+			checks.push({ name: "data url loads", ok: loaded, detail: "naturalWidth=" + im.naturalWidth });
+			// 再用 imagesFromContent 走一遍，确认它拼出的 url 也能加载
+			const mod = await import("app://bundle/src/core/content-images.js");
+			const imgs = mod.imagesFromContent([{ type: "image", data: probe.data, mimeType: probe.mime }]);
+			checks.push({ name: "imagesFromContent url", ok: !!imgs[0] && String(imgs[0].url).startsWith("data:" + probe.mime + ";base64,"), detail: String(imgs[0]?.url || "").slice(0, 40) + " len=" + String(imgs[0]?.url || "").length });
+			const im2 = new Image();
+			const loaded2 = await new Promise((resolve) => {
+				im2.onload = () => resolve(true);
+				im2.onerror = () => resolve(false);
+				im2.src = imgs[0].url;
+				setTimeout(() => resolve(false), 5000);
+			});
+			checks.push({ name: "imagesFromContent loads", ok: loaded2, detail: "naturalWidth=" + im2.naturalWidth });
+			return checks;
+		})()
+	`,
+
+	histImage: `
+		(async () => {
+			${HARNESS}
+			await until(() => window.__ready === true, 20000);
+			const probe = window.__e2eImageProbe;
+			if (!probe?.sessionPath) { checks.push({ name: "probe", ok: false, detail: "no sessionPath" }); return checks; }
+			const stream = document.getElementById("stream");
+			stream.replaceChildren();
+			await window.__mynaPickSession(probe.sessionPath, "C:/Users/Luke");
+			await until(() => stream.querySelector(".row.mine"), 12000);
+			await wait(1500);
+			const mines = [...stream.querySelectorAll(".row.mine")];
+			checks.push({ name: "mine rows", ok: mines.length > 0, detail: mines.length + " rows" });
+			const brief = mines.map((r, i) => {
+				const img = r.querySelector("img");
+				const t = (r.querySelector(".user")?.textContent || "").replace(/\s+/g, " ").slice(0, 12);
+				if (!img) return i + ":" + JSON.stringify(t) + " no-img";
+				const src = String(img.getAttribute("src") || "");
+				return i + ":" + JSON.stringify(t) + " IMG len=" + src.length + " head=" + src.slice(0, 24) + " nw=" + img.naturalWidth + " broken=" + (img.dataset.broken || "0");
+			});
+			checks.push({ name: "mine detail", ok: true, detail: brief.join(" | ").slice(0, 460) });
+			const withImg = mines.find((r) => r.querySelector("img"));
+			ok("history has an image message", !!withImg);
+			if (withImg) {
+				const img = withImg.querySelector("img");
+				ok("history image loaded", img.complete && img.naturalWidth > 0, "nw=" + img.naturalWidth + " broken=" + (img.dataset.broken || "0"));
+				ok("history image src is data url", String(img.getAttribute("src") || "").startsWith("data:image/"));
+			}
+			return checks;
+		})()
+	`,
+
 	realHistory: `
 		(async () => {
 			${HARNESS}

@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pi", {
 	boot: () => ipcRenderer.invoke("pi:boot"),
+	localHistory: () => ipcRenderer.invoke("pi:local-history"),
 	command: (cmd) => ipcRenderer.invoke("pi:command", cmd),
 	sendRaw: (payload) => ipcRenderer.invoke("pi:send-raw", payload),
 	pickFolder: () => ipcRenderer.invoke("pi:pick-folder"),

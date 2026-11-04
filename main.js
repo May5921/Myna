@@ -73,6 +73,9 @@ let quitPending = false;
 // 单实例：两个实例同时跑 pi 会写同一个 session 文件，直接拒绝第二个进程
 // 端到端测试是特例：要独占启动，不能被用户正开着的实例挤掉。
 const IS_E2E = Boolean(process.env.PI_MINI_E2E);
+// e2e 期间当前场景名 + 被拦截的 prompt（避免测试真的调用模型）
+let e2eScenario = "";
+let e2eCapturedPrompt = null;
 if (!IS_E2E && !app.requestSingleInstanceLock()) {
 	app.exit(0);
 } else if (!IS_E2E) {
@@ -116,6 +119,31 @@ let activeSessionFile = (() => {
 })();
 function resumeSessionFile() {
 	return activeSessionFile && existsSync(activeSessionFile) ? activeSessionFile : null;
+}
+
+// 直接解析会话文件，不依赖 pi 子进程——用于启动时先画历史，避免长时间白屏
+function readSessionMessages(path) {
+	const out = [];
+	let raw;
+	try {
+		raw = readFileSync(path, "utf8");
+	} catch {
+		return out;
+	}
+	for (const line of raw.split("\n")) {
+		if (!line.startsWith("{")) continue;
+		let rec;
+		try {
+			rec = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (rec?.type !== "message" || !rec.message) continue;
+		const m = rec.message;
+		if (!m.role) continue;
+		out.push({ role: m.role, content: m.content, timestamp: m.timestamp, toolCallId: m.toolCallId });
+	}
+	return out;
 }
 
 // ---------- pi cli 定位 ----------
@@ -206,7 +234,12 @@ function startPi(cwd, sessionFile = null) {
 		if (child === proc) onData(d);
 	});
 	proc.stderr.setEncoding("utf8");
-	proc.stderr.on("data", (d) => send("pi:stderr", String(d)));
+	proc.stderr.on("data", (d) => {
+		const text = String(d);
+		// pi 的 stderr 里有崩溃/配置错误的真正原因，必须落进日志，否则只能看到「退出码 1」
+		log("[pi:stderr]", text.trim().slice(0, 1200));
+		send("pi:stderr", text);
+	});
 	// 没有 'error' 监听时，写已关闭的 stdin 会抛 EPIPE 直接崩主进程
 	proc.stdin.on("error", () => {});
 	proc.on("error", (error) => {
@@ -996,8 +1029,28 @@ ipcMain.handle("pi:boot", async () => {
 });
 
 ipcMain.handle("pi:command", async (_e, cmd) => {
+	// 附件场景只验证渲染与出参，不真的把 prompt 发给模型
+	if (IS_E2E && (e2eScenario === "attach" || e2eScenario === "doc") && cmd?.type === "prompt") {
+		e2eCapturedPrompt = cmd;
+		return { disposition: "handled" };
+	}
 	await ensureReady();
 	return command(cmd);
+});
+
+// 启动白屏优化：不经过 pi，直接把上次会话的历史交给渲染层
+ipcMain.handle("pi:local-history", async () => {
+	const path = resumeSessionFile();
+	if (!path) return null;
+	const messages = readSessionMessages(path);
+	if (!messages.length) return null;
+	let name = null;
+	try {
+		const head = readHead(path);
+		const m = head.match(/"type"\s*:\s*"session_info"[^\n]*?"name"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+		if (m) name = JSON.parse(`"${m[1]}"`);
+	} catch {}
+	return { path, name, messages, cwd: currentCwd };
 });
 
 // 扩展 UI 响应不走 command()：它没有请求 id、也不需要等待 response
@@ -2504,7 +2557,38 @@ function createWindow() {
 							continue;
 						}
 						const started = Date.now();
+						e2eScenario = name;
+						e2eCapturedPrompt = null;
 						try {
+							// 图片探针：从真实会话里取第一个 image block 的 base64，交给渲染层试加载
+							if (name === "debugImg" || name === "histImage" || name === "debugMine") {
+								try {
+									const dir = join(homedir(), ".pi", "agent", "sessions", "--C--Users-Luke--");
+									let probe = null;
+									for (const file of readdirSync(dir).filter((f) => f.endsWith(".jsonl"))) {
+										const raw = readFileSync(join(dir, file), "utf8");
+										if (!raw.includes('"image"')) continue;
+										for (const line of raw.split("\n")) {
+											if (!line.includes('"image"')) continue;
+											try {
+												const rec = JSON.parse(line);
+												const blocks = Array.isArray(rec.message?.content) ? rec.message.content : [];
+												const b = blocks.find((x) => x?.type === "image" && x.data);
+												if (b) {
+													probe = { data: b.data, mime: b.mimeType || "image/png", file, sessionPath: join(dir, file) };
+													break;
+												}
+											} catch {}
+										}
+										if (probe) break;
+									}
+									await win.webContents.executeJavaScript(
+										`window.__e2eImageProbe = ${JSON.stringify(probe)}; true`,
+									);
+								} catch (e) {
+									log("[e2e] image probe failed", e.message);
+								}
+							}
 							// 崩溃恢复场景：先在主进程侧杀掉 pi 子进程，再让渲染层验证自愈
 							if (name === "crashRecovery") {
 								const pid = child?.pid;
@@ -2517,6 +2601,25 @@ function createWindow() {
 								await new Promise((r) => setTimeout(r, 1500));
 							}
 							const checks = await win.webContents.executeJavaScript(source);
+							if (name === "doc") {
+								const msg = String(e2eCapturedPrompt?.message || "");
+								const checks2 = [
+									["prompt captured", !!e2eCapturedPrompt],
+									["docx text extracted", /季度总结报告/.test(msg) && /63%/.test(msg)],
+									["pptx text extracted", /产品路线图/.test(msg) && /稳定性/.test(msg)],
+									["xlsx text extracted", /服务器/.test(msg) && /120000/.test(msg)],
+									["pdf text extracted", /Quarterly Report 2026/.test(msg) && /Southeast Asia/.test(msg)],
+									["filename headers present", /\[report\.docx\]/.test(msg) && /\[notes\.pdf\]/.test(msg)],
+									["no images sent", !e2eCapturedPrompt?.images],
+								];
+								for (const [n, okv] of checks2) checks.push({ name: n, ok: okv, detail: okv ? "" : msg.slice(0, 120) });
+							}
+							if (name === "attach") {
+								const imgs = e2eCapturedPrompt?.images;
+								const keys = Array.isArray(imgs) && imgs[0] ? Object.keys(imgs[0]).sort().join(",") : "none";
+								checks.push({ name: "prompt intercepted (no model call)", ok: !!e2eCapturedPrompt, detail: (Array.isArray(imgs) ? imgs.length : 0) + " image(s)" });
+								checks.push({ name: "RPC payload trimmed", ok: keys === "data,mimeType,type", detail: keys });
+							}
 							const passed = Array.isArray(checks) && checks.every((c) => c.ok);
 							report.scenarios.push({ name, ok: passed, ms: Date.now() - started, checks });
 							if (!passed) report.ok = false;

@@ -71,11 +71,13 @@ test("index.html 没有内联 <script>", () => {
 	}
 });
 
-test("依赖白名单：dependencies 只有 shiki，devDependencies 只有 electron", () => {
+test("依赖白名单：dependencies 只有 shiki + 文档解析的两个库，devDependencies 只有 electron", () => {
 	const pkg = JSON.parse(readText("package.json"));
 	assert.equal(pkg.type, "module");
-	assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["shiki"]);
-	assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ["electron"]);
+	// fflate：解 docx/pptx/xlsx 的 ZIP；pdfjs-dist：抽 PDF 文本
+	assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["fflate", "pdfjs-dist", "shiki"]);
+	// rcedit：打包时写 exe 图标与版本信息（只在构建期用，不进运行时）
+	assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ["electron", "rcedit"]);
 	assert.match(pkg.scripts?.test ?? "", /node --test/, "package.json 缺少 test script");
 	assert.match(pkg.scripts?.check ?? "", /check-syntax\.mjs/, "check script 被改动");
 });

@@ -746,6 +746,20 @@
 					object-fit: cover;
 					border-radius: 12px;
 				}
+				.user-doc {
+					display: inline-flex;
+					align-items: center;
+					max-width: 220px;
+					padding: 4px 9px;
+					border-radius: 8px;
+					background: var(--hover);
+					font-size: 12px;
+					line-height: 1.5;
+					color: var(--text);
+					overflow: hidden;
+					text-overflow: ellipsis;
+					white-space: nowrap;
+				}
 			.assistant .body {
 				word-break: break-word;
 				/* DSH MarkdownText .markdown：长串（URL、无空格路径）也能断，别撑破列宽 */

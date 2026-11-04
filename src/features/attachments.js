@@ -1,7 +1,11 @@
-// 图片附件：粘贴 / 拖拽 / 点击选择，交给共享桥 ctx.attachments，由 app.js 塞进 prompt.images
+// 附件：图片 + 文档（pdf/docx/pptx/xlsx）。图片进 prompt.images，
+// 文档抽成纯文本拼进 prompt 正文（不保留排版、不做 OCR）。
 // 只覆盖 ctx.attachments.get / clear，不改 submit
+import { docAccept, docKind, extractDoc, isDocFile } from "../core/doc-extract.js";
+
 const MAX_COUNT = 6;
-const MAX_BYTES = 10 * 1024 * 1024; // 单张原始体积上限
+const MAX_BYTES = 10 * 1024 * 1024; // 单张图片原始体积上限
+const MAX_DOC_BYTES = 25 * 1024 * 1024; // 单个文档原始体积上限
 const MAX_EDGE = 1600; // 最长边上限
 const JPEG_QUALITY = 0.85;
 
@@ -46,6 +50,33 @@ export function init(ctx) {
 		border-radius: 6px;
 		background: var(--hover);
 	}
+	.att-item[data-doc="1"] { width: auto; max-width: 190px; }
+	.att-doc {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		height: 44px;
+		padding: 0 10px 0 8px;
+		border: 1px solid var(--line);
+		border-radius: 6px;
+		background: var(--surface-2);
+		max-width: 190px;
+	}
+	.att-doc-kind {
+		flex: none;
+		font: 10px/1 var(--mono);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--faint);
+	}
+	.att-doc-name {
+		font-size: 12px;
+		color: var(--text);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.att-doc-meta { flex: none; font-size: 11px; color: var(--faint); }
 	.att-del {
 		position: absolute;
 		top: 2px;
@@ -166,6 +197,19 @@ export function init(ctx) {
 		};
 	};
 
+	// 文档：抽纯文本，随消息正文一起发出
+	const processDoc = async (file) => {
+		const r = await extractDoc(file);
+		return {
+			id: nextId(),
+			kind: "doc",
+			name: r.name,
+			text: r.text,
+			chars: r.chars,
+			truncated: r.truncated,
+		};
+	};
+
 	const rail = document.createElement("div");
 	rail.className = "att-rail";
 	rail.hidden = true;
@@ -189,7 +233,7 @@ export function init(ctx) {
 
 	const picker = document.createElement("input");
 	picker.type = "file";
-	picker.accept = "image/*";
+	picker.accept = `image/*,${docAccept()}`;
 	picker.multiple = true;
 	picker.className = "att-picker";
 	picker.hidden = true;
@@ -198,8 +242,8 @@ export function init(ctx) {
 	const plusBtn = document.createElement("button");
 	plusBtn.type = "button";
 	plusBtn.className = "att-plus";
-	plusBtn.title = "添加图片";
-	plusBtn.setAttribute("aria-label", "添加图片");
+	plusBtn.title = "添加图片或文档";
+	plusBtn.setAttribute("aria-label", "添加图片或文档");
 	plusBtn.innerHTML =
 		'<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9" stroke-linecap="round" /></svg>';
 	bar.insertBefore(plusBtn, bar.firstElementChild);
@@ -208,7 +252,7 @@ export function init(ctx) {
 		const full = items.length >= MAX_COUNT;
 		plusBtn.dataset.full = full ? "1" : "0";
 		plusBtn.disabled = full; // 达上限就是禁用态，不能点了没反应
-		const label = full ? `最多 ${MAX_COUNT} 张图片` : "添加图片";
+		const label = full ? `最多 ${MAX_COUNT} 个附件` : "添加图片或文档";
 		plusBtn.title = label;
 		plusBtn.setAttribute("aria-label", label);
 	};
@@ -222,18 +266,36 @@ export function init(ctx) {
 			const wrap = document.createElement("div");
 			wrap.className = "att-item";
 
-			const img = document.createElement("img");
-			img.className = "att-thumb";
-			img.src = it.url;
-			img.alt = it.name;
-			img.draggable = false;
+			let thumb;
+			if (it.kind === "doc") {
+				wrap.dataset.doc = "1";
+				thumb = document.createElement("div");
+				thumb.className = "att-doc";
+				const kind = document.createElement("span");
+				kind.className = "att-doc-kind";
+				kind.textContent = docKind(it.name) || "doc";
+				const nm = document.createElement("span");
+				nm.className = "att-doc-name";
+				nm.textContent = it.name;
+				const meta = document.createElement("span");
+				meta.className = "att-doc-meta";
+				const size = it.chars < 1000 ? `${it.chars} 字` : `${(it.chars / 1000).toFixed(1)}k 字`;
+				meta.textContent = it.truncated ? `${size}（已截断）` : size;
+				thumb.append(kind, nm, meta);
+			} else {
+				thumb = document.createElement("img");
+				thumb.className = "att-thumb";
+				thumb.src = it.url;
+				thumb.alt = it.name;
+				thumb.draggable = false;
+			}
 
 			const del = document.createElement("button");
 			del.type = "button";
 			del.className = "att-del";
 			del.textContent = "×";
 			del.title = "删除";
-			del.setAttribute("aria-label", `删除图片 ${it.name}`);
+			del.setAttribute("aria-label", `删除附件 ${it.name}`);
 			del.addEventListener("click", (e) => {
 				e.preventDefault();
 				e.stopPropagation();
@@ -247,7 +309,7 @@ export function init(ctx) {
 				next.focus({ preventScroll: true });
 			});
 
-			wrap.append(img, del);
+			wrap.append(thumb, del);
 			rail.append(wrap);
 		}
 		rail.append(noteEl);
@@ -259,41 +321,50 @@ export function init(ctx) {
 
 	const addFiles = (files) => {
 		const all = Array.from(files || []);
-		const list = all.filter(isImage);
+		const imgs = all.filter(isImage);
+		const docs = all.filter(isDocFile);
+		const list = [...imgs, ...docs];
+		const unsupported = all.length - list.length;
 		if (!list.length) {
 			if (all.length) {
-				console.warn("[attachments] 只接受 image/*，已忽略", all.length, "个文件");
-				flashNote("只支持图片");
+				console.warn("[attachments] 不支持的文件类型，已忽略", all.length, "个");
+				flashNote("只支持图片和 PDF / Word / PPT / Excel");
 			}
 			return;
 		}
 		const skipped = [];
-		if (list.length < all.length) {
-			console.warn("[attachments] 忽略非图片文件", all.length - list.length, "个");
-			skipped.push("只支持图片");
+		if (unsupported > 0) {
+			console.warn("[attachments] 忽略不支持的文件", unsupported, "个");
+			skipped.push("有文件类型不支持");
 		}
 		for (const f of list) {
+			const doc = isDocFile(f);
 			if (items.length + pending >= MAX_COUNT) {
-				console.warn(`[attachments] 最多 ${MAX_COUNT} 张，已忽略`, f.name || f.type);
-				skipped.push(`最多 ${MAX_COUNT} 张图片`);
+				console.warn(`[attachments] 最多 ${MAX_COUNT} 个附件，已忽略`, f.name || f.type);
+				skipped.push(`最多 ${MAX_COUNT} 个附件`);
 				continue;
 			}
-			if (f.size > MAX_BYTES) {
-				console.warn("[attachments] 单张不能超过 10MB，已忽略", f.name || f.type, f.size);
-				skipped.push(`单张不能超过 ${MAX_BYTES / 1024 / 1024}MB`);
+			const limit = doc ? MAX_DOC_BYTES : MAX_BYTES;
+			if (f.size > limit) {
+				console.warn("[attachments] 文件超过上限，已忽略", f.name || f.type, f.size);
+				skipped.push(`${doc ? "文档" : "图片"}不能超过 ${Math.round(limit / 1024 / 1024)}MB`);
 				continue;
 			}
 			pending++;
 			const myGen = gen;
 			chain = chain
-				.then(() => processFile(f))
+				.then(() => (doc ? processDoc(f) : processFile(f)))
 				.then((item) => {
 					if (myGen !== gen) return; // 期间已被 clear，丢弃
 					items.push(item);
 					render();
 					notifyInput();
 				})
-				.catch((e) => console.warn("[attachments] 处理失败", f.name || f.type, e?.message || e))
+				.catch((e) => {
+					console.warn("[attachments] 处理失败", f.name || f.type, e?.message || e);
+					// 解析失败必须让用户看见，不能只进 console
+					flashNote(`${f.name || "文件"}：${e?.message || "处理失败"}`);
+				})
 				.finally(() => {
 					pending--;
 				});
@@ -370,7 +441,8 @@ export function init(ctx) {
 	});
 
 	// ---------- 共享桥 ----------
-	ctx.attachments.get = () => items.map((it) => ({ type: "image", data: it.data, mimeType: it.mimeType }));
+	// 完整项返回：气泡渲染要用 url/name，发给 pi 时再由调用方剥成 {type,data,mimeType}
+	ctx.attachments.get = () => items.map((it) => ({ ...it }));
 	ctx.attachments.clear = () => {
 		gen++;
 		items = [];
@@ -414,6 +486,9 @@ export function init(ctx) {
 		await chain;
 		return items.length;
 	};
+
+	// 测试用：取当前附件队列的完整快照（验证气泡渲染所需的 url/name 没被丢）
+	window.__piAttachSnapshot = () => ctx.attachments.get();
 
 	// 演示/截图之间清场用
 	window.__piAttachClear = () => {
