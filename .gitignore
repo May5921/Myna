@@ -15,3 +15,4 @@ shot.request
 .installer-staging/
 dist-installer/
 vendor/
+.release-body.json

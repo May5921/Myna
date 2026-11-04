@@ -39,7 +39,12 @@ function gh(method, url, body, extra = []) {
 	const args = ["-sS", "--max-time", "2400"];
 	if (p) args.push("-x", p);
 	args.push("-X", method, "-H", `Authorization: Bearer ${token}`, "-H", "Accept: application/vnd.github+json");
-	if (body) args.push("-H", "Content-Type", "application/json", "-d", JSON.stringify(body));
+	if (body) {
+		// Windows 上把含中文的 JSON 直接塞进命令行参数会被拆坏，改走临时文件
+		const tmp = join(root, ".release-body.json");
+		writeFileSync(tmp, JSON.stringify(body), "utf8");
+		args.push("-H", "Content-Type: application/json", "--data-binary", `@${tmp}`);
+	}
 	args.push(...extra, url);
 	return JSON.parse(execFileSync("curl", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }) || "{}");
 }

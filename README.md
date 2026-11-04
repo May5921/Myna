@@ -47,7 +47,7 @@ Myna 只有四条原则：
 
 ### 方式一：安装包（推荐）
 
-1. 从 [Releases](../../releases) 下载 `Myna-Setup-0.1.0.exe`
+1. 从 [Releases](../../releases/latest) 下载 `Myna-Setup-*.exe`
 2. 双击安装，装完桌面就有 Myna 图标，双击即可打开
 
 **不需要安装 Node，不需要装 pi** —— 安装包里内置了一份 pi（约 12 MB）。
@@ -58,7 +58,7 @@ Myna 只有四条原则：
 
 ### 方式二：便携版
 
-下载 `Myna-0.1.0-win64.zip`，解压后双击 `Myna/Myna.exe`，不写注册表、不建快捷方式，删除即卸载。
+下载 `Myna-*-win64.zip`，解压后双击 `Myna/Myna.exe`，不写注册表、不建快捷方式，删除即卸载。
 
 ### 方式三：从源码跑
 
@@ -107,6 +107,7 @@ npm run check     # 语法与契约检查
 npm run e2e       # 端到端（真 Electron，不调用模型）
 npm run build:portable   # 生成 dist/Myna/Myna.exe
 npm run build:zip        # 打包 dist/Myna-*.zip
+npm run release 0.1.2    # 一键发版：改版本 → 测试 → 打包 → 打 tag → 上传 Release
 ```
 
 开发模式（热重载）：
