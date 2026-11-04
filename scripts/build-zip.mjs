@@ -1,13 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 // 把 dist/Myna 打成 zip（Windows 用 PowerShell Compress-Archive，不引入第三方打包依赖）。
 // 需要先跑 npm run build:portable。
 
 const root = process.cwd();
 const src = join(root, "dist", "Myna");
-const out = join(root, "dist", `Myna-${process.env.MYNA_VERSION || "0.1.0"}-win64.zip`);
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const out = join(root, "dist", `Myna-${pkg.version}-win64.zip`);
 
 if (!existsSync(src)) {
 	console.error("找不到 dist/Myna，请先 npm run build:portable");
