@@ -76,8 +76,8 @@ test("依赖白名单：dependencies 只有 shiki + 文档解析的两个库，d
 	assert.equal(pkg.type, "module");
 	// fflate：解 docx/pptx/xlsx 的 ZIP；pdfjs-dist：抽 PDF 文本
 	assert.deepEqual(Object.keys(pkg.dependencies ?? {}).sort(), ["fflate", "pdfjs-dist", "shiki"]);
-	// rcedit：打包时写 exe 图标与版本信息（只在构建期用，不进运行时）
-	assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ["electron", "rcedit"]);
+	// rcedit：便携版写 exe 图标；electron-builder：生成 NSIS 安装包（都只在构建期用）
+	assert.deepEqual(Object.keys(pkg.devDependencies ?? {}).sort(), ["electron", "electron-builder", "rcedit"]);
 	assert.match(pkg.scripts?.test ?? "", /node --test/, "package.json 缺少 test script");
 	assert.match(pkg.scripts?.check ?? "", /check-syntax\.mjs/, "check script 被改动");
 });

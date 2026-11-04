@@ -11,15 +11,67 @@
 		"check": "node scripts/check-syntax.mjs",
 		"build:portable": "node scripts/build-portable.mjs",
 		"build:zip": "node scripts/build-zip.mjs",
-		"e2e": "node scripts/e2e.mjs"
+		"e2e": "node scripts/e2e.mjs",
+		"build:installer": "node scripts/build-installer.mjs"
 	},
 	"devDependencies": {
 		"electron": "^45.2.1",
+		"electron-builder": "^26.18.0",
 		"rcedit": "^5.0.1"
 	},
 	"dependencies": {
 		"fflate": "^0.8.3",
 		"pdfjs-dist": "^6.5.438",
 		"shiki": "^4.6.0"
+	},
+	"build": {
+		"appId": "com.myna.desktop",
+		"productName": "Myna",
+		"asar": false,
+		"electronDist": "node_modules/electron/dist",
+		"directories": {
+			"output": "dist-installer",
+			"buildResources": "assets"
+		},
+		"files": [
+			"main.js",
+			"preload.cjs",
+			"index.html",
+			"src/**/*",
+			"styles/**/*",
+			"assets/**/*",
+			"!**/*.map"
+		],
+		"extraResources": [
+			{
+				"from": "vendor/pi",
+				"to": "pi"
+			}
+		],
+		"win": {
+			"target": [
+				{
+					"target": "nsis",
+					"arch": [
+						"x64"
+					]
+				}
+			],
+			"icon": "assets/icon.ico",
+			"artifactName": "Myna-Setup-${version}.${ext}"
+		},
+		"nsis": {
+			"oneClick": false,
+			"perMachine": false,
+			"allowToChangeInstallationDirectory": true,
+			"createDesktopShortcut": true,
+			"createStartMenuShortcut": true,
+			"shortcutName": "Myna",
+			"runAfterFinish": true,
+			"deleteAppDataOnUninstall": false
+		},
+		"extraMetadata": {
+			"main": "main.js"
+		}
 	}
 }

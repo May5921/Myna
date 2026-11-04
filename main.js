@@ -3,7 +3,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen, Tray, Menu, Notification, nativeImage } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
 import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, copyFileSync } from "node:fs";
-import { join, sep, resolve, extname, basename, dirname } from "node:path";
+import { join, sep, resolve, extname, basename, dirname, delimiter as pathSep } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { sanitizePiEnv } from "./src/core/pi-env.js";
@@ -149,8 +149,13 @@ function readSessionMessages(path) {
 // ---------- pi cli 定位 ----------
 // 便携版自带一份 pi（bundle 自包含 + jiti），用户不需要自己装；找不到时才回退到全局安装
 function bundledPiCli() {
-	const p = join(import.meta.dirname, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
-	return existsSync(p) ? p : null;
+	// 安装版走 extraResources（resources/pi），便携版走 app/node_modules
+	const candidates = [
+		process.resourcesPath ? join(process.resourcesPath, "pi", "dist", "bundle", "cli.js") : "",
+		join(import.meta.dirname, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+	];
+	for (const p of candidates) if (p && existsSync(p)) return p;
+	return null;
 }
 
 function piInstallHint() {
@@ -240,11 +245,18 @@ function startPi(cwd, sessionFile = null) {
 	const args = [cli, "--mode", "rpc"];
 	if (resume) args.push("--session", resume);
 	log("[pi] spawn", resume ? "resume " + resume : "new session");
+	const env = sanitizePiEnv(process.env);
+	// 安装版把 jiti 放在 resources/pi/lib（extraResources 会过滤 node_modules），
+	// bundle 里 require("jiti") 靠 NODE_PATH 找到它
+	if (process.resourcesPath) {
+		const libDir = join(process.resourcesPath, "pi", "lib");
+		if (existsSync(libDir)) env.NODE_PATH = [libDir, env.NODE_PATH].filter(Boolean).join(pathSep);
+	}
 	const proc = spawn("node", args, {
 		cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
-		env: sanitizePiEnv(process.env),
+		env,
 	});
 	child = proc;
 	proc.stdout.setEncoding("utf8");

@@ -12,3 +12,6 @@ shot.request
 *.log
 .DS_Store
 .myna-e2e.json
+.installer-staging/
+dist-installer/
+vendor/

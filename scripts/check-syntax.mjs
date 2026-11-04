@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const root = process.cwd();
-const skip = new Set(["node_modules", "dist", ".git"]);
+const skip = new Set(["node_modules", "dist", "dist-installer", ".installer-staging", "vendor", ".git"]);
 const files = [];
 
 function walk(dir) {
