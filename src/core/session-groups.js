@@ -6,15 +6,19 @@ function textOf(session, getText) {
 	return [session?.name, session?.title, session?.path].filter(Boolean).join(" ").toLowerCase();
 }
 
+// 工作区顺序保持稳定：按用户绑定顺序，当前工作区只加标记，不重排。
+// （之前把 cwd 提到第一位，导致每次切换工作区整列都会跳一下。）
 export function workspaceOrder(cwd, projects) {
 	const out = [];
 	const seen = new Set();
-	for (const value of [cwd, ...(Array.isArray(projects) ? projects : [])]) {
+	for (const value of Array.isArray(projects) ? projects : []) {
 		const path = typeof value === "string" ? value : "";
 		if (!path || seen.has(path)) continue;
 		seen.add(path);
 		out.push(path);
 	}
+	// 当前工作区一定在列表里，但只补在末尾，不打乱已有顺序
+	if (cwd && !seen.has(cwd)) out.push(cwd);
 	return out;
 }
 

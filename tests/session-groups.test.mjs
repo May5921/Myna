@@ -4,7 +4,10 @@ import assert from "node:assert/strict";
 import { buildSessionGroups, workspaceOrder } from "../src/core/session-groups.js";
 
 test("workspaceOrder keeps current workspace first and removes duplicates", () => {
-	assert.deepEqual(workspaceOrder("C:/work", ["C:/other", "C:/work", "C:/third"]), ["C:/work", "C:/other", "C:/third"]);
+	// 顺序跟绑定顺序走，当前工作区不插队：否则每次切换整列都会跳一下
+	assert.deepEqual(workspaceOrder("C:/work", ["C:/other", "C:/work", "C:/third"]), ["C:/other", "C:/work", "C:/third"]);
+	// 当前工作区没绑定时补在末尾，保证它可见
+	assert.deepEqual(workspaceOrder("C:/work", ["C:/other"]), ["C:/other", "C:/work"]);
 });
 
 test("buildSessionGroups applies search/archive filters and keeps pinned sessions first", () => {
@@ -22,9 +25,9 @@ test("buildSessionGroups applies search/archive filters and keeps pinned session
 		archived: new Set(["s3"]),
 		pinned: new Set(["s2"]),
 	});
-	assert.deepEqual(groups.map((group) => group.workspace), ["C:/work", "C:/other"]);
-	assert.deepEqual(groups[0].sessions.map((session) => session.path), ["s2", "s1"]);
-	assert.deepEqual(groups[1].sessions, []);
+	assert.deepEqual(groups.map((group) => group.workspace), ["C:/other", "C:/work"]);
+	assert.deepEqual(groups[0].sessions, []);
+	assert.deepEqual(groups[1].sessions.map((session) => session.path), ["s2", "s1"]);
 });
 
 test("current archived session remains visible while hidden archive filter is active", () => {

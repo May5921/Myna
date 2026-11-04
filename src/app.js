@@ -2805,12 +2805,37 @@ async function bindWorkspace(cwd) {
 	updateSend();
 	saveDraftNow();
 	try {
+		// 第一步：只读文件拿这个工作区的会话列表，侧栏立刻换过去（不碰 pi 进程）
+		const quick = await window.pi.sessions({ cwd, perCwd: readPageSize() }).catch(() => null);
+		if (quick) {
+			state.cwd = cwd;
+			state.sessions = quick;
+			state.sessionFile = null;
+			state.sessionName = null;
+			state.sessionPage = readPageSize();
+			state.collapsed.delete(cwd);
+			// 追加而不是插队：绑定顺序保持稳定，列表不会因为切换而重排
+			if (!state.projects.includes(cwd)) state.projects.push(cwd);
+			saveProjects();
+			saveCollapsed();
+			renderTitle();
+			renderSessions();
+			clearStream();
+			emptyHint();
+		}
+		// 第二步：重启 pi（切换工作区必须换进程，这一步省不掉）
 		const r = await window.pi.setCwd(cwd);
 		if (!r) return false;
 		if (!state.projects.includes(state.cwd)) {
-			state.projects.unshift(state.cwd);
+			state.projects.push(state.cwd);
 		}
 		state.cwd = r.cwd;
+		// 第一步已经画过同一份列表就不再重建 DOM（工作区大时重建要几十毫秒）
+		const same =
+			quick &&
+			Array.isArray(r.sessions) &&
+			r.sessions.length === quick.length &&
+			(r.sessions[0]?.path || "") === (quick[0]?.path || "");
 		state.sessions = r.sessions ?? [];
 		state.sessionFile = null;
 		state.sessionName = null;
@@ -2819,6 +2844,7 @@ async function bindWorkspace(cwd) {
 		saveProjects();
 		saveCollapsed();
 		renderTitle();
+		if (!same) renderSessions();
 		// 右栏的文件/变更缓存按工作区失效
 		window.dispatchEvent(new Event("pi:cwd-changed"));
 		rememberScroll(state.sessionFile);
@@ -2869,9 +2895,20 @@ async function pickSession(path, cwd) {
 	try {
 		saveDraftNow();
 		rememberScroll(state.sessionFile);
+		// 先用本地文件把历史画出来：pi 若还在重启，这一步就能让内容立即出现
+		let painted = false;
+		try {
+			const local = await window.pi.sessionMessages(path);
+			if (local?.length) {
+				state.sessionFile = path;
+				renderHistory(local);
+				painted = true;
+			}
+		} catch {}
 		const r = await window.pi.switchSession(path);
 		if (r.cancelled) return;
-		renderHistory(r.messages ?? []);
+		// 本地已经画过同一份数据就不再重绘，避免闪一下
+		if (!painted) renderHistory(r.messages ?? []);
 		restoreScroll(path);
 		await refreshState();
 		swapDraft();
@@ -3923,7 +3960,7 @@ export const ctx = {
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/sidebar-resize.js", "./features/turn-rail.js"];
+const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/sidebar-resize.js", "./features/turn-rail.js", "./features/update-notice.js"];
 
 for (const f of FEATURES) {
 	try {

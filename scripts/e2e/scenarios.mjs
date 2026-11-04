@@ -541,6 +541,31 @@ export const scenarios = {
 		})()
 	`,
 
+	// 性能：会话扫描与本地读取的耗时（切工作区/切会话的瓶颈就在这两个调用上）
+	perf: `
+		(async () => {
+			${HARNESS}
+			await until(() => window.__ready === true, 20000);
+			const t0 = performance.now();
+			const scoped = await window.pi.sessions({ perCwd: 20, cwd: "C:/Users/Luke" });
+			const t1 = performance.now();
+			ok("scoped session scan < 400ms", t1 - t0 < 400, Math.round(t1 - t0) + "ms, " + (scoped?.length || 0) + " 条");
+			ok("scoped scan returns items", Array.isArray(scoped) && scoped.length > 0);
+			const t2 = performance.now();
+			const all = await window.pi.sessions({ perCwd: 20 });
+			const t3 = performance.now();
+			ok("full session scan < 2500ms", t3 - t2 < 2500, Math.round(t3 - t2) + "ms, " + (all?.length || 0) + " 条");
+			ok("scoped is not slower than full", t1 - t0 <= t3 - t2, "scoped " + Math.round(t1 - t0) + " vs full " + Math.round(t3 - t2));
+			const path = scoped[0]?.path;
+			const t4 = performance.now();
+			const msgs = await window.pi.sessionMessages(path);
+			const t5 = performance.now();
+			ok("local session read < 600ms", t5 - t4 < 600, Math.round(t5 - t4) + "ms, " + (msgs?.length || 0) + " 条消息");
+			ok("local read returns messages", Array.isArray(msgs) && msgs.length > 0);
+			return checks;
+		})()
+	`,
+
 	realHistory: `
 		(async () => {
 			${HARNESS}

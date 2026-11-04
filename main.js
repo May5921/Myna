@@ -122,7 +122,7 @@ function resumeSessionFile() {
 }
 
 // 直接解析会话文件，不依赖 pi 子进程——用于启动时先画历史，避免长时间白屏
-function readSessionMessages(path) {
+function readSessionMessages(path, maxLines = 240) {
 	const out = [];
 	let raw;
 	try {
@@ -130,7 +130,10 @@ function readSessionMessages(path) {
 	} catch {
 		return out;
 	}
-	for (const line of raw.split("\n")) {
+	const lines = raw.split("\n");
+	// 只要最近的部分：首屏渲染用不到全部历史，全量 JSON.parse 在大会话上要几百毫秒
+	const from = Math.max(0, lines.length - maxLines);
+	for (const line of lines.slice(from)) {
 		if (!line.startsWith("{")) continue;
 		let rec;
 		try {
@@ -416,10 +419,19 @@ function firstUserText(head) {
 	return null;
 }
 
-function listSessions(perCwd = 20) {
+// pi 的会话目录名由 cwd 转义而来（反斜杠/斜杠/冒号替换成连字符）
+function sessionsDirFor(cwd) {
+	const key = String(cwd || "").replace(/[\/:]/g, "-");
+	return key ? join(SESSIONS_ROOT, `--${key}--`) : "";
+}
+
+function listSessions(perCwd = 20, onlyCwd = null) {
 	const out = [];
 	if (!existsSync(SESSIONS_ROOT)) return out;
-	for (const dir of readdirSync(SESSIONS_ROOT)) {
+	// 只关心一个工作区时别扫全量目录：切工作区/刷新列表都能少等一截
+	const onlyDir = onlyCwd ? sessionsDirFor(onlyCwd) : "";
+	const dirs = onlyDir && existsSync(onlyDir) ? [basename(onlyDir)] : readdirSync(SESSIONS_ROOT);
+	for (const dir of dirs) {
 		const full = join(SESSIONS_ROOT, dir);
 		let st;
 		try {
@@ -469,7 +481,10 @@ function listSessions(perCwd = 20) {
 		picked.push(...list.slice(0, perCwd));
 	}
 	picked.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-	return picked.slice(0, 600);
+	// 路径分隔符与大小写在不同来源上不一致（正/反斜杠、盘符大小写），比较前统一
+	const norm = (p) => String(p || "").replace(/\\/g, "/").toLowerCase();
+	const filtered = onlyCwd ? picked.filter((x) => norm(x.cwd) === norm(onlyCwd)) : picked;
+	return filtered.slice(0, 600);
 }
 
 // ---------- 文件索引（输入框 @ 补全，渲染层只拿结果） ----------
@@ -1068,6 +1083,53 @@ ipcMain.handle("pi:command", async (_e, cmd) => {
 	return command(cmd);
 });
 
+// ---------- 版本检查 ----------
+// 只读 GitHub 的 latest release，不下载、不替换文件：未签名的静默更新容易被杀软拦
+const UPDATE_API = "https://api.github.com/repos/May5921/Myna/releases/latest";
+const UPDATE_TTL = 24 * 60 * 60 * 1000;
+
+function cmpVersion(a, b) {
+	const pa = String(a).replace(/^v/, "").split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
+	const pb = String(b).replace(/^v/, "").split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const d = (pa[i] || 0) - (pb[i] || 0);
+		if (d) return d;
+	}
+	return 0;
+}
+
+async function checkUpdate(force = false) {
+	const current = app.getVersion();
+	if (IS_E2E) return null;
+	const saved = loadState().updateCheck;
+	if (!force && saved && Date.now() - saved.at < UPDATE_TTL) {
+		return saved.latest ? { current, ...saved, newer: cmpVersion(saved.latest, current) > 0 } : null;
+	}
+	try {
+		const res = await net.fetch(UPDATE_API, {
+			headers: { "user-agent": "Myna", accept: "application/vnd.github+json" },
+		});
+		if (!res.ok) return null;
+		const j = await res.json();
+		const latest = String(j?.tag_name || "").replace(/^v/, "");
+		if (!latest) return null;
+		const data = { at: Date.now(), latest, url: j.html_url };
+		saveState({ updateCheck: data });
+		return { current, ...data, newer: cmpVersion(latest, current) > 0 };
+	} catch {
+		// 网络不通就不打扰用户，下次启动再试
+		return null;
+	}
+}
+
+ipcMain.handle("myna:check-update", async (_e, force) => checkUpdate(Boolean(force)));
+
+// 切会话时先用本地文件渲染，不必等 pi 就绪
+ipcMain.handle("pi:session-messages", async (_e, path) => {
+	if (typeof path !== "string" || !path.endsWith(".jsonl") || !existsSync(path)) return null;
+	return readSessionMessages(path);
+});
+
 // 启动白屏优化：不经过 pi，直接把上次会话的历史交给渲染层
 ipcMain.handle("pi:local-history", async () => {
 	const path = resumeSessionFile();
@@ -1150,7 +1212,8 @@ ipcMain.handle("pi:set-cwd", async (_e, cwd) => {
 
 ipcMain.handle("pi:sessions", async (_e, opts) => {
 	const perCwd = Math.min(200, Math.max(20, Number(opts?.perCwd) || 20));
-	return listSessions(perCwd);
+	// 带 cwd 只扫那一个目录，不重启 pi：切工作区时先出列表，不必等进程就绪
+	return listSessions(perCwd, opts?.cwd || null);
 });
 
 // 会话内容全文搜索：只扫指定工作区，最近 200 个会话、每个最多读 4MB
