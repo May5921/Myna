@@ -1,6 +1,6 @@
 {
 	"name": "myna",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Desktop shell for the pi coding agent",
 	"license": "MIT",
 	"type": "module",
