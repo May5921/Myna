@@ -93,7 +93,16 @@ for (const f of [setup, zip]) {
 	}
 }
 run("git", ["add", "package.json"]);
-run("git", ["commit", "-m", `chore: 发布 v${version}`]);
+// 版本号可能已经是目标值（重跑发布时），没有差异就不要硬 commit
+const staged = capture("git", ["diff", "--cached", "--name-only"]);
+if (staged) {
+	run("git", ["commit", "-m", `chore: 发布 v${version}`]);
+} else {
+	console.log("  版本号未变，跳过提交");
+}
+try {
+	run("git", ["tag", "-d", `v${version}`], { stdio: "ignore" });
+} catch {}
 run("git", ["tag", `v${version}`]);
 const mb = (f) => (statSync(f).size / 1024 / 1024).toFixed(1) + " MB";
 console.log(`  ${setup}  ${mb(setup)}`);
