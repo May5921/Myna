@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rcedit } from "rcedit";
@@ -96,6 +97,47 @@ for (const name of collectDeps(RUNTIME_PKGS)) {
 }
 console.log(`  依赖合计 ${(total / 1024 / 1024).toFixed(1)} MB`);
 
+// 内置 pi：dist/bundle 是自包含的，只需要额外带上 jiti（加载 .ts 扩展用）
+console.log("内置 pi …");
+function findPiRoot() {
+	const roots = [];
+	try {
+		roots.push(execSync("npm root -g", { encoding: "utf8", windowsHide: true }).trim());
+	} catch {}
+	if (process.env.APPDATA) roots.push(join(process.env.APPDATA, "npm", "node_modules"));
+	for (const r of roots) {
+		const p = join(r, "@earendil-works", "pi-coding-agent");
+		if (existsSync(join(p, "dist", "bundle", "cli.js"))) return p;
+	}
+	return null;
+}
+const piRoot = findPiRoot();
+if (!piRoot) {
+	console.warn("  ⚠ 没找到全局安装的 pi，打出的包需要用户自己装 pi");
+} else {
+	const piOut = join(appDir, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(join(piOut, "dist"), { recursive: true });
+	cpSync(join(piRoot, "dist", "bundle"), join(piOut, "dist", "bundle"), { recursive: true });
+	cpSync(join(piRoot, "package.json"), join(piOut, "package.json"));
+	// jiti 必须放在 bundle 上层可解析的位置
+	const jitiSrc = [join(piRoot, "node_modules", "jiti"), join(root, "node_modules", "jiti")].find((p) => existsSync(p));
+	if (jitiSrc) cpSync(jitiSrc, join(nmOut, "jiti"), { recursive: true });
+	const size = (() => {
+		let total = 0;
+		const walk = (d) => {
+			for (const e of readdirSync(d, { withFileTypes: true })) {
+				const p = join(d, e.name);
+				if (e.isDirectory()) walk(p);
+				else total += statSync(p).size;
+			}
+		};
+		walk(piOut);
+		if (jitiSrc) walk(join(nmOut, "jiti"));
+		return total;
+	})();
+	console.log(`  pi ${readFileSync(join(piRoot, "package.json"), "utf8").match(/"version":[ ]*"([^"]+)"/)?.[1] || ""}  ${(size / 1024 / 1024).toFixed(1)} MB`);
+}
+
 console.log("写入 exe 图标与版本信息 …");
 const iconPath = join(root, "assets", "icon.ico");
 if (existsSync(iconPath)) {
@@ -130,7 +172,7 @@ writeFileSync(
 		`${APP_NAME} 便携版`,
 		"",
 		`1. 双击 ${APP_NAME}/Myna.exe 启动。`,
-		"2. 需要系统里已安装 pi（命令行里能运行 `pi`）。",
+		"2. 内置 pi，不需要事先安装 Node 或 pi。",
 		"3. 配置与会话保存在 %USERPROFILE%\\.pi\\agent 下。",
 		"",
 		"这个目录可以整体拷走；删除即卸载。",

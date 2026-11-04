@@ -147,8 +147,26 @@ function readSessionMessages(path) {
 }
 
 // ---------- pi cli 定位 ----------
+// 便携版自带一份 pi（bundle 自包含 + jiti），用户不需要自己装；找不到时才回退到全局安装
+function bundledPiCli() {
+	const p = join(import.meta.dirname, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+	return existsSync(p) ? p : null;
+}
+
+function piInstallHint() {
+	return [
+		"没有找到 pi。",
+		"",
+		"在终端里执行下面这行，装完点「重试」：",
+		"",
+		"npm install -g @earendil-works/pi-coding-agent",
+	].join("\n");
+}
+
 function resolvePiCli() {
 	if (process.env.PI_CLI && existsSync(process.env.PI_CLI)) return process.env.PI_CLI;
+	const bundled = bundledPiCli();
+	if (bundled) return bundled;
 	const roots = [];
 	try {
 		roots.push(execSync("npm root -g", { encoding: "utf8", windowsHide: true }).trim());
@@ -213,7 +231,7 @@ function onData(chunk) {
 function startPi(cwd, sessionFile = null) {
 	stopPi();
 	const cli = resolvePiCli();
-	if (!cli) throw new Error("找不到 pi 的 cli.js，请确认 pi 已全局安装");
+	if (!cli) throw new Error(piInstallHint());
 	const resume = sessionFile && existsSync(sessionFile) ? sessionFile : null;
 	currentCwd = cwd;
 	saveState({ cwd });

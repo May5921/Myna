@@ -48,10 +48,12 @@ Myna 只有四条原则：
 ### 方式一：下载便携版（推荐）
 
 1. 从 [Releases](../../releases) 下载 `Myna-0.1.0-win64.zip`
-2. 解压，双击 `Myna.exe`
-3. 前提：系统里已经装好 pi，命令行能运行 `pi`
+2. 解压，双击 `Myna/Myna.exe`
 
-不需要安装 Node，不需要编译。
+**不需要安装 Node，不需要装 pi** —— 便携版内置了一份 pi（bundle + jiti，约 11 MB）。
+第一次使用只需要在设置里配好模型和 API key。
+
+> Windows 可能提示「未知发布者」：这是未签名 exe 的默认行为，点「更多信息 → 仍要运行」即可。
 
 ### 方式二：从源码跑
 
@@ -60,7 +62,7 @@ npm install
 npm start
 ```
 
-要求 Node 20+，以及全局安装的 pi：
+要求 Node 20+。从源码跑需要全局安装的 pi（便携版不需要）：
 
 ```powershell
 npm install -g @earendil-works/pi-coding-agent

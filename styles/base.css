@@ -1751,6 +1751,41 @@
 				color: var(--faint);
 			}
 			/* 启动失败态：错误说明 + 重试（连不上 pi 时不能一直停在“正在连接”） */
+			.boot-error .empty-sub {
+				white-space: pre-line;
+				text-align: left;
+				line-height: 1.65;
+			}
+			.boot-cmd {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				margin-top: 4px;
+				padding: 8px 10px 8px 12px;
+				border: 1px solid var(--line);
+				border-radius: var(--radius-sm);
+				background: var(--surface-2);
+				font: 12px/1.5 var(--mono);
+				color: var(--text);
+				max-width: 100%;
+			}
+			.boot-cmd code {
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			.boot-copy {
+				flex: none;
+				margin-left: auto;
+				height: 24px;
+				padding: 0 8px;
+				border: 1px solid var(--line);
+				border-radius: 6px;
+				background: var(--bg);
+				color: var(--dim);
+				font-size: 12px;
+			}
+			.boot-copy:hover { background: var(--hover); color: var(--text); }
 			.boot-retry {
 				margin-top: 4px;
 				height: 30px;

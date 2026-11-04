@@ -3764,12 +3764,15 @@ function showBootError(err) {
 	stream.querySelectorAll(".empty").forEach((n) => n.remove());
 	const wrap = document.createElement("div");
 	wrap.className = "empty boot-error";
+	const msg = err?.message || String(err || "未知错误");
+	// 找不到 pi 是最常见的启动失败：直接把要执行的命令摆出来，别让人去猜
+	const needsPi = /没有找到 pi|找不到 pi/.test(msg);
 	const title = document.createElement("p");
 	title.className = "empty-title";
-	title.textContent = "连不上 pi";
+	title.textContent = needsPi ? "需要先安装 pi" : "连不上 pi";
 	const sub = document.createElement("p");
 	sub.className = "empty-sub";
-	sub.textContent = err?.message || String(err || "未知错误");
+	sub.textContent = msg;
 	const retry = document.createElement("button");
 	retry.type = "button";
 	retry.className = "boot-retry";
@@ -3779,7 +3782,29 @@ function showBootError(err) {
 		retry.textContent = "正在重试…";
 		bootApp();
 	};
-	wrap.append(title, sub, retry);
+	wrap.append(title, sub);
+	if (needsPi) {
+		const box = document.createElement("div");
+		box.className = "boot-cmd";
+		const code = document.createElement("code");
+		code.textContent = "npm install -g @earendil-works/pi-coding-agent";
+		const copy = document.createElement("button");
+		copy.type = "button";
+		copy.className = "boot-copy";
+		copy.textContent = "复制";
+		copy.onclick = async () => {
+			try {
+				await navigator.clipboard.writeText(code.textContent);
+				copy.textContent = "已复制";
+				setTimeout(() => (copy.textContent = "复制"), 1500);
+			} catch {
+				copy.textContent = "复制失败";
+			}
+		};
+		box.append(code, copy);
+		wrap.append(box);
+	}
+	wrap.append(retry);
 	stream.append(wrap);
 }
 
