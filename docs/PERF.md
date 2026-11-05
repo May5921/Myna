@@ -1,7 +1,9 @@
 # 性能体检（开源前基线）
 
-测量环境：Windows 11，Electron 45，`PI_MINI_DEV=1`，冷启动一次 + 空会话。
-数据来源：`C:\Users\Luke\AppData\Local\Temp\pi-mini.log` 的 `[perf]` 行与 `shot.request = perf`。
+测量环境：Windows 11，Electron 45，`MYNA_DEV=1`（旧名 `PI_MINI_DEV` 兼容），冷启动一次 + 空会话。
+数据来源：`C:\Users\Luke\AppData\Local\Temp\myna.log` 的 `[perf]` 行与 `shot.request = perf`。
+
+> 这组运行期基线采集于 2026-11-03（v0.1.1）；当前源码在 2026-11-05 之后又加入了 onboarding、队列和发布流程改动，数字不能直接当作当前版本的性能承诺，引用前请重新采集。
 
 ## 冷启动
 
@@ -40,13 +42,13 @@ DOM 规模与消息总数解耦，分页也能保证「切换会话」不会因�
 
 | 项 | 大小 |
 | --- | --- |
-| 自有源码（16 个文件） | 278 KB / 7587 行 |
+| 应用源码（当前门禁覆盖 43 个源文件，含 CSS） | 以当前工作区为准，未在本页重新测量 |
 | `node_modules` | 402 MB（其中 Electron 本体占大头） |
-| 运行时依赖 | 仅 `electron`（dev）+ `shiki` |
+| 运行时依赖 | `shiki`、`fflate`、`pdfjs-dist`；Electron 仅作为开发/打包依赖 |
 
 ## 未覆盖 / 已知偏差
 
 - RSS 是主进程含共享库的粗值，不等于增量内存；Electron 基线本身约 120–150 MB。
 - 长会话分页已量化（见上），但未测 1000+ 消息在单页内持续流式追加的帧率与高亮开销。
 - 未测流式输出时的帧率与 IPC 压力。
-- 冷启动数据是开发模式（`PI_MINI_DEV=1`，有 watcher），生产模式会略快。
+- 冷启动数据是开发模式（`MYNA_DEV=1`，有 watcher），生产模式会略快。

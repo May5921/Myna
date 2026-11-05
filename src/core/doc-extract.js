@@ -1,10 +1,10 @@
 // 文档附件 → 纯文本。只抽文字：不保留排版、不处理扫描件、不做 OCR。
-// 支持 pdf / docx / pptx / xlsx；后三者同为 ZIP+XML，共用一套 OOXML 抽取逻辑。
+// 支持 pdf / docx / pptx / xlsx / md；后三者（docx/pptx/xlsx）同为 ZIP+XML，共用一套 OOXML 抽取逻辑。
 
 export const DOC_MAX_CHARS = 60000;
 const MAX_PAGES = 300;
 
-const EXTS = [".pdf", ".docx", ".pptx", ".xlsx"];
+const EXTS = [".pdf", ".docx", ".pptx", ".xlsx", ".md", ".markdown"];
 
 // node_modules 不在打包白名单的加压路径里，但 app:// 协议以 ROOT 为根，可以直接解析
 const libUrl = (rel) => new URL(`../../node_modules/${rel}`, import.meta.url).href;
@@ -204,6 +204,15 @@ async function pdfText(buf) {
 	return out.join("\n").trim();
 }
 
+// 纯文本文件（Markdown）：按 BOM 选 UTF-8 / UTF-16，统一换行符。
+function plainText(buf) {
+	let text;
+	if (buf[0] === 0xff && buf[1] === 0xfe) text = new TextDecoder("utf-16le").decode(buf.subarray(2));
+	else if (buf[0] === 0xfe && buf[1] === 0xff) text = new TextDecoder("utf-16be").decode(buf.subarray(2));
+	else text = new TextDecoder("utf-8").decode(buf).replace(/^\uFEFF/, "");
+	return text.replace(/\r\n?/g, "\n");
+}
+
 // 主入口：File → { name, kind, text, chars, truncated }
 export async function extractDoc(file, { maxChars = DOC_MAX_CHARS } = {}) {
 	const kind = docKind(file?.name);
@@ -212,7 +221,7 @@ export async function extractDoc(file, { maxChars = DOC_MAX_CHARS } = {}) {
 	const buf = new Uint8Array(await file.arrayBuffer());
 	let text = "";
 	try {
-		text = kind === "pdf" ? await pdfText(buf) : await ooxmlText(buf, kind);
+		text = kind === "pdf" ? await pdfText(buf) : kind === "md" || kind === "markdown" ? plainText(buf) : await ooxmlText(buf, kind);
 	} catch (e) {
 		throw new Error(`解析失败：${e?.message || e}`);
 	}

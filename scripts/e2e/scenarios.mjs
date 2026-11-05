@@ -52,6 +52,33 @@ export const scenarios = {
 		})()
 	`,
 
+	// 首次启动：真实渲染三步引导，但测试消息由主进程拦截，不调用模型。
+	onboarding: `
+		(async () => {
+			${HARNESS}
+			const ready = await until(() => window.__ready === true, 20000);
+			ok("boot completed", ready);
+			const shown = await until(() => {
+				const back = document.querySelector(".onb-back");
+				return !!back && !back.hidden;
+			}, 6000);
+			ok("onboarding opens", shown);
+			const clickButton = (label) => [...document.querySelectorAll(".onb-actions .onb-btn")].find((b) => b.textContent.trim() === label)?.click();
+			clickButton("使用当前");
+			await wait(120);
+			ok("workspace step advances", document.querySelector(".onb-kicker")?.textContent.includes("2 / 3"));
+			document.querySelector(".onb-model")?.click();
+			await wait(80);
+			clickButton("下一步");
+			await wait(120);
+			ok("test step advances", document.querySelector(".onb-kicker")?.textContent.includes("3 / 3"));
+			clickButton("发送测试");
+			const finished = await until(() => !document.querySelector(".onb-back"), 4000);
+			ok("onboarding completes", finished);
+			return checks;
+		})()
+	`,
+
 	// 整轮过程折叠：思考 + 工具收进一个可展开块，正文留在外面
 	fold: `
 		(async () => {
@@ -268,6 +295,43 @@ export const scenarios = {
 			ok("active descendant cleared", !input.hasAttribute("aria-activedescendant"));
 			ok("draft preserved", input.value === "@", JSON.stringify(input.value));
 			await cleanup();
+			return checks;
+		})()
+	`,
+
+	// 本地队列：不调用模型，验证排队 dock 的真实 DOM、编辑、删除和清理。
+	queue: `
+		(async () => {
+			${HARNESS}
+			await cleanup();
+			const demo = window.__piQueueDemo;
+			ok("queue hook exists", typeof demo === "function");
+			const count = demo?.(2) ?? 0;
+			await wait(120);
+			const dock = document.querySelector(".queue-dock");
+			ok("queue dock visible", !!dock && !dock.hidden);
+			ok("queue count", document.querySelector(".queue-count")?.textContent === "2 条排队");
+			ok("two queue rows", document.querySelectorAll(".queue-row").length === 2, "count=" + count);
+			ok("queue actions present", document.querySelectorAll(".queue-row .queue-act").length >= 6);
+
+			const first = document.querySelector(".queue-row");
+			document.querySelector(".queue-row .queue-act")?.click();
+			await wait(60);
+			const edit = document.querySelector(".queue-row .queue-edit");
+			ok("queue edit opens", !!edit);
+			if (edit) {
+				edit.value = "检查构建输出（已编辑）";
+				edit.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+			}
+			await wait(80);
+			ok("queue edit saves", document.querySelector(".queue-preview")?.textContent === "检查构建输出（已编辑）");
+
+			document.querySelector(".queue-row")?.querySelectorAll(".queue-act")[1]?.click();
+			await wait(80);
+			ok("queue delete removes row", document.querySelectorAll(".queue-row").length === 1);
+			window.__piQueueDemoClear?.();
+			await wait(80);
+			ok("queue clear hides dock", document.querySelector(".queue-dock")?.hidden === true);
 			return checks;
 		})()
 	`,
@@ -640,7 +704,7 @@ export const scenarios = {
 			ok("boot completed", ready);
 			// 主进程已在进入本场景前杀掉 pi：等渲染层收到 process_exit
 			const gotExit = await until(() => window.__piExitSeen === true, 8000);
-			checks.push({ name: "process_exit observed", ok: true, detail: gotExit ? "code=" + String(window.__piLastExit) : "not seen (may have recovered silently)" });
+			checks.push({ name: "process_exit observed", ok: gotExit, detail: gotExit ? "code=" + String(window.__piLastExit) : "not seen" });
 			// 不能再处于流式态（光标不能一直转）
 			ok("not stuck streaming", window.__piStreaming !== true);
 			// 关键：下一条命令必须能触发自动重启并成功

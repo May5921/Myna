@@ -1,12 +1,14 @@
 import {
 	addStep,
 	emptyMetrics,
+	formatClockMs as fmtClock,
 	formatTokSpeed as fmtTokSpeed,
 	mergeMetrics,
 	parseMetrics,
 	summarizeMetrics,
 } from "./core/metrics.js";
 import { imagesFromContent } from "./core/content-images.js";
+import { composeMessage, splitAttachments, toRpcImages } from "./core/rpc-attachments.js";
 import {
 	applyHistoryToolResult,
 	assistantTextFromContent,
@@ -80,6 +82,8 @@ const state = {
 	abortRow: null, // 被中断的那一行；只标自己，别标到上一条历史回答
 	pendingUserEcho: "", // submit 已乐观插入的用户消息，等 pi 回显时跳过
 	lastTurnAborted: false, // 上一轮是用户中断：队列不要自动接力
+	lastPiExit: null, // 最近一次 pi 子进程退出码，供诊断复制
+	lastPiError: "", // 最近一条已脱敏的 pi stderr 摘要
 	switching: false, // 正在切换会话/工作区：期间禁止发送，避免发错会话
 	paintingHistory: false, // 历史批量渲染：抑制每条消息各自 follow 造成的反复滚动
 	sessionScroll: new Map(), // 每个会话的阅读位置：切回来别总是跳到底部
@@ -674,7 +678,7 @@ function addAssistantRow() {
 	const runClock = document.createElement("span");
 	runClock.className = "run-clock";
 	runClock.setAttribute("aria-hidden", "true");
-	runClock.textContent = "0.0s";
+	runClock.textContent = "00:00:00";
 	runState.append(runText, runClock);
 	const gauge = createTpsGauge();
 	meta.append(runState, gauge.gauge, gauge.card);
@@ -767,38 +771,10 @@ function flushUnattachedTools(body) {
 	}
 }
 
-// ---- 流式 markdown：按空行切块，冻结已完成段落，只重渲染尾部 ----
-// 流式期间如果只往一个文本节点里 append，换行会被压成空格，整轮结束才出现自然段。
-// 这里按 DSH incremental.ts 的思路做块级增量：空行分隔的已完成块只解析一次。
-function splitLiveBlocks(source) {
-	const blocks = [];
-	let current = [];
-	let fence = null;
-	for (const line of String(source || "").split("\n")) {
-		const trimmed = line.trim();
-		const marker = /^(```+|~~~+)/.exec(trimmed);
-		if (fence) {
-			current.push(line);
-			if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
-			continue;
-		}
-		if (marker) {
-			fence = marker[1];
-			current.push(line);
-			continue;
-		}
-		if (!trimmed) {
-			if (current.length) {
-				blocks.push(current.join("\n"));
-				current = [];
-			}
-			continue;
-		}
-		current.push(line);
-	}
-	if (current.length) blocks.push(current.join("\n"));
-	return blocks;
-}
+// ---- 流式 markdown：冻结已完成前缀，只重渲染尾部 ----
+// 早期实现按空行切块，但模型吐一整个长段落/长代码块时，尾部会无限增长，
+// 每 80ms 重解析全文就是 O(n²)。这里给尾部设上限：超过就按换行冻结。
+const LIVE_TAIL_MAX = 3000;
 
 function createLiveMarkdown(body) {
 	const frozen = document.createElement("div");
@@ -809,18 +785,25 @@ function createLiveMarkdown(body) {
 	const caret = document.createElement("span");
 	caret.className = "caret";
 	let text = "";
-	let frozenCount = 0;
+	let frozenChars = 0;
 	let lastPaint = 0;
 	let timer = 0;
 	const paint = () => {
-		const blocks = splitLiveBlocks(text);
-		const tailText = blocks.pop() ?? "";
-		for (; frozenCount < blocks.length; frozenCount++) {
-			const block = document.createElement("div");
-			block.className = "live-block";
-			block.innerHTML = md(blocks[frozenCount]);
-			frozen.append(block);
+		if (text.length - frozenChars > LIVE_TAIL_MAX) {
+			const target = text.length - LIVE_TAIL_MAX;
+			// 退到最近换行，保证尾部不会超过上限；段落被临时切开没关系，结算时会按终稿重排
+			let cut = text.lastIndexOf("\n", target);
+			if (cut <= frozenChars) cut = target;
+			const chunk = text.slice(frozenChars, cut);
+			if (chunk) {
+				const block = document.createElement("div");
+				block.className = "live-block";
+				block.innerHTML = md(chunk);
+				frozen.append(block);
+			}
+			frozenChars = cut;
 		}
+		const tailText = text.slice(frozenChars);
 		tail.innerHTML = tailText ? md(tailText) : "";
 		// 光标跟在最后一个字符后面，而不是另起一行
 		const last = tail.lastElementChild;
@@ -1091,8 +1074,7 @@ function createTpsGauge() {
 // 运行中状态行 + 流式速度：每 100ms 刷新；速度取最近 1.2s 的滑动窗口再平滑
 function tpsTick() {
 	if (state.runClock) {
-		const used = (performance.now() - state.runClock.start) / 1000;
-		state.runClock.clock.textContent = `${used.toFixed(1)}s`;
+		state.runClock.clock.textContent = fmtClock(performance.now() - state.runClock.start);
 	}
 	const st = state.liveTps;
 	if (!st || !st.start) return;
@@ -1186,7 +1168,7 @@ function finalizeAssistant(message) {
 	if (document.hidden && !state.aborted && text.trim() && Date.now() - lastDoneNotice > 6000) {
 		lastDoneNotice = Date.now();
 		try {
-			const n = new Notification("myna", {
+			const n = new Notification("Myna", {
 				body: text.replace(/\s+/g, " ").slice(0, 140),
 				icon: new URL("./assets/icon.png", location.href).href,
 			});
@@ -1535,6 +1517,32 @@ function appendToolOutput(root, output) {
 		};
 		inner.append(more);
 	}
+}
+
+// partialResult 更新按 80ms 合并：只画最新一帧，避免高频刷新把主线程占满。
+const toolPaintPending = new WeakMap();
+function scheduleToolPaint(root, result, isError = false, durationMs) {
+	if (!root) return;
+	const prev = toolPaintPending.get(root);
+	if (prev) {
+		Object.assign(prev, { result, isError, durationMs });
+		return;
+	}
+	const entry = { result, isError, durationMs, timer: 0 };
+	entry.timer = setTimeout(() => {
+		toolPaintPending.delete(root);
+		if (root.isConnected) paintToolResult(root, entry.result, entry.isError, entry.durationMs);
+	}, 80);
+	toolPaintPending.set(root, entry);
+}
+
+function flushToolPaint(root, result, isError = false, durationMs) {
+	const pending = toolPaintPending.get(root);
+	if (pending) {
+		clearTimeout(pending.timer);
+		toolPaintPending.delete(root);
+	}
+	paintToolResult(root, result, isError, durationMs);
 }
 
 // pi 的 partialResult 是“当前最新预览”，不能把每次更新简单追加成重复输出。
@@ -2012,7 +2020,7 @@ async function exportMarkdown() {
 		notice(`导出失败：${e.message}`);
 		return;
 	}
-	const title = sessionLabel({ path: state.sessionFile, name: state.sessionName }) || "myna 会话";
+	const title = sessionLabel({ path: state.sessionFile, name: state.sessionName }) || "Myna 会话";
 	const lines = [`# ${title}`, ""];
 	for (const m of messages) {
 		const text = blockText(m.content).trim();
@@ -2032,7 +2040,7 @@ async function exportMarkdown() {
 	const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
 	const a = document.createElement("a");
 	a.href = URL.createObjectURL(blob);
-	a.download = `${String(title).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80) || "myna"}.md`;
+	a.download = `${String(title).replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80) || "Myna"}.md`;
 	document.body.append(a);
 	a.click();
 	a.remove();
@@ -2273,6 +2281,27 @@ function paintSearchResults() {
 }
 
 let lastSessionsKey = "";
+let sessionListTimer = 0;
+let sessionListDirty = false;
+
+// 外部进程新建/删除会话时，主进程会推 pi:sessions-changed。
+// 窗口藏在托盘时不重建 DOM，回到可见时补一次。
+function refreshSessionList(delay = 300) {
+	if (document.hidden) {
+		sessionListDirty = true;
+		return;
+	}
+	clearTimeout(sessionListTimer);
+	sessionListTimer = setTimeout(async () => {
+		sessionListDirty = false;
+		try {
+			const next = await window.pi.sessions({ perCwd: state.sessionPage || readPageSize() });
+			if (!Array.isArray(next)) return;
+			state.sessions = next;
+			renderSessions();
+		} catch {}
+	}, delay);
+}
 
 function renderSessions() {
 	const list = $("list");
@@ -2760,8 +2789,11 @@ function renderTitle() {
 // ---------- 动作 ----------
 async function refreshState() {
 	const streamSeq = state.streamSeq;
+	const sessionEpoch = state.sessionEpoch;
 	try {
 		const s = await window.pi.command({ type: "get_state" });
+		// 会话切换期间可能有旧 get_state 回包晚到；它不能把新会话指针覆盖回去。
+		if (sessionEpoch !== state.sessionEpoch) return false;
 		state.model = s.model ?? null;
 		state.thinkingLevel = s.thinkingLevel ?? state.thinkingLevel ?? null;
 		state.sessionFile = s.sessionFile ?? null;
@@ -2776,7 +2808,9 @@ async function refreshState() {
 		renderModel();
 		renderTitle();
 		renderSessions();
+		return true;
 	} catch {}
+	return false;
 }
 
 async function loadModels() {
@@ -2794,12 +2828,43 @@ async function loadModels() {
 	}
 }
 
+function captureWorkspaceView() {
+	return {
+		cwd: state.cwd,
+		sessions: state.sessions,
+		sessionFile: state.sessionFile,
+		sessionName: state.sessionName,
+		sessionPage: state.sessionPage,
+		projects: [...state.projects],
+	};
+}
+
+async function restoreWorkspaceView(previous) {
+	state.cwd = previous.cwd;
+	state.sessions = previous.sessions;
+	state.sessionFile = previous.sessionFile;
+	state.sessionName = previous.sessionName;
+	state.sessionPage = previous.sessionPage;
+	state.projects = previous.projects;
+	renderTitle();
+	renderSessions();
+	clearStream();
+	let history = null;
+	if (previous.sessionFile) history = await window.pi.sessionMessages(previous.sessionFile).catch(() => null);
+	if (Array.isArray(history) && history.length) renderHistory(history);
+	else emptyHint();
+	window.dispatchEvent(new Event("pi:cwd-changed"));
+	await refreshState().catch(() => {});
+	swapDraft();
+}
+
 async function bindWorkspace(cwd) {
 	if (!cwd || cwd === state.cwd) return false;
 	if (state.streaming) {
 		notice("正在生成回答，先停止再切换工作区");
 		return false;
 	}
+	const previous = captureWorkspaceView();
 	state.switching = true;
 	state.sessionEpoch += 1;
 	updateSend();
@@ -2855,6 +2920,7 @@ async function bindWorkspace(cwd) {
 		swapDraft();
 		return true;
 	} catch (e) {
+		await restoreWorkspaceView(previous);
 		showError(e.message);
 		return false;
 	} finally {
@@ -2951,6 +3017,7 @@ async function pifold() {
 		notice("正在生成回答，先停止再切换工作区");
 		return;
 	}
+	const previous = captureWorkspaceView();
 	state.switching = true;
 	state.sessionEpoch += 1;
 	updateSend();
@@ -2972,6 +3039,7 @@ async function pifold() {
 		await refreshState();
 		swapDraft();
 	} catch (e) {
+		await restoreWorkspaceView(previous);
 		showError(e.message);
 	} finally {
 		state.switching = false;
@@ -3071,9 +3139,8 @@ async function submit() {
 	autosize();
 	updateSend();
 	// 文档：抽出的纯文本拼在正文后面，跟图片一起作为一次 prompt
-	const documents = extra.filter((it) => it.kind === "doc");
-	const images = extra.filter((it) => it.kind !== "doc");
-	const body = [text, ...documents.map((d) => `[${d.name}]\n${d.text}`)].filter(Boolean).join("\n\n");
+	const { docs, images } = splitAttachments(extra);
+	const body = composeMessage(text, docs);
 	addUser(text || `[${extra.length} 个附件]`, extra);
 	state.pendingUserEcho = text;
 	state.aborted = false;
@@ -3086,7 +3153,7 @@ async function submit() {
 	try {
 		const cmd = { type: "prompt", message: body };
 		// pi 只认 {type,data,mimeType}；url/name/w/h 是本地渲染用的，别塞进 RPC
-		if (images.length) cmd.images = images.map((it) => ({ type: "image", data: it.data, mimeType: it.mimeType }));
+		if (images.length) cmd.images = toRpcImages(images);
 		const res = await window.pi.command(cmd);
 		saveDraftNow();
 		attachments.clear();
@@ -3187,6 +3254,25 @@ function setStreaming(on) {
 	state.streamSeq += 1; // 让在途的 get_state 回包知道状态已经变了
 	sendBtn.classList.toggle("stop", on);
 	updateSend();
+}
+
+// 新会话的 sessionFile 可能只在第一轮开始后才出现；提前同步指针，
+// 这样 pi 在首轮中途崩溃时，重启仍能恢复原会话，而不是另开空会话。
+async function syncSessionPointer() {
+	const epoch = state.sessionEpoch;
+	try {
+		const s = await window.pi.command({ type: "get_state" });
+		if (epoch !== state.sessionEpoch || !s?.sessionFile) return false;
+		state.sessionFile = s.sessionFile;
+		if (s.sessionName != null) state.sessionName = s.sessionName;
+		window.pi.setActiveSession?.(state.sessionFile)?.catch?.(() => {});
+		saveLastSession();
+		renderTitle();
+		renderSessions();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 // 取本轮统计并重置运行态。展示交给 foldTurnProcess 的「过程」块，不再另插一条完成提示。
@@ -3323,7 +3409,8 @@ window.pi.onEvent((ev) => {
 			});
 			const el = state.tools.get(ev.toolCallId);
 			if (!el) break;
-			paintToolResult(el, ev.partialResult, false);
+			// partialResult 可能每秒来很多次；每次都清空重建 inner 会直接拖死渲染层
+			scheduleToolPaint(el, ev.partialResult, false);
 			break;
 		}
 		case "tool_execution_end": {
@@ -3338,12 +3425,13 @@ window.pi.onEvent((ev) => {
 			const el = state.tools.get(ev.toolCallId);
 			if (!el) break;
 			el.classList.remove("running");
-			paintToolResult(el, ev.result, ev.isError, ev.durationMs);
+			flushToolPaint(el, ev.result, ev.isError, ev.durationMs);
 			// 已挂载的结果不再需要主进程事件映射；尚未挂载的卡片留到 finalize。
 			if (el.isConnected) state.tools.delete(ev.toolCallId);
 			break;
 		}
 		case "agent_start": {
+			syncSessionPointer().catch(() => {});
 			const wasRunning = state.turn.phase === "running";
 			state.turn = beginTurn(state.turn, performance.now());
 			setStreaming(true);
@@ -3353,7 +3441,7 @@ window.pi.onEvent((ev) => {
 				state.turnRows = [];
 			}
 			// 上一轮的过程块保持折叠态，不因新一轮开始而展开
-			// 不等 message_start：发送后立刻出「思考中… 0.0s」，工具阶段也有反馈
+			// 不等 message_start：发送后立刻出「思考中… 00:00:00」，工具阶段也有反馈
 			if (!state.live && !currentAssistant().finalMessage) addAssistantRow();
 			break;
 		}
@@ -3401,10 +3489,7 @@ window.pi.onEvent((ev) => {
 			break;
 		}
 		case "session_info_changed":
-			window.pi.sessions({ perCwd: state.sessionPage || readPageSize() }).then((s) => {
-				state.sessions = s;
-				renderSessions();
-			}).catch(() => {});
+			refreshSessionList(0);
 			break;
 		case "error":
 			// pi 桥的可见错误。
@@ -3413,6 +3498,7 @@ window.pi.onEvent((ev) => {
 		case "process_exit": {
 			window.__piExitSeen = true;
 			window.__piLastExit = Number.isFinite(ev.code) ? ev.code : null;
+			state.lastPiExit = window.__piLastExit;
 			console.warn("[pi] process exited", ev.code);
 			// pi 子进程退出：下一条消息会自动重启；先把流式态收尾，否则光标会一直转
 			if (state.streaming) {
@@ -3432,6 +3518,15 @@ window.pi.onEvent((ev) => {
 			state.runTps = 0;
 			state.runSpeed = { tokens: 0, ms: 0 };
 			showError(ev.message || "pi 进程意外退出，下一条消息会自动重启");
+			notice("pi 已停止运行", {
+				label: "重启 pi",
+				onClick: () => {
+					window.pi
+						.command({ type: "get_state" })
+						.then(() => notice("pi 已恢复"))
+						.catch((err) => showError(err?.message || "pi 重启失败"));
+				},
+			});
 			follow();
 			break;
 		}
@@ -3439,7 +3534,14 @@ window.pi.onEvent((ev) => {
 });
 
 window.pi.onStderr((t) => {
+	if (t) state.lastPiError = String(t).slice(-1200);
 	if (/error|Error/.test(t)) console.warn("[pi]", t);
+});
+
+// 外部 pi 进程新建/删除会话：主进程轮询目录指纹后推送
+window.pi.onSessionsChanged?.(() => refreshSessionList(300));
+document.addEventListener("visibilitychange", () => {
+	if (!document.hidden && sessionListDirty) refreshSessionList(0);
 });
 
 // ---------- 交互 ----------
@@ -3871,6 +3973,8 @@ async function bootApp() {
 	} catch {}
 	try {
 		const boot = await window.pi.boot();
+		window.__piE2E = Boolean(boot.e2e);
+		window.__piE2EOnboarding = Boolean(boot.onboardingE2e);
 		state.cwd = boot.cwd;
 		state.sessions = boot.sessions;
 		renderTitle();
@@ -3952,6 +4056,7 @@ export const ctx = {
 	addUser,
 	submit,
 	attachments,
+	pickFolder: pifold,
 	reload: renderHistory,
 	refreshState,
 	focusMessage,
@@ -3960,7 +4065,7 @@ export const ctx = {
 window.__piui = ctx;
 
 // 新增功能模块登记在这里；每个模块导出 init(ctx)
-const FEATURES = ["./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/sidebar-resize.js", "./features/turn-rail.js", "./features/update-notice.js"];
+const FEATURES = ["./features/onboarding.js", "./features/code-toolbar.js", "./features/message-actions.js", "./features/input-trigger.js", "./features/message-retry.js", "./features/message-fork.js", "./features/json-view.js", "./features/empty-chips.js", "./features/context-meter.js", "./features/extension-ui.js", "./features/queue.js", "./features/export-html.js", "./features/attachments.js", "./features/settings.js", "./features/right-panel.js", "./features/image-preview.js", "./features/terminal.js", "./features/shortcuts.js", "./features/sidebar-resize.js", "./features/turn-rail.js", "./features/update-notice.js"];
 
 for (const f of FEATURES) {
 	try {

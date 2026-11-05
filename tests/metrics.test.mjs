@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
 	addStep,
 	emptyMetrics,
+	formatClockMs,
 	formatTokSpeed,
 	mergeMetrics,
 	normalizeMetrics,
@@ -30,6 +31,15 @@ test("addStep 累计 token/解码/TTFT，忽略没有正文的步骤", () => {
 	assert.equal(sum.avgTps, 50);
 	assert.equal(sum.avgTtftMs, 500);
 	assert.equal(sum.steps, 2);
+});
+
+test("formatClockMs 用 H:MM:SS，长回合不显示越来越长的秒数", () => {
+	assert.equal(formatClockMs(0), "00:00:00");
+	assert.equal(formatClockMs(999), "00:00:00");
+	assert.equal(formatClockMs(16 * 60 * 1000 + 33 * 1000 + 400), "00:16:33");
+	assert.equal(formatClockMs(3661 * 1000), "01:01:01");
+	assert.equal(formatClockMs(-5), "00:00:00");
+	assert.equal(formatClockMs(undefined), "00:00:00");
 });
 
 test("mergeMetrics 合并分桶并保留 TTFT 计数", () => {

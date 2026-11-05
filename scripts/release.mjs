@@ -5,6 +5,7 @@
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sha256File } from "../src/core/updater.js";
 
 const root = process.cwd();
 const version = String(process.argv[2] || "").replace(/^v/, "");
@@ -17,6 +18,22 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
 const REPO = "May5921/Myna";
 const pkgPath = join(root, "package.json");
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+const originalPkgText = readFileSync(pkgPath, "utf8");
+let releaseVersionWritten = false;
+let releaseCommitFinished = false;
+
+// 版本写入发生在构建前；任何未完成的发布都要把工作区恢复到发布前，
+// 避免构建/网络失败后留下一个没有提交的版本号。
+process.on("exit", (code) => {
+	if (code === 0 || !releaseVersionWritten || releaseCommitFinished) return;
+	try {
+		writeFileSync(pkgPath, originalPkgText, "utf8");
+	} catch {}
+	try {
+		// 发布脚本只在工作区干净时启动，这个索引项只能是本次版本号暂存。
+		execFileSync("git", ["reset", "--", "package.json"], { cwd: root, stdio: "ignore" });
+	} catch {}
+});
 const run = (cmd, args, opts = {}) =>
 	execFileSync(cmd, args, { cwd: root, stdio: "inherit", ...opts });
 const capture = (cmd, args) => execFileSync(cmd, args, { cwd: root, encoding: "utf8" }).trim();
@@ -72,9 +89,18 @@ if (dirty) {
 	process.exit(1);
 }
 
+if (dry) {
+	console.log("\n--dry：只运行本地质量检查，不改版本、不构建、不提交、不打 tag、不推送");
+	run("npm", ["test"], { shell: true });
+	run("npm", ["run", "check"], { shell: true });
+	console.log(`--dry：检查通过；正式发布将更新至 v${version} 并生成安装包、便携包和 SHA256 文件`);
+	process.exit(0);
+}
+
 console.log("\n[1/7] 更新版本号");
 pkg.version = version;
 writeFileSync(pkgPath, JSON.stringify(pkg, null, "\t") + "\n");
+releaseVersionWritten = true;
 
 console.log("\n[2/7] 测试");
 run("npm", ["test"], { shell: true });
@@ -87,7 +113,7 @@ console.log("\n[4/7] 打包便携版");
 run("node", ["scripts/build-portable.mjs"]);
 run("node", ["scripts/build-zip.mjs"]);
 
-console.log("\n[5/7] 校验产物并提交");
+console.log("\n[5/8] 校验产物并提交");
 const setup = join(root, "dist-installer", `Myna-Setup-${version}.exe`);
 const zip = join(root, "dist", `Myna-${version}-win64.zip`);
 // 产物不齐就不要打 tag，否则还得手工删
@@ -97,6 +123,15 @@ for (const f of [setup, zip]) {
 		process.exit(1);
 	}
 }
+
+// 更新器只认带 SHA256 的发布；校验文件必须和安装包一起上传
+console.log("\n[6/8] 生成 SHA256 校验文件");
+const setupSha = join(root, "dist-installer", `Myna-Setup-${version}.exe.sha256`);
+const zipSha = join(root, "dist", `Myna-${version}-win64.zip.sha256`);
+writeFileSync(setupSha, `${await sha256File(setup)}  Myna-Setup-${version}.exe\n`, "utf8");
+writeFileSync(zipSha, `${await sha256File(zip)}  Myna-${version}-win64.zip\n`, "utf8");
+console.log(`  ${setupSha}`);
+console.log(`  ${zipSha}`);
 run("git", ["add", "package.json"]);
 // 版本号可能已经是目标值（重跑发布时），没有差异就不要硬 commit
 const staged = capture("git", ["diff", "--cached", "--name-only"]);
@@ -105,6 +140,7 @@ if (staged) {
 } else {
 	console.log("  版本号未变，跳过提交");
 }
+releaseCommitFinished = true;
 try {
 	run("git", ["tag", "-d", `v${version}`], { stdio: "ignore" });
 } catch {}
@@ -113,16 +149,11 @@ const mb = (f) => (statSync(f).size / 1024 / 1024).toFixed(1) + " MB";
 console.log(`  ${setup}  ${mb(setup)}`);
 console.log(`  ${zip}  ${mb(zip)}`);
 
-if (dry) {
-	console.log("\n--dry：到此为止（未 push、未发布）");
-	process.exit(0);
-}
-
-console.log("\n[6/7] 推送到 GitHub");
+console.log("\n[7/8] 推送到 GitHub");
 run("git", ["push", "origin", "HEAD:main"]);
 run("git", ["push", "origin", `v${version}`]);
 
-console.log("\n[7/7] 创建 Release 并上传产物");
+console.log("\n[8/8] 创建 Release 并上传产物");
 const body = [
 	`Windows 安装版，双击装好，桌面自动出现 Myna 图标。`,
 	"",
@@ -131,7 +162,9 @@ const body = [
 	"| 文件 | 说明 |",
 	"|---|---|",
 	`| \`Myna-Setup-${version}.exe\` | 安装版（推荐）：装完桌面/开始菜单有图标，可在「设置 → 应用」里卸载 |`,
+	`| \`Myna-Setup-${version}.exe.sha256\` | 安装包 SHA256，客户端自动下载并校验 |`,
 	`| \`Myna-${version}-win64.zip\` | 便携版：解压即用，不写注册表，删除即卸载 |`,
+	`| \`Myna-${version}-win64.zip.sha256\` | 便携包 SHA256 |`,
 	"",
 	"**关于「未知发布者」**：exe 未做代码签名，Windows 会提示。点「更多信息 → 仍要运行」即可。",
 ].join("\n");
@@ -152,7 +185,9 @@ console.log("  release id: " + releaseId);
 
 for (const [path, name] of [
 	[setup, `Myna-Setup-${version}.exe`],
+	[setupSha, `Myna-Setup-${version}.exe.sha256`],
 	[zip, `Myna-${version}-win64.zip`],
+	[zipSha, `Myna-${version}-win64.zip.sha256`],
 ]) {
 	console.log(`  上传 ${name} …`);
 	const a = upload(path, name);

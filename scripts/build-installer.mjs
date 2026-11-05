@@ -1,17 +1,17 @@
 // 生成 Windows 安装包（NSIS）：安装后自动创建桌面与开始菜单快捷方式。
 // 流程：先把「应用文件 + 运行时依赖 + 内置 pi」摆进 .installer-staging，
 // 再交给 electron-builder 打 NSIS（asar 关闭，保持 app:// 按文件路径读取的行为）。
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
 const staging = join(root, ".installer-staging");
 const vendorPi = join(root, "vendor", "pi");
-const APP_FILES = ["main.js", "preload.cjs", "index.html", "src", "styles", "assets"];
+const APP_FILES = ["main.js", "preload.cjs", "index.html", "THIRD-PARTY-NOTICES.md", "src", "styles", "assets"];
 const RUNTIME_PKGS = ["shiki", "fflate", "pdfjs-dist"];
 // pdfjs 只需要渲染层实际 import 的文件，legacy/web/cmaps 都不进包
-const PDFJS_KEEP = ["package.json", "build/pdf.mjs", "build/pdf.worker.mjs", "build/pdf.min.mjs", "build/pdf.worker.min.mjs"];
+const PDFJS_KEEP = ["package.json", "LICENSE", "build/pdf.mjs", "build/pdf.worker.mjs", "build/pdf.min.mjs", "build/pdf.worker.min.mjs"];
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
@@ -91,6 +91,7 @@ rmSync(vendorPi, { recursive: true, force: true });
 mkdirSync(join(vendorPi, "dist"), { recursive: true });
 cpSync(join(piRoot, "dist", "bundle"), join(vendorPi, "dist", "bundle"), { recursive: true });
 cpSync(join(piRoot, "package.json"), join(vendorPi, "package.json"));
+if (existsSync(join(piRoot, "LICENSE"))) cpSync(join(piRoot, "LICENSE"), join(vendorPi, "LICENSE"));
 const jitiSrc = [join(piRoot, "node_modules", "jiti"), join(root, "node_modules", "jiti")].find((p) => existsSync(p));
 // extraResources 会过滤 node_modules，改用 lib/jiti + 运行时 NODE_PATH 指过去
 if (jitiSrc) cpSync(jitiSrc, join(vendorPi, "lib", "jiti"), { recursive: true });
@@ -131,15 +132,63 @@ if (proxy) {
 }
 
 console.log("调用 electron-builder 生成 NSIS 安装包 …（首次需要下载工具链）");
-execSync(
-	"npx electron-builder --win nsis --config.directories.app=.installer-staging --config.directories.output=dist-installer",
-	{ cwd: root, stdio: "inherit", env: process.env },
-);
+const builderArgs = [
+	"--win",
+	"nsis",
+	"--config.directories.app=.installer-staging",
+	"--config.directories.output=dist-installer",
+	// release.mjs 负责上传；这里绝不自动 publish
+	"--publish",
+	"never",
+];
+
+// Azure Trusted Signing：electron-builder 26 支持 --config.win.azureSignOptions.*
+// 身份验证走 Azure Identity 环境变量（AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET）。
+const azure = {
+	endpoint: process.env.AZURE_TRUSTED_SIGNING_ENDPOINT,
+	profile: process.env.AZURE_TRUSTED_SIGNING_PROFILE,
+	account: process.env.AZURE_TRUSTED_SIGNING_ACCOUNT,
+	publisher: process.env.AZURE_TRUSTED_SIGNING_PUBLISHER,
+};
+const azureReady = Object.values(azure).every(Boolean);
+if (azureReady) {
+	console.log("使用 Azure Trusted Signing:", azure.account, azure.profile);
+	builderArgs.push(
+		`--config.win.azureSignOptions.endpoint=${azure.endpoint}`,
+		`--config.win.azureSignOptions.certificateProfileName=${azure.profile}`,
+		`--config.win.azureSignOptions.codeSigningAccountName=${azure.account}`,
+		`--config.win.azureSignOptions.publisherName=${azure.publisher}`,
+	);
+} else if (process.env.CSC_LINK || process.env.WIN_CSC_LINK) {
+	console.log("使用传统证书签名（CSC_LINK）");
+} else {
+	console.warn("⚠ 未配置代码签名：产物会触发 Windows SmartScreen。见 docs/SIGNING.md");
+}
+
+// 直接调用本地 CLI，避免 Windows + Node 24 下 spawnSync npx.cmd 返回 EINVAL，
+// 也避免构建结果受 PATH 中 npx 版本影响。
+const builderCli = join(root, "node_modules", "electron-builder", "cli.js");
+if (!existsSync(builderCli)) {
+	console.error("找不到本地 electron-builder CLI，请先 npm install");
+	process.exit(1);
+}
+execFileSync(process.execPath, [builderCli, ...builderArgs], {
+	cwd: root,
+	stdio: "inherit",
+	env: process.env,
+});
 
 const outDir = join(root, "dist-installer");
-const setup = readdirSync(outDir).find((f) => f.endsWith(".exe"));
+const expectedSetup = `Myna-Setup-${pkg.version}.exe`;
+const setup = existsSync(join(outDir, expectedSetup))
+	? expectedSetup
+	: readdirSync(outDir).find((f) => f.endsWith(".exe"));
 if (!setup) {
 	console.error("没有生成安装包");
+	process.exit(1);
+}
+if (setup !== expectedSetup) {
+	console.error(`安装包版本不匹配：需要 ${expectedSetup}，实际找到 ${setup}`);
 	process.exit(1);
 }
 console.log(`完成：${join(outDir, setup)}  ${(statSync(join(outDir, setup)).size / 1024 / 1024).toFixed(1)} MB`);

@@ -4,6 +4,13 @@ contextBridge.exposeInMainWorld("pi", {
 	boot: () => ipcRenderer.invoke("pi:boot"),
 	localHistory: () => ipcRenderer.invoke("pi:local-history"),
 	checkUpdate: (force) => ipcRenderer.invoke("myna:check-update", force),
+	downloadUpdate: (info) => ipcRenderer.invoke("myna:download-update", info),
+	installUpdate: (path) => ipcRenderer.invoke("myna:install-update", path),
+	onUpdateProgress: (fn) => {
+		const h = (_e, payload) => fn(payload);
+		ipcRenderer.on("myna:update-progress", h);
+		return () => ipcRenderer.removeListener("myna:update-progress", h);
+	},
 	sessionMessages: (path) => ipcRenderer.invoke("pi:session-messages", path),
 	command: (cmd) => ipcRenderer.invoke("pi:command", cmd),
 	sendRaw: (payload) => ipcRenderer.invoke("pi:send-raw", payload),
@@ -35,6 +42,11 @@ contextBridge.exposeInMainWorld("pi", {
 	setActiveSession: (path) => ipcRenderer.invoke("pi:set-active-session", path),
 	onEvent: (fn) => ipcRenderer.on("pi:event", (_e, ev) => fn(ev)),
 	onStderr: (fn) => ipcRenderer.on("pi:stderr", (_e, text) => fn(text)),
+	onSessionsChanged: (fn) => {
+		const h = () => fn();
+		ipcRenderer.on("pi:sessions-changed", h);
+		return () => ipcRenderer.removeListener("pi:sessions-changed", h);
+	},
 	termRun: (input) => ipcRenderer.invoke("pi:term-run", input),
 	termKill: (runId) => ipcRenderer.invoke("pi:term-kill", runId),
 	onTermData: (fn) => {

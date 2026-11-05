@@ -25,9 +25,10 @@ const child = spawn(command, ["."], {
 	cwd: root,
 	env: {
 		...process.env,
-		PI_MINI_E2E: targets.join(","),
+		MYNA_E2E: targets.join(","),
+		MYNA_E2E_ONBOARDING: targets.includes("onboarding") || targets.includes("all") ? "1" : "",
 		// 测试期间不要被 dev watcher 干扰，也不要写开发日志噪音
-		PI_MINI_DEV: "",
+		MYNA_DEV: "",
 	},
 	stdio: ["ignore", "pipe", "pipe"],
 	windowsHide: true,

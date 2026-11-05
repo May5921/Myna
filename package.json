@@ -3,6 +3,18 @@
 	"version": "0.1.1",
 	"description": "Desktop shell for the pi coding agent",
 	"license": "MIT",
+	"author": "May5921",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/May5921/Myna.git"
+	},
+	"homepage": "https://github.com/May5921/Myna",
+	"bugs": {
+		"url": "https://github.com/May5921/Myna/issues"
+	},
+	"engines": {
+		"node": ">=20"
+	},
 	"type": "module",
 	"main": "main.js",
 	"scripts": {
@@ -38,6 +50,7 @@
 			"main.js",
 			"preload.cjs",
 			"index.html",
+			"THIRD-PARTY-NOTICES.md",
 			"src/**/*",
 			"styles/**/*",
 			"assets/**/*",

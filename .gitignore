@@ -15,4 +15,5 @@ shot.request
 .installer-staging/
 dist-installer/
 vendor/
+.repogarden/
 .release-body.json

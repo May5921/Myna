@@ -8,7 +8,13 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # 产品只在 Windows 发布；在 ubuntu 之外再跑一遍 Windows 纯逻辑测试，
+    # 至少能在 CI 里覆盖路径分隔符、大小写与 Windows 专属分支。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,4 +32,5 @@ jobs:
       - name: 语法与契约检查
         run: npm run check
 
-  # 端到端测试要真开 Electron 窗口，本地跑（npm run e2e），CI 里不稳定，故不纳入。
+  # 端到端测试要真开 Electron 窗口（17 场景；断言数随本地历史数据变化），本地跑 npm run e2e；
+  # CI 跑 GUI 不稳定，故不纳入。打包产物与安装包仍需本地验证。

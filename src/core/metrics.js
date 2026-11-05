@@ -80,3 +80,12 @@ export function formatTokSpeed(value) {
 	const n = Math.max(0, Number(value) || 0);
 	return n >= 10 ? String(Math.round(n)) : String(Math.round(n * 10) / 10);
 }
+
+// 运行中计时用 H:MM:SS：长回合不再显示「993.4s」这种越来越长的秒数
+export function formatClockMs(ms) {
+	const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+	const h = Math.floor(total / 3600);
+	const m = Math.floor((total % 3600) / 60);
+	const s = total % 60;
+	return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}

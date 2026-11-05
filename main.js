@@ -2,12 +2,19 @@
 // 依赖：只有 electron。pi 通过 `pi --mode rpc` 子进程接入，不引入 pi 的 npm 包。
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, net, screen, Tray, Menu, Notification, nativeImage } from "electron";
 import { spawn, execSync, execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, copyFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync, watch, unlinkSync, appendFileSync, realpathSync, copyFileSync, createWriteStream } from "node:fs";
 import { join, sep, resolve, extname, basename, dirname, delimiter as pathSep } from "node:path";
 import { homedir } from "node:os";
 import { pathToFileURL } from "node:url";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { sanitizePiEnv } from "./src/core/pi-env.js";
-import { copyThinkingLevelMap, normalizeThinkingLevelMap, hasThinkingLevelMap } from "./src/core/thinking-level-map.js";
+import { normalizeThinkingLevelMap } from "./src/core/thinking-level-map.js";
+import { PROVIDER_KEY, cleanProviderModels, maskKey } from "./src/core/provider-store.js";
+import { compareVersions, isNewerVersion, parseSha256, selectWindowsAssets, verifySha256File } from "./src/core/updater.js";
+
+// 新环境变量用 MYNA_*；PI_MINI_* 作为旧名兼容一个版本，避免现有脚本突然失效。
+const env = (name) => process.env[`MYNA_${name}`] ?? process.env[`PI_MINI_${name}`];
 
 const T0 = Date.now();
 
@@ -25,7 +32,7 @@ try {
 	const legacyData = join(app.getPath("appData"), "pi-mini");
 	app.setPath("userData", existsSync(legacyData) ? legacyData : join(app.getPath("appData"), "myna"));
 } catch {}
-const LOG_FILE = join(homedir(), "AppData", "Local", "Temp", "pi-mini.log");
+const LOG_FILE = join(homedir(), "AppData", "Local", "Temp", "myna.log");
 // 右栏文件预览的限制：文本只读前 512KB，图片上限 12MB
 const PREVIEW_TEXT_MAX = 512 * 1024;
 const PREVIEW_IMAGE_MAX = 12 * 1024 * 1024;
@@ -42,7 +49,7 @@ const PREVIEW_IMAGE_MIME = {
 };
 // 应用状态改名 myna；首次启动从旧文件复制（旧文件保留作备份）
 // 端到端测试用独立的状态文件，不污染用户真实的窗口/会话指针
-let STATE_FILE = join(homedir(), process.env.PI_MINI_E2E ? ".myna-e2e.json" : ".myna.json");
+let STATE_FILE = join(homedir(), env("E2E") ? ".myna-e2e.json" : ".myna.json");
 const STATE_LEGACY = join(homedir(), ".pi-mini.json");
 if (!existsSync(STATE_FILE) && existsSync(STATE_LEGACY)) {
 	try {
@@ -72,7 +79,7 @@ let quitPending = false;
 
 // 单实例：两个实例同时跑 pi 会写同一个 session 文件，直接拒绝第二个进程
 // 端到端测试是特例：要独占启动，不能被用户正开着的实例挤掉。
-const IS_E2E = Boolean(process.env.PI_MINI_E2E);
+const IS_E2E = Boolean(env("E2E"));
 // e2e 期间当前场景名 + 被拦截的 prompt（避免测试真的调用模型）
 let e2eScenario = "";
 let e2eCapturedPrompt = null;
@@ -87,6 +94,16 @@ let piReady = false;
 let buffer = "";
 let seq = 0;
 const waiting = new Map();
+let latestPiStderr = "";
+
+function redactPiDiagnostic(value) {
+	return String(value || "")
+		.replace(/\b(Bearer\s+)[^\s]+/gi, "$1[redacted]")
+		.replace(/\b(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*["']?[^,\s"']+/gi, "$1=[redacted]")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(-1200);
+}
 
 function loadState() {
 	try {
@@ -106,12 +123,12 @@ let currentCwd = (() => {
 	const saved = loadState().cwd;
 	return typeof saved === "string" && saved && existsSync(saved) ? saved : homedir();
 })();
-// 界面缩放：0.7–1.6，持久化到 ~/.pi-mini.json
+// 界面缩放：0.7–1.6，持久化到 ~/.myna.json
 let zoomFactor = (() => {
 	const saved = Number(loadState().zoom);
 	return Number.isFinite(saved) && saved >= 0.7 && saved <= 1.6 ? saved : 1;
 })();
-// 渲染层当前打开的会话文件：持久化到 ~/.pi-mini.json，主进程重启也能续上
+// 渲染层当前打开的会话文件：持久化到 ~/.myna.json，主进程重启也能续上
 // （否则 relaunch 后 startPi 会开新会话，renderer 又把 lastSession 覆盖成空会话）
 let activeSessionFile = (() => {
 	const saved = loadState().sessionFile;
@@ -171,10 +188,7 @@ function piInstallHint() {
 	].join("\n");
 }
 
-function resolvePiCli() {
-	if (process.env.PI_CLI && existsSync(process.env.PI_CLI)) return process.env.PI_CLI;
-	const bundled = bundledPiCli();
-	if (bundled) return bundled;
+function systemPiCli() {
 	const roots = [];
 	try {
 		roots.push(execSync("npm root -g", { encoding: "utf8", windowsHide: true }).trim());
@@ -185,6 +199,41 @@ function resolvePiCli() {
 		if (existsSync(p)) return p;
 	}
 	return null;
+}
+
+function resolvePiCli() {
+	if (process.env.PI_CLI && existsSync(process.env.PI_CLI)) return process.env.PI_CLI;
+	const system = systemPiCli();
+	const bundled = bundledPiCli();
+	// 已装完整 pi 的用户优先用系统 pi：扩展（subagent 等）需要宿主 npm 包的 node_modules，
+	// 内置 bundle 只有 dist/bundle + jiti，会报缺少 @earendil-works/pi-*。
+	// 只有版本足够新才切系统 pi，避免旧版 RPC 语义把界面弄坏；需要强制内置时设 MYNA_BUNDLED_PI=1。
+	if (system && !env("BUNDLED_PI")) {
+		const info = piPackageInfo(system);
+		if (!info.version || compareVersions(info.version, "1.5.0") >= 0) return system;
+		log("[pi] system pi too old", info.version, "-> fallback to bundled");
+	}
+	if (bundled) return bundled;
+	return system;
+}
+
+// 从任意 cli 路径向上找 @earendil-works/pi-coding-agent 的 package.json
+function piPackageInfo(cli) {
+	let dir = dirname(cli);
+	for (let i = 0; i < 5; i++) {
+		const pkgPath = join(dir, "package.json");
+		try {
+			const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+			if (pkg?.name === "@earendil-works/pi-coding-agent") {
+				// 内置版只有 dist/bundle + jiti，没有 package 自己的 node_modules；
+				// 便携版把它放在 app/node_modules 下，也要按 bundle 处理。
+				const hasSdk = existsSync(join(dir, "node_modules"));
+				return { root: dir, version: String(pkg.version || ""), bundled: /resources[\\/]pi[\\/]/i.test(dir) || !hasSdk };
+			}
+		} catch {}
+		dir = dirname(dir);
+	}
+	return { root: dirname(cli), version: "", bundled: false };
 }
 
 // ---------- 子进程与 JSONL 分帧 ----------
@@ -240,26 +289,29 @@ function startPi(cwd, sessionFile = null) {
 	stopPi();
 	const cli = resolvePiCli();
 	if (!cli) throw new Error(piInstallHint());
+	const piInfo = piPackageInfo(cli);
+	log("[pi] using", piInfo.bundled ? "bundled" : "system", piInfo.version, cli);
 	const resume = sessionFile && existsSync(sessionFile) ? sessionFile : null;
 	currentCwd = cwd;
 	saveState({ cwd });
 	buffer = "";
 	piReady = false;
+	latestPiStderr = "";
 	const args = [cli, "--mode", "rpc"];
 	if (resume) args.push("--session", resume);
 	log("[pi] spawn", resume ? "resume " + resume : "new session");
-	const env = sanitizePiEnv(process.env);
+	const childEnv = sanitizePiEnv(process.env);
 	// 安装版把 jiti 放在 resources/pi/lib（extraResources 会过滤 node_modules），
 	// bundle 里 require("jiti") 靠 NODE_PATH 找到它
 	if (process.resourcesPath) {
 		const libDir = join(process.resourcesPath, "pi", "lib");
-		if (existsSync(libDir)) env.NODE_PATH = [libDir, env.NODE_PATH].filter(Boolean).join(pathSep);
+		if (existsSync(libDir)) childEnv.NODE_PATH = [libDir, childEnv.NODE_PATH].filter(Boolean).join(pathSep);
 	}
 	const proc = spawn("node", args, {
 		cwd,
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
-		env,
+		env: childEnv,
 	});
 	child = proc;
 	proc.stdout.setEncoding("utf8");
@@ -269,9 +321,11 @@ function startPi(cwd, sessionFile = null) {
 	proc.stderr.setEncoding("utf8");
 	proc.stderr.on("data", (d) => {
 		const text = String(d);
+		const safe = redactPiDiagnostic(text);
+		if (safe) latestPiStderr = redactPiDiagnostic(`${latestPiStderr} ${safe}`);
 		// pi 的 stderr 里有崩溃/配置错误的真正原因，必须落进日志，否则只能看到「退出码 1」
 		log("[pi:stderr]", text.trim().slice(0, 1200));
-		send("pi:stderr", text);
+		send("pi:stderr", safe);
 	});
 	// 没有 'error' 监听时，写已关闭的 stdin 会抛 EPIPE 直接崩主进程
 	proc.stdin.on("error", () => {});
@@ -301,7 +355,14 @@ function startPi(cwd, sessionFile = null) {
 		// 旧进程的 exit 可能晚于新进程的 spawn；无条件清 buffer 会吃掉新进程的首包。
 		if (wasCurrent) buffer = "";
 		// 让渲染层能收掉流式光标并提示（下一条命令会经 ensureReady 自动重启）
-		if (wasCurrent) send("pi:event", { type: "process_exit", code: Number.isFinite(code) ? code : null });
+		if (wasCurrent) {
+			const exitDetail = latestPiStderr ? latestPiStderr.slice(-320) : "";
+			send("pi:event", {
+				type: "process_exit",
+				code: Number.isFinite(code) ? code : null,
+				message: exitDetail ? `pi 已停止：${exitDetail}` : "pi 进程意外退出，下一条消息会自动重启",
+			});
+		}
 	});
 }
 
@@ -417,6 +478,48 @@ function firstUserText(head) {
 		} catch {}
 	}
 	return null;
+}
+
+// 外部进程（另一个 pi CLI）也会往 sessions 目录写新会话：
+// 只扫目录名+文件名做指纹，变化时通知渲染层刷新。不读文件内容，开销可以忽略。
+let sessionsPoll = null;
+let sessionsSig = "";
+function scanSessionNames() {
+	const parts = [];
+	try {
+		for (const dir of readdirSync(SESSIONS_ROOT)) {
+			const full = join(SESSIONS_ROOT, dir);
+			let st;
+			try {
+				st = statSync(full);
+			} catch {
+				continue;
+			}
+			if (!st.isDirectory()) continue;
+			let files = [];
+			try {
+				files = readdirSync(full).filter((f) => f.endsWith(".jsonl")).sort();
+			} catch {
+				continue;
+			}
+			parts.push(`${dir}:${files.join(",")}`);
+		}
+	} catch {}
+	return parts.join("|");
+}
+
+function startSessionPoll() {
+	if (sessionsPoll || IS_E2E) return;
+	sessionsSig = scanSessionNames();
+	sessionsPoll = setInterval(() => {
+		const next = scanSessionNames();
+		if (next === sessionsSig) return;
+		sessionsSig = next;
+		for (const w of BrowserWindow.getAllWindows()) {
+			if (!w.isDestroyed()) w.webContents.send("pi:sessions-changed");
+		}
+	}, 2500);
+	sessionsPoll.unref?.();
 }
 
 // pi 的会话目录名由 cwd 转义而来（反斜杠/斜杠/冒号替换成连字符）
@@ -601,12 +704,8 @@ ipcMain.handle("pi:set-zoom", (_e, raw) => {
 // 设置「关于/扩展」用的只读信息：版本、路径、pi 全局包与本地扩展
 ipcMain.handle("pi:app-info", async () => {
 	const pi = resolvePiCli();
-	let piVersion = "";
-	if (pi) {
-		try {
-			piVersion = JSON.parse(readFileSync(join(pi, "..", "..", "package.json"), "utf8")).version || "";
-		} catch {}
-	}
+	const piInfo = pi ? piPackageInfo(pi) : { version: "", root: "", bundled: false };
+	const piVersion = piInfo.version;
 	const agentRoot = join(homedir(), ".pi", "agent");
 	const readJson = (p, fallback) => {
 		try {
@@ -630,6 +729,8 @@ ipcMain.handle("pi:app-info", async () => {
 		node: process.versions.node,
 		piVersion,
 		piCli: pi || "",
+		piRoot: piInfo.root || "",
+		piSource: pi ? (piInfo.bundled ? "bundled" : "system") : "",
 		agentRoot,
 		logFile: LOG_FILE,
 		packages,
@@ -640,15 +741,6 @@ ipcMain.handle("pi:app-info", async () => {
 // 设置「提供商」：读/写 ~/.pi/agent/models.json；apiKey 只回掩码
 const MODELS_JSON = join(homedir(), ".pi", "agent", "models.json");
 const API_TYPES = new Set(["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"]);
-
-function maskKey(k) {
-	const s = String(k || "");
-	if (!s) return "";
-	if (s.startsWith("$") || s.startsWith("!")) return s;
-	return s.length <= 6 ? "••••" : `••••${s.slice(-4)}`;
-}
-
-const PROVIDER_KEY = /^[a-z0-9][a-z0-9._-]*$/i;
 
 function readModelsFile() {
 	let text = "";
@@ -672,43 +764,6 @@ function writeModelsFile(raw, previous) {
 	const tmp = `${MODELS_JSON}.tmp-${process.pid}`;
 	writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
 	renameSync(tmp, MODELS_JSON);
-}
-
-// 接受 pi models.schema.json 的思考等级映射；其它高级模型字段按 id 从旧配置保留。
-function cleanProviderModels(list, previous, allowEmpty = false) {
-	const prev = new Map((Array.isArray(previous) ? previous : []).map((m) => [String(m?.id || ""), m]));
-	const seen = new Set();
-	const out = [];
-	for (const m of Array.isArray(list) ? list : []) {
-		const id = String(m?.id || "").trim();
-		if (!id) continue;
-		if (seen.has(id)) throw new Error(`模型 ID「${id}」重复`);
-		seen.add(id);
-		const base = prev.get(id) || {};
-		const next = { ...base, id };
-		const name = String(m?.name || "").trim();
-		if (name) next.name = name;
-		else delete next.name;
-		next.reasoning = Boolean(m?.reasoning);
-		const map = copyThinkingLevelMap(m?.thinkingLevelMap ?? base.thinkingLevelMap);
-		if (hasThinkingLevelMap(map)) next.thinkingLevelMap = map;
-		else delete next.thinkingLevelMap;
-		const ctx = Number(m?.contextWindow);
-		if (Number.isFinite(ctx) && ctx > 0) next.contextWindow = Math.round(ctx);
-		else delete next.contextWindow;
-		const max = Number(m?.maxTokens);
-		if (Number.isFinite(max) && max > 0) next.maxTokens = Math.round(max);
-		else delete next.maxTokens;
-		const modalities = Array.isArray(m?.input) ? m.input.filter((x) => x === "text" || x === "image") : null;
-		if (modalities && modalities.length) next.input = modalities;
-		else if (!Array.isArray(base.input) || !base.input.length) next.input = ["text"];
-		out.push(next);
-	}
-	if (!out.length) {
-		if (allowEmpty) return [];
-		throw new Error("至少需要一个模型");
-	}
-	return out;
 }
 
 // 从服务商 API 拉模型列表（主进程请求，避开渲染层 CORS；密钥不落日志）
@@ -1050,7 +1105,7 @@ ipcMain.handle("pi:term-kill", async (_e, runIdRaw) => {
 
 
 // ---------- IPC ----------
-let restorePending = process.env.PI_MINI_SESSION || null;
+let restorePending = env("SESSION") || null;
 let relaunching = false;
 
 ipcMain.handle("pi:boot", async () => {
@@ -1070,13 +1125,14 @@ ipcMain.handle("pi:boot", async () => {
 	const sessions = listSessions();
 	const tSessions = Date.now();
 	log("[boot] pi ready", tReady - tBoot, "ms; listSessions", tSessions - tReady, "ms; total", tSessions - tBoot, "ms");
-	return { cwd: currentCwd, sessions, restore };
+	return { cwd: currentCwd, sessions, restore, e2e: IS_E2E, onboardingE2e: env("E2E_ONBOARDING") === "1" };
 });
 
 ipcMain.handle("pi:command", async (_e, cmd) => {
 	// 附件场景只验证渲染与出参，不真的把 prompt 发给模型
-	if (IS_E2E && (e2eScenario === "attach" || e2eScenario === "doc") && cmd?.type === "prompt") {
+	if (IS_E2E && (e2eScenario === "attach" || e2eScenario === "doc" || e2eScenario === "onboarding") && cmd?.type === "prompt") {
 		e2eCapturedPrompt = cmd;
+		if (e2eScenario === "onboarding") setTimeout(() => send("pi:event", { type: "agent_settled", aborted: false }), 80);
 		return { disposition: "handled" };
 	}
 	await ensureReady();
@@ -1088,22 +1144,12 @@ ipcMain.handle("pi:command", async (_e, cmd) => {
 const UPDATE_API = "https://api.github.com/repos/May5921/Myna/releases/latest";
 const UPDATE_TTL = 24 * 60 * 60 * 1000;
 
-function cmpVersion(a, b) {
-	const pa = String(a).replace(/^v/, "").split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
-	const pb = String(b).replace(/^v/, "").split(/[.+-]/).map((x) => parseInt(x, 10) || 0);
-	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-		const d = (pa[i] || 0) - (pb[i] || 0);
-		if (d) return d;
-	}
-	return 0;
-}
-
 async function checkUpdate(force = false) {
 	const current = app.getVersion();
 	if (IS_E2E) return null;
 	const saved = loadState().updateCheck;
 	if (!force && saved && Date.now() - saved.at < UPDATE_TTL) {
-		return saved.latest ? { current, ...saved, newer: cmpVersion(saved.latest, current) > 0 } : null;
+		return saved.latest ? { current, ...saved, newer: isNewerVersion(current, saved.latest) } : null;
 	}
 	try {
 		const res = await net.fetch(UPDATE_API, {
@@ -1113,9 +1159,19 @@ async function checkUpdate(force = false) {
 		const j = await res.json();
 		const latest = String(j?.tag_name || "").replace(/^v/, "");
 		if (!latest) return null;
-		const data = { at: Date.now(), latest, url: j.html_url };
+		const picked = selectWindowsAssets(j.assets || [], latest);
+		const data = {
+			at: Date.now(),
+			latest,
+			url: j.html_url,
+			notes: String(j.body || "").slice(0, 4000),
+			installer: picked.installer
+				? { name: picked.installer.name, url: picked.installer.browser_download_url, size: picked.installer.size || 0 }
+				: null,
+			checksum: picked.checksum ? { name: picked.checksum.name, url: picked.checksum.browser_download_url } : null,
+		};
 		saveState({ updateCheck: data });
-		return { current, ...data, newer: cmpVersion(latest, current) > 0 };
+		return { current, ...data, newer: isNewerVersion(current, latest) };
 	} catch {
 		// 网络不通就不打扰用户，下次启动再试
 		return null;
@@ -1123,6 +1179,92 @@ async function checkUpdate(force = false) {
 }
 
 ipcMain.handle("myna:check-update", async (_e, force) => checkUpdate(Boolean(force)));
+
+// ---------- 更新下载 / 安装 ----------
+// 不做静默更新：先提示，用户点“下载并安装”才下载；下载后必须通过 SHA256 校验才允许执行。
+// 签名可用时，构建阶段会给 exe 加 Authenticode；当前未签名构建仍靠 SHA256 防止中间人篡改。
+let updateDownloading = false;
+// 只有本进程下载并通过 SHA256 校验的路径才允许执行，防止渲染层随便指一个临时 exe
+const verifiedUpdates = new Set();
+
+function validReleaseUrl(url) {
+	return /^https:\/\/github\.com\/May5921\/Myna\/releases\/download\//i.test(String(url || ""));
+}
+
+ipcMain.handle("myna:download-update", async (e, info) => {
+	if (updateDownloading) throw new Error("已有更新正在下载");
+	const current = app.getVersion();
+	const latest = String(info?.latest || "").replace(/^v/i, "");
+	if (!latest || !isNewerVersion(current, latest)) throw new Error("当前已是最新版本");
+	if (!info?.installer?.url || !validReleaseUrl(info.installer.url)) throw new Error("下载地址不是 Myna 的 GitHub Release");
+	if (!info?.checksum?.url || !validReleaseUrl(info.checksum.url)) throw new Error("发布缺少 SHA256 校验文件，已取消下载");
+
+	updateDownloading = true;
+	verifiedUpdates.clear();
+	const sender = e.sender;
+	const send = (payload) => {
+		try {
+			if (!sender.isDestroyed()) sender.send("myna:update-progress", payload);
+		} catch {}
+	};
+	const version = latest.replace(/[^0-9A-Za-z._-]/g, "");
+	const dest = join(app.getPath("temp"), `Myna-Setup-${version}.exe`);
+	try {
+		const checkRes = await net.fetch(info.checksum.url, { headers: { "user-agent": "Myna" } });
+		if (!checkRes.ok) throw new Error(`校验文件下载失败（HTTP ${checkRes.status}）`);
+		const expected = parseSha256(await checkRes.text(), info.installer.name);
+		if (!expected) throw new Error("校验文件里没有安装包的 SHA256");
+
+		send({ phase: "download", received: 0, total: Number(info.installer.size) || 0, percent: 0 });
+		const res = await net.fetch(info.installer.url, { headers: { "user-agent": "Myna" } });
+		if (!res.ok || !res.body) throw new Error(`安装包下载失败（HTTP ${res.status}）`);
+		const total = Number(res.headers.get("content-length")) || Number(info.installer.size) || 0;
+		let received = 0;
+		let last = 0;
+		const body = Readable.fromWeb(res.body);
+		body.on("data", (chunk) => {
+			received += chunk.length;
+			const now = Date.now();
+			if (now - last < 120) return;
+			last = now;
+			send({ phase: "download", received, total, percent: total ? Math.min(100, Math.round((received / total) * 100)) : 0 });
+		});
+		await pipeline(body, createWriteStream(dest));
+
+		send({ phase: "verify", received, total, percent: 100 });
+		if (!(await verifySha256File(dest, expected))) {
+			try { unlinkSync(dest); } catch {}
+			throw new Error("SHA256 校验失败，安装包可能损坏或被篡改，已删除");
+		}
+		verifiedUpdates.add(dest);
+		send({ phase: "ready", path: dest, version: latest, sha256: expected });
+		return { ok: true, path: dest, version: latest, sha256: expected };
+	} catch (err) {
+		try { if (existsSync(dest)) unlinkSync(dest); } catch {}
+		send({ phase: "error", message: err?.message || String(err) });
+		throw err;
+	} finally {
+		updateDownloading = false;
+	}
+});
+
+ipcMain.handle("myna:install-update", async (_e, filePath) => {
+	const p = String(filePath || "");
+	const expectedPrefix = join(app.getPath("temp"), "Myna-Setup-");
+	if (!p.startsWith(expectedPrefix) || !/^Myna-Setup-[0-9A-Za-z._-]+\.exe$/.test(basename(p))) {
+		throw new Error("更新包路径不合法");
+	}
+	if (!verifiedUpdates.has(p)) throw new Error("更新包未通过本次校验，请重新下载");
+	if (!existsSync(p)) throw new Error("更新包不存在，请重新下载");
+	if (await rendererIsStreaming()) throw new Error("当前回合还在生成，先停止再安装更新");
+	log("[update] launching installer", p);
+	quitConfirmed = true;
+	const childProc = spawn(p, [], { detached: true, stdio: "ignore", windowsHide: false });
+	childProc.unref();
+	// 给安装程序一点时间接管，再走正常退出清理（stopPi / 托盘）
+	setTimeout(() => app.quit(), 600);
+	return true;
+});
 
 // 切会话时先用本地文件渲染，不必等 pi 就绪
 ipcMain.handle("pi:session-messages", async (_e, path) => {
@@ -1309,7 +1451,11 @@ ipcMain.handle("pi:search-sessions", async (_e, input) => {
 ipcMain.handle("pi:open-path", async (_e, path) => {
 	if (!path) return false;
 	try {
-		await shell.openPath(path);
+		const error = await shell.openPath(path);
+		if (error) {
+			log("[shell] open path failed", path, error);
+			return false;
+		}
 		return true;
 	} catch {
 		return false;
@@ -2436,7 +2582,7 @@ function createTray() {
 		tray = null;
 		return;
 	}
-	tray.setToolTip("myna");
+	tray.setToolTip("Myna");
 	tray.setContextMenu(
 		Menu.buildFromTemplate([
 			{ label: "显示主窗口", click: () => showMainWindow() },
@@ -2457,7 +2603,7 @@ function notifyHiddenToTray() {
 	if (trayHintShown) return;
 	trayHintShown = true;
 	saveState({ trayHintShown: true });
-	const title = "myna";
+	const title = "Myna";
 	const body = "myna 仍在后台运行，可从托盘恢复";
 	try {
 		if (Notification.isSupported()) {
@@ -2508,7 +2654,7 @@ async function confirmQuitWhileStreaming() {
 			defaultId: 0,
 			cancelId: 0,
 			noLink: true,
-			title: "myna",
+			title: "Myna",
 			message: "当前回合还在生成中",
 			detail: "退出会中断正在生成的回复，确定要退出吗？",
 		};
@@ -2521,6 +2667,9 @@ async function confirmQuitWhileStreaming() {
 }
 
 function createWindow() {
+	// e2e 默认不显示窗口：测试要真 Electron，但没必要每次都在用户屏幕上弹一个空白窗口。
+	// 需要肉眼看测试过程时设 MYNA_E2E_SHOW=1。
+	const e2eHidden = IS_E2E && env("E2E_SHOW") !== "1";
 	// 窗口位置/大小随上次会话恢复；working area 变了也要保证至少露出一角
 	const savedWin = loadState().window;
 	const base = { width: 1280, height: 820 };
@@ -2537,15 +2686,18 @@ function createWindow() {
 		minWidth: 720,
 		minHeight: 480,
 		backgroundColor: "#FFFFFF",
-		title: "myna",
+		title: "Myna",
 		icon: join(import.meta.dirname, "assets", "icon.ico"),
 		show: false,
+		skipTaskbar: IS_E2E,
 		autoHideMenuBar: true,
 		webPreferences: {
 			preload: join(import.meta.dirname, "preload.cjs"),
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: false,
+			// 隐藏窗口会被 Chromium 节流，e2e 的定时器/图片解码不能因此变慢
+			backgroundThrottling: !IS_E2E,
 			webviewTag: true, // 右栏浏览器用 <webview>，只允许 http(s)
 		},
 	});
@@ -2577,6 +2729,7 @@ function createWindow() {
 	win.loadURL("app://bundle/index.html");
 	win.webContents.once("did-finish-load", () => log("[perf] window ready", Date.now() - T0, "ms"));
 	win.once("ready-to-show", () => {
+		if (e2eHidden) return;
 		win.show();
 		if (savedWin?.maximized) win.maximize();
 	});
@@ -2589,7 +2742,7 @@ function createWindow() {
 		win.hide();
 		notifyHiddenToTray();
 	});
-	if (process.env.PI_MINI_DEV) startDevWatch();
+	if (env("DEV")) startDevWatch();
 
 	win.webContents.on("console-message", (event) => {
 		const { level, message, lineNumber, sourceId } = event;
@@ -2621,8 +2774,8 @@ function createWindow() {
 	});
 
 
-	// ---------- 端到端：PI_MINI_E2E=<name,name> 跑完断言就退出，不截图、不调模型 ----------
-	const e2eTargets = String(process.env.PI_MINI_E2E || "")
+	// ---------- 端到端：MYNA_E2E=<name,name> 跑完断言就退出，不截图、不调模型 ----------
+	const e2eTargets = String(env("E2E") || "")
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
@@ -2713,6 +2866,9 @@ function createWindow() {
 								checks.push({ name: "prompt intercepted (no model call)", ok: !!e2eCapturedPrompt, detail: (Array.isArray(imgs) ? imgs.length : 0) + " image(s)" });
 								checks.push({ name: "RPC payload trimmed", ok: keys === "data,mimeType,type", detail: keys });
 							}
+							if (name === "onboarding") {
+								checks.push({ name: "test prompt intercepted", ok: e2eCapturedPrompt?.message === "只回复 ok", detail: String(e2eCapturedPrompt?.message || "") });
+							}
 							const passed = Array.isArray(checks) && checks.every((c) => c.ok);
 							report.scenarios.push({ name, ok: passed, ms: Date.now() - started, checks });
 							if (!passed) report.ok = false;
@@ -2732,14 +2888,14 @@ function createWindow() {
 				process.stdout.write(`E2E_RESULT ${JSON.stringify(report)}\n`, () => {
 					setTimeout(() => app.exit(report.ok ? 0 : 1), 60);
 				});
-			}, Number(process.env.PI_MINI_E2E_DELAY || 2500));
+			}, Number(env("E2E_DELAY") || 2500));
 		};
 		// 页面可能在我们注册之前就已经加载完（loadURL 上面已经调过）：两种都接上
 		if (win.webContents.isLoadingMainFrame()) win.webContents.once("did-finish-load", startE2E);
 		else startE2E();
 	}
 
-	if (process.env.PI_MINI_PROBE) {
+	if (env("PROBE")) {
 		win.webContents.once("did-finish-load", () => {
 			setTimeout(async () => {
 				const out = await win.webContents.executeJavaScript(`(() => {
@@ -2757,7 +2913,7 @@ function createWindow() {
 		});
 	}
 
-	const shot = process.env.PI_MINI_SHOT;
+	const shot = env("SHOT");
 	if (shot) {
 		win.webContents.once("did-finish-load", () => {
 			setTimeout(async () => {
@@ -2769,7 +2925,7 @@ function createWindow() {
 					console.error("screenshot failed:", e.message);
 				}
 				app.quit();
-			}, Number(process.env.PI_MINI_SHOT_DELAY || 3000));
+			}, Number(env("SHOT_DELAY") || 3000));
 		});
 	}
 }
@@ -2783,7 +2939,7 @@ process.on("unhandledRejection", (reason) => {
 
 app.whenReady().then(() => {
 	// 任务栏归组与图标（Windows）：与 packaged exe 的 AppUserModelID 无关，仅影响进程分组/通知
-	if (process.platform === "win32") app.setAppUserModelId("com.may5921.pi-mini");
+	if (process.platform === "win32") app.setAppUserModelId("com.myna.desktop");
 	log("[perf] app ready", Date.now() - T0, "ms");
 	const ROOT = import.meta.dirname;
 	protocol.handle("app", async (request) => {
@@ -2799,8 +2955,10 @@ app.whenReady().then(() => {
 		return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 	});
 	createWindow();
-	// 托盘必须在窗口之后建：close-to-hide 依赖 tray 存在，建不起来就退回「关窗即退出」
-	createTray();
+	startSessionPoll();
+	// 托盘必须在窗口之后建：close-to-hide 依赖 tray 存在，建不起来就退回「关窗即退出」。
+	// e2e 不建托盘，避免测试反复在任务栏留图标。
+	if (!IS_E2E) createTray();
 });
 
 // 真退出（托盘「退出」/ app.quit / 系统关机）：先按需确认流式回合，再放行关闭并清理子进程。

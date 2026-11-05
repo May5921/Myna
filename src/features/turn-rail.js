@@ -296,7 +296,9 @@ export function init(ctx) {
 
 		const rows = [...stream.querySelectorAll(".row.mine")];
 		if (rows.length < 2) {
-			// 空记录 / 只有一轮：导轨没有意义
+			// 空记录 / 只有一轮：导轨没有意义。先同步掉旧刻度，否则会话切换后
+			// 会留下上一份历史的刻度（e2e 曾出现 ticks=4 / mine=3）。
+			syncTicks(rows);
 			hideTip();
 			setActive(-1);
 			rail.hidden = true;
@@ -306,6 +308,8 @@ export function init(ctx) {
 		const rect = stream.getBoundingClientRect();
 		const viewH = stream.clientHeight;
 		if (rect.width < 1 || viewH < 1) {
+			// 布局暂时不可测量时也要清掉多余刻度，避免恢复后新旧刻度叠加
+			syncTicks(rows);
 			hideTip();
 			rail.hidden = true;
 			return;

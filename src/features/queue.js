@@ -6,14 +6,27 @@
 //   - 发送中：条目保留并显示「发送中…」，成功后移除，失败恢复可操作
 //   - 空闲且队列非空时自动发下一条（等价于 DSH 的 host 队列自动投递）
 // Enter → 排队；Ctrl/Cmd+Enter → 插话（设置 → 行为可互换）。
-// 持久化：pi-mini.queue.<sessionFile>，只存文本；带图条目只活在本次运行。
+// 持久化：pi-mini.queue.<sessionFile>（历史键名保留），只存文本；带图条目只活在本次运行。
+import { QUEUE_STORE_MAX, QUEUE_STORE_NEW, parseQueueStore, queueStoreKey } from "../core/queue-store.js";
+import { composeMessage, splitAttachments, toRpcImages } from "../core/rpc-attachments.js";
 
 const TOAST_MS = 2000;
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-const STORE_PREFIX = "pi-mini.queue.";
-const STORE_NEW = `${STORE_PREFIX}_new`;
-const STORE_MAX = 50;
+const contentText = (content) =>
+	Array.isArray(content)
+		? content.filter((b) => b?.type === "text").map((b) => b.text || "").join("")
+		: typeof content === "string"
+			? content
+			: "";
+
+// steer 插话是 pi 的延迟投递：消息到达后先留在 dock 里，等 user 回显再移除。
+const sameEcho = (sent, got) => {
+	const a = String(sent || "").trim();
+	const b = String(got || "").trim();
+	return Boolean(a && b && (a === b || b.includes(a) || a.includes(b)));
+};
+
 const SESSION_WATCH_MS = 500;
 const BUSY_ENTER_KEY = "pi-mini.busyEnter";
 const busyEnter = () => {
@@ -24,25 +37,11 @@ const busyEnter = () => {
 	}
 };
 
-const storeKeyOf = (sessionFile) => {
-	const f = typeof sessionFile === "string" ? sessionFile.trim() : "";
-	return f ? `${STORE_PREFIX}${f}` : STORE_NEW;
-};
+const storeKeyOf = queueStoreKey;
 
 const readQueueStore = (key) => {
 	try {
-		const raw = localStorage.getItem(key);
-		if (!raw) return [];
-		const arr = JSON.parse(raw);
-		if (!Array.isArray(arr)) return [];
-		const out = [];
-		for (const it of arr) {
-			const text = typeof it?.text === "string" ? it.text : "";
-			if (!text.trim()) continue;
-			out.push({ text });
-			if (out.length >= STORE_MAX) break;
-		}
-		return out;
+		return parseQueueStore(localStorage.getItem(key), QUEUE_STORE_MAX);
 	} catch {
 		return [];
 	}
@@ -356,14 +355,17 @@ export function init(ctx) {
 	};
 
 	const steerItem = async (item) => {
-		if (item.pending) return;
+		if (item.pending || item.steerPending) return;
 		if (!ctx.state?.streaming) return;
 		try {
-			const cmd = { type: "steer", message: item.text || `[${item.images?.length || 0} 张图片]` };
-			if (item.images?.length) cmd.images = item.images;
+			const { docs, images } = splitAttachments(item.images);
+			const cmd = { type: "steer", message: composeMessage(item.text, docs) || `[${images.length} 张图片]` };
+			if (images.length) cmd.images = toRpcImages(images);
 			await ctx.pi.command(cmd);
-			removeItem(item);
-			toast("已插话");
+			item.steerPending = true;
+			item.steerSent = cmd.message;
+			render();
+			toast("已插话，等当前回合结束");
 		} catch (err) {
 			console.warn("[queue] steer 失败", err?.message || err);
 			toast("插话失败");
@@ -414,6 +416,12 @@ export function init(ctx) {
 			return li;
 		}
 
+		if (item.steerPending) {
+			// 已经发给 pi，但 pi 只会在当前回合的工具调用结束后才投递；这里保留一行等待态。
+			li.append(mk("span", "queue-status", "等待当前回合结束…"));
+			return li;
+		}
+
 		const actions = mk("span", "queue-actions");
 		if (editing) {
 			actions.append(
@@ -439,7 +447,7 @@ export function init(ctx) {
 				iconBtn(ICON.trash, "删除", { title: "删除排队消息", onClick: () => removeItem(item) }),
 				iconBtn(ICON.steer, "插话", {
 					disabled: !running,
-					title: running ? "立即插入当前回合" : "当前没有正在生成的回复",
+					title: running ? "插入当前回合（下一个步骤生效）" : "当前没有正在生成的回复",
 					onClick: () => void steerItem(item),
 				}),
 			);
@@ -510,8 +518,8 @@ export function init(ctx) {
 			}
 			// base64 图不落盘（localStorage 存不下），带图条目只活在本次运行里
 			const rows = queue
-				.filter((it) => !it.images?.length && it.text.trim())
-				.slice(-STORE_MAX)
+				.filter((it) => !it.steerPending && !it.images?.length && it.text.trim())
+				.slice(-QUEUE_STORE_MAX)
 				.map((it) => ({ text: it.text }));
 			if (!rows.length) {
 				localStorage.removeItem(storeKey);
@@ -528,7 +536,7 @@ export function init(ctx) {
 		if (nextKey === restoredKey) return;
 		// 新会话第一轮结束才有 sessionFile：刚 settle 完的 5 秒内，把没发出去的草稿带到正式 key 上。
 		const settled = Date.now() - settleAt < 5000;
-		const carry = restoredKey === STORE_NEW && nextKey !== STORE_NEW && settled ? queue.filter((it) => !it.pending) : [];
+		const carry = restoredKey === QUEUE_STORE_NEW && nextKey !== QUEUE_STORE_NEW && settled ? queue.filter((it) => !it.pending && !it.steerPending) : [];
 		restoredKey = nextKey;
 		storeKey = nextKey;
 		demo = false;
@@ -541,7 +549,7 @@ export function init(ctx) {
 		if (carry.length) {
 			persist();
 			try {
-				localStorage.removeItem(STORE_NEW);
+				localStorage.removeItem(QUEUE_STORE_NEW);
 			} catch {}
 		}
 	}
@@ -590,17 +598,21 @@ export function init(ctx) {
 		queue.push({ id: ++seq, text: draft.text, images: draft.images, pending: false });
 		persist();
 		render();
-		toast(draft.images.length ? `已排队（含 ${draft.images.length} 张图）` : "已排队");
+		toast(draft.images.length ? `已排队（含 ${draft.images.length} 个附件）` : "已排队");
 	};
 
 	const steerNow = async () => {
 		const draft = takeDraft();
 		if (!draft) return;
 		try {
-			const cmd = { type: "steer", message: draft.text || `[${draft.images.length} 张图片]` };
-			if (draft.images.length) cmd.images = draft.images;
+			const { docs, images } = splitAttachments(draft.images);
+			const cmd = { type: "steer", message: composeMessage(draft.text, docs) || `[${images.length} 张图片]` };
+			if (images.length) cmd.images = toRpcImages(images);
 			await ctx.pi.command(cmd);
-			toast("已插话");
+			// 保留一行等待态：pi 要到当前回合结束才把消息交给模型
+			queue.push({ id: ++seq, text: draft.text, images: draft.images, pending: false, steerPending: true, steerSent: cmd.message });
+			render();
+			toast("已插话，等当前回合结束");
 		} catch (err) {
 			console.warn("[queue] steer 失败", err?.message || err);
 			restoreDraft(draft);
@@ -619,8 +631,8 @@ export function init(ctx) {
 	async function dispatchNext() {
 		if (dispatching || !queue.length) return;
 		if (demo) return;
-		const item = queue[0];
-		if (item.pending) return;
+		const item = queue.find((it) => !it.steerPending);
+		if (!item || item.pending) return;
 		if (editingId !== null) return;
 		if (ctx.state?.streaming || ctx.state?.switching) return;
 		if (keepBackoff()) return;
@@ -661,7 +673,7 @@ export function init(ctx) {
 	// 空闲且队列非空：自动投递下一条（DSH host 队列的等价行为）
 	function kick() {
 		if (!window.__ready || demo || dispatching) return;
-		if (!queue.length || queue[0].pending) return;
+		if (!queue.some((it) => !it.steerPending && !it.pending)) return;
 		if (editingId !== null) return;
 		if (ctx.state?.streaming || ctx.state?.switching) return;
 		if (keepBackoff()) return;
@@ -731,10 +743,21 @@ export function init(ctx) {
 				failCount = 0;
 				input.placeholder = busyEnter() === "steer" ? "插话发送…（Ctrl+Enter 排队）" : "排队发送…（Ctrl+Enter 插话）";
 				syncSend();
+			} else if (ev?.type === "message_start" && ev.message?.role === "user") {
+				// pi 把 steer 消息回显到会话里：从等待区移除对应行
+				const text = contentText(ev.message.content).trim();
+				const i = queue.findIndex((it) => it.steerPending && sameEcho(it.steerSent, text));
+				if (i >= 0) {
+					queue.splice(i, 1);
+					render();
+				}
 			} else if (ev?.type === "agent_settled") {
 				input.placeholder = basePlaceholder;
 				syncSend();
 				settleAt = Date.now();
+				// 回合结束仍未回显的插话等待行没有意义了，清掉避免一直挂着
+				for (let i = queue.length - 1; i >= 0; i--) if (queue[i].steerPending) queue.splice(i, 1);
+				render();
 				restore();
 				void dispatchNext();
 			} else if (ev?.type === "session_info_changed") {

@@ -902,7 +902,7 @@ export function init(ctx) {
 	nav.setAttribute("role", "tablist");
 	nav.setAttribute("aria-label", "设置分区");
 	nav.setAttribute("aria-orientation", "vertical");
-	const navFoot = el("div", "settings-version", "myna");
+	const navFoot = el("div", "settings-version", "Myna");
 	nav.append(navFoot);
 
 	const panelBody = el("div", "settings-body");
@@ -2405,6 +2405,15 @@ export function init(ctx) {
 
 	function renderExtensions() {
 		extList.replaceChildren();
+		if (appInfo?.piSource === "bundled") {
+			extList.append(
+				el(
+					"div",
+					"settings-hint",
+					"当前使用内置 pi：不依赖 SDK 的扩展可用；subagent 等需要 @earendil-works/pi-* 的扩展会加载失败。安装全局 pi 后重启 Myna 会自动切换到系统 pi。",
+				),
+			);
+		}
 		// 技能在「技能与 MCP」里已经有一份（含 SKILL.md 路径）；这里只留扩展与提示命令，
 		// 免得同一批技能在两个页面各看一遍。
 		const list = (extCommands || []).filter((c) => c?.source !== "skill");
@@ -2467,6 +2476,7 @@ export function init(ctx) {
 			["Chromium", appInfo.chrome || "—"],
 			["Node", appInfo.node || "—"],
 			["pi", appInfo.piVersion ? `pi ${appInfo.piVersion}` : "未找到"],
+			["pi 来源", appInfo.piSource === "system" ? "系统安装（扩展兼容）" : appInfo.piSource === "bundled" ? "内置 bundle（基础功能）" : "—"],
 			["pi CLI", appInfo.piCli || "—"],
 			["配置目录", appInfo.agentRoot || "—"],
 			["日志", appInfo.logFile || "—"],
@@ -2487,7 +2497,14 @@ export function init(ctx) {
 			b.onclick = fn;
 			return b;
 		};
-		const openIt = (p) => () => ctx.pi.openPath?.(p).catch(() => toast("打不开这个路径"));
+		const openIt = (p) => async () => {
+			try {
+				const ok = await ctx.pi.openPath?.(p);
+				if (ok === false) toast("打不开这个路径");
+			} catch {
+				toast("打不开这个路径");
+			}
+		};
 		if (appInfo.agentRoot) acts.append(aboutBtn("打开配置目录", openIt(appInfo.agentRoot)));
 		if (appInfo.logFile) acts.append(aboutBtn("打开日志", openIt(appInfo.logFile)));
 		acts.append(
@@ -2495,9 +2512,12 @@ export function init(ctx) {
 				const text = [
 					`myna ${appInfo.version || "?"}`,
 					`Electron ${appInfo.electron || "?"} / Chromium ${appInfo.chrome || "?"} / Node ${appInfo.node || "?"}`,
-					`pi ${appInfo.piVersion || "?"}`,
+					`pi ${appInfo.piVersion || "?"} (${appInfo.piSource || "?"})`,
+					`pi root ${appInfo.piRoot || "?"}`,
 					`cwd ${ctx.state.cwd || "?"}`,
 					`session ${ctx.state.sessionFile || "new"}`,
+					`pi exit ${ctx.state.lastPiExit == null ? "none" : ctx.state.lastPiExit}`,
+					`pi error ${ctx.state.lastPiError || "none"}`,
 					`log ${appInfo.logFile || "?"}`,
 				].join("\n");
 				await copyText(text);
@@ -2992,6 +3012,14 @@ export function init(ctx) {
 	});
 
 	document.addEventListener("keydown", onDocKey, true);
+
+	// 首次引导/其他功能可以深链到设置分区
+	window.addEventListener("myna:open-settings", (e) => {
+		openDialog().then(() => {
+			const pane = e?.detail?.pane;
+			if (typeof pane === "string" && pane) selectPane(pane, true);
+		});
+	});
 
 	// 会话切换 / 重命名：弹窗开着就刷新
 	try {

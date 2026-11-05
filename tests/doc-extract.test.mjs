@@ -60,16 +60,19 @@ test("docKind 按扩展名识别（大小写不敏感）", () => {
 	assert.equal(docKind("b.DocX"), "docx");
 	assert.equal(docKind("c.pptx"), "pptx");
 	assert.equal(docKind("d.xlsx"), "xlsx");
-	assert.equal(docKind("e.txt"), null);
+	assert.equal(docKind("e.MD"), "md");
+	assert.equal(docKind("f.Markdown"), "markdown");
+	assert.equal(docKind("g.txt"), null);
 	assert.equal(docKind("noext"), null);
 	assert.equal(docKind(""), null);
 });
 
 test("isDocFile / docAccept", () => {
 	assert.equal(isDocFile({ name: "x.pdf" }), true);
+	assert.equal(isDocFile({ name: "x.md" }), true);
 	assert.equal(isDocFile({ name: "x.txt" }), false);
 	assert.equal(isDocFile(null), false);
-	assert.equal(docAccept(), ".pdf,.docx,.pptx,.xlsx");
+	assert.equal(docAccept(), ".pdf,.docx,.pptx,.xlsx,.md,.markdown");
 });
 
 test("docx：段落成行、拼 run、解实体、表格单元格不丢", async () => {
@@ -93,6 +96,26 @@ test("pptx：按 slide 数字序，不是字符串序", async () => {
 	const i10 = r.text.indexOf("第十页");
 	assert.ok(i2 > -1 && i10 > -1);
 	assert.ok(i2 < i10, "slide2 应排在 slide10 之前");
+});
+
+test("md：保留 Markdown 原文，统一换行并去掉 BOM", async () => {
+	const r = await extractDoc(new File([enc("# 标题\r\n\r\n- 条目")], "说明.md"));
+	assert.equal(r.kind, "md");
+	assert.equal(r.text, "# 标题\n\n- 条目");
+
+	const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...enc("正文")]);
+	assert.equal((await extractDoc(new File([bom], "bom.md"))).text, "正文");
+
+	const utf16 = new Uint8Array([0xff, 0xfe, ...new Uint8Array(Buffer.from("UTF16 正文", "utf16le"))]);
+	assert.equal((await extractDoc(new File([utf16], "utf16.markdown"))).text, "UTF16 正文");
+});
+
+test("md：空文件报错，截断生效", async () => {
+	await assert.rejects(() => extractDoc(new File([enc("   ")], "空.md")), /没有抽到文字/);
+	const r = await extractDoc(new File([enc("123456789")], "长.md"), { maxChars: 4 });
+	assert.equal(r.truncated, true);
+	assert.equal(r.chars, 4);
+	assert.equal(r.text, "1234");
 });
 
 test("xlsx：共享字符串按索引还原，数字单元格保留", async () => {

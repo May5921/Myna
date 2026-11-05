@@ -71,7 +71,7 @@ test("index.html 没有内联 <script>", () => {
 	}
 });
 
-test("依赖白名单：dependencies 只有 shiki + 文档解析的两个库，devDependencies 只有 electron", () => {
+test("依赖白名单：dependencies 只有 shiki + 文档解析的两个库，devDependencies 只有构建三件套", () => {
 	const pkg = JSON.parse(readText("package.json"));
 	assert.equal(pkg.type, "module");
 	// fflate：解 docx/pptx/xlsx 的 ZIP；pdfjs-dist：抽 PDF 文本

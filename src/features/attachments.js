@@ -1,4 +1,4 @@
-// 附件：图片 + 文档（pdf/docx/pptx/xlsx）。图片进 prompt.images，
+// 附件：图片 + 文档（pdf/docx/pptx/xlsx/md）。图片进 prompt.images，
 // 文档抽成纯文本拼进 prompt 正文（不保留排版、不做 OCR）。
 // 只覆盖 ctx.attachments.get / clear，不改 submit
 import { docAccept, docKind, extractDoc, isDocFile } from "../core/doc-extract.js";
@@ -273,7 +273,8 @@ export function init(ctx) {
 				thumb.className = "att-doc";
 				const kind = document.createElement("span");
 				kind.className = "att-doc-kind";
-				kind.textContent = docKind(it.name) || "doc";
+				const ext = docKind(it.name);
+				kind.textContent = ext === "markdown" ? "md" : ext || "doc";
 				const nm = document.createElement("span");
 				nm.className = "att-doc-name";
 				nm.textContent = it.name;
@@ -328,7 +329,7 @@ export function init(ctx) {
 		if (!list.length) {
 			if (all.length) {
 				console.warn("[attachments] 不支持的文件类型，已忽略", all.length, "个");
-				flashNote("只支持图片和 PDF / Word / PPT / Excel");
+				flashNote("只支持图片和 PDF / Word / PPT / Excel / Markdown");
 			}
 			return;
 		}

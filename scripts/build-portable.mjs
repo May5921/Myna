@@ -36,7 +36,7 @@ function collectDeps(names) {
 }
 
 // pdfjs 的 legacy/、web/、test 等都不需要；只留渲染层实际 import 的三个文件
-const PDFJS_KEEP = ["package.json", "build/pdf.mjs", "build/pdf.worker.mjs", "build/pdf.worker.min.mjs", "build/pdf.min.mjs"];
+const PDFJS_KEEP = ["package.json", "LICENSE", "build/pdf.mjs", "build/pdf.worker.mjs", "build/pdf.worker.min.mjs", "build/pdf.min.mjs"];
 
 console.log("清理 dist …");
 rmSync(outRoot, { recursive: true, force: true });
@@ -49,7 +49,7 @@ rmSync(join(outApp, "resources", "default_app.asar"), { force: true });
 console.log("复制应用文件 …");
 const appDir = join(outApp, "resources", "app");
 mkdirSync(appDir, { recursive: true });
-for (const name of ["main.js", "preload.cjs", "index.html", "src", "styles", "assets"]) {
+for (const name of ["main.js", "preload.cjs", "index.html", "THIRD-PARTY-NOTICES.md", "src", "styles", "assets"]) {
 	cpSync(join(root, name), join(appDir, name), { recursive: true });
 }
 
@@ -113,12 +113,14 @@ function findPiRoot() {
 }
 const piRoot = findPiRoot();
 if (!piRoot) {
-	console.warn("  ⚠ 没找到全局安装的 pi，打出的包需要用户自己装 pi");
+	console.error("找不到全局安装的 pi，无法生成自带 pi 的便携版。先执行：npm install -g @earendil-works/pi-coding-agent");
+	process.exit(1);
 } else {
 	const piOut = join(appDir, "node_modules", "@earendil-works", "pi-coding-agent");
 	mkdirSync(join(piOut, "dist"), { recursive: true });
 	cpSync(join(piRoot, "dist", "bundle"), join(piOut, "dist", "bundle"), { recursive: true });
 	cpSync(join(piRoot, "package.json"), join(piOut, "package.json"));
+	if (existsSync(join(piRoot, "LICENSE"))) cpSync(join(piRoot, "LICENSE"), join(piOut, "LICENSE"));
 	// jiti 必须放在 bundle 上层可解析的位置
 	const jitiSrc = [join(piRoot, "node_modules", "jiti"), join(root, "node_modules", "jiti")].find((p) => existsSync(p));
 	if (jitiSrc) cpSync(jitiSrc, join(nmOut, "jiti"), { recursive: true });

@@ -793,6 +793,27 @@ body.rp-resizing .rp-panel { transition: none; }
 }
 `;
 
+// 右栏浏览器只接受 http(s)；裸域名补 https，localhost/回环补 http。
+// 纯函数导出给 node:test，避免把地址校验只留在 e2e 里。
+export function normalizeUrl(raw) {
+	let s = String(raw || "").trim();
+	if (!s) return null;
+	if (!/^https?:\/\//i.test(s)) {
+		// 其它协议（file/ftp/javascript…）一律拒绝；裸主机或 localhost:port 才补协议。
+		if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(s)) return null;
+		const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i.test(s);
+		s = (isLocal ? "http://" : "https://") + s;
+	}
+	let u;
+	try {
+		u = new URL(s);
+	} catch {
+		return null;
+	}
+	if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+	return u.href;
+}
+
 export function init(ctx) {
 	if (!ctx?.pi) return;
 	const topbar = document.getElementById("topbar");
@@ -1275,9 +1296,14 @@ export function init(ctx) {
 		host.scrollTop = keep;
 	}
 
-	function openExternally() {
+	async function openExternally() {
 		if (!preview?.path) return;
-		Promise.resolve(ctx.pi.openPath(preview.path)).catch((e) => flash(brief(e)));
+		try {
+			const ok = await ctx.pi.openPath(preview.path);
+			if (ok === false) flash("系统程序无法打开这个文件");
+		} catch (e) {
+			flash(brief(e));
+		}
 	}
 
 	// 行定位高亮：约 1 行的高度必须和 .rp-code 里的 font-size/line-height 同步。
@@ -1913,23 +1939,6 @@ export function init(ctx) {
 	// ---------- 浏览器 ----------
 	const LS_BROWSER_URL = "pi-mini.browserUrl";
 	let browserUI = null;
-
-	function normalizeUrl(raw) {
-		let s = String(raw || "").trim();
-		if (!s) return null;
-		if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) {
-			const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i.test(s);
-			s = (isLocal ? "http://" : "https://") + s;
-		}
-		let u;
-		try {
-			u = new URL(s);
-		} catch {
-			return null;
-		}
-		if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-		return u.href;
-	}
 
 	function browserShowNote(text) {
 		if (!browserUI) return;

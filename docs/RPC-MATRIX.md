@@ -1,8 +1,8 @@
 # pi RPC 覆盖矩阵
 
-> 生成时间：2026-11-03
+> 生成时间：2026-11-03；2026-11-04 复核
 > 协议来源：`C:\Users\Luke\AppData\Roaming\npm\node_modules\@earendil-works\pi-coding-agent\dist\modes\rpc\rpc-types.d.ts`
-> pi-mini 侧来源：`src/app.js`、`src/features/*.js`、`main.js`、`preload.cjs` 中实际出现的 `type: "…"`
+> Myna 侧来源：`src/app.js`、`src/features/*.js`、`main.js`、`preload.cjs` 中实际出现的 `type: "…"`
 
 图例：✅ 已支持 · 🟡 部分支持 · 🚧 开发中 · ❌ 未支持 · ⛔ 明确不做
 
@@ -10,7 +10,7 @@
 
 ### 会话
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `new_session` | 新建会话 | ✅ | `app.js` `newSession()` | 侧栏「新聊天」/ 项目行圆形加号 |
 | `switch_session` | 切换会话 | ✅ | `app.js` `pickSession()` | 侧栏会话行 |
@@ -26,19 +26,19 @@
 
 ### 消息与运行
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `prompt` | 发送消息 | ✅ | `app.js` `submit()` | 纯文本 + `images`（features/attachments.js） |
 | `steer` | 流式中插话 | ✅ | `features/queue.js` | 「插话」模式 |
 | `follow_up` | 流式中排队 | 🟡 | `features/queue.js` | 队列在本地排队，空闲后自动 `prompt`；没有发这条 RPC |
 | `abort` | 中止 | ✅ | `app.js` `setStreaming` + Esc | 流式中发送键变停止 |
 | `clear_queue` | 清空队列 | 🟡 | `features/queue.js` | 本地队列逐条删除，没有发这条 RPC |
-| `bash` | 直接跑命令 | ⛔ | — | 不做终端面板，交给 pi 的工具调用 |
-| `abort_bash` | 中止命令 | ⛔ | — | 同上 |
+| `bash` | 直接跑命令 | ⛔ | — | 不通过 pi RPC 调 bash；桌面侧另有独立命令终端（PowerShell -Command，非 PTY），不走这条 RPC |
+| `abort_bash` | 中止命令 | ⛔ | — | 同上，独立命令终端用自己的 runId 中止 |
 
 ### 模型与推理
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `get_available_models` | 模型列表 | ✅ | `app.js` `loadModels()` | 输入框右下角菜单 |
 | `set_model` | 切模型 | ✅ | `app.js` `#model` 菜单 | |
@@ -49,7 +49,7 @@
 
 ### 压缩与重试
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `compact` | 压缩上下文 | ✅ | `features/settings.js` | 二次确认后执行 |
 | `set_auto_compaction` | 自动压缩开关 | ✅ | `features/settings.js` | 读取 `get_state.autoCompactionEnabled` |
@@ -58,14 +58,14 @@
 
 ### steering / 队列模式
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `set_steering_mode` | 插话策略 | ✅ | `features/settings.js` | 「一条一条 / 全部」 |
 | `set_follow_up_mode` | 排队策略 | ✅ | `features/settings.js` | 「一条一条 / 全部」 |
 
 ### 统计 / 导出 / 命令目录
 
-| 命令 | 用途 | pi-mini | 实现位置 | 备注 |
+| 命令 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `get_session_stats` | 用量统计 | ✅ | `features/context-meter.js` | 底栏圆环 + 浮层 |
 | `export_html` | 导出 HTML | ✅ | `features/export-html.js` | 顶栏按钮，落在工作区根目录 |
@@ -73,14 +73,14 @@
 
 ### 扩展 UI
 
-| 类型 | 用途 | pi-mini | 实现位置 | 备注 |
+| 类型 | 用途 | Myna | 实现位置 | 备注 |
 |---|---|---|---|---|
 | `extension_ui_request` | 扩展要用户输入 | ✅ | `features/extension-ui.js` | select/confirm/input/editor，含 ANSI 清理 |
 | `extension_ui_response` | 回传结果 | ✅ | `features/extension-ui.js` → `preload.cjs` `sendRaw` → `pi:send-raw` | 每次请求只回一次 |
 
 ## 2. 事件覆盖
 
-| 事件 | pi-mini | 实现位置 | 备注 |
+| 事件 | Myna | 实现位置 | 备注 |
 |---|---|---|---|
 | `message_start` | ✅ | `app.js` `window.pi.onEvent` | 助手行 |
 | `message_update`（`text_delta`） | ✅ | 同上 | 只追加文本节点 |
@@ -112,7 +112,7 @@
 | P1 | ~~`export_html`~~ / ~~`fork`~~ / ~~`get_fork_messages`~~ 已完成 | — |
 | P2 | ~~`compact`~~ / ~~`set_auto_compaction`~~ / `set_auto_retry`（部分） | 设置入口已完成 |
 | P3 | ~~`get_tree`~~ / ~~`get_last_assistant_text`~~ / ~~`clone`~~ / ~~`cycle_*`~~ / ~~`abort_retry`~~ / ~~`get_entries`~~ 已完成 | — |
-| ⛔ | `bash` / `abort_bash` | 不打算做终端 |
+| ⛔ | `bash` / `abort_bash` | 不走 pi RPC；桌面侧独立命令终端是另一条路径 |
 
 ## 5. 如何复核
 
@@ -121,7 +121,7 @@
 Select-String -Path "C:\Users\Luke\AppData\Roaming\npm\node_modules\@earendil-works\pi-coding-agent\dist\modes\rpc\rpc-types.d.ts" `
   -Pattern 'type: "([a-z_]+)"' | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
 
-# pi-mini 侧实际用到的命令
+# Myna 侧实际用到的命令
 cd C:\Users\Luke\projects\pi-mini
 Select-String -Path src\app.js,src\features\*.js,main.js,preload.cjs -Pattern 'type:\s*"([a-z_]+)"' -AllMatches `
   | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique

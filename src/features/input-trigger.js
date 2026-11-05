@@ -4,6 +4,16 @@
 //   @ 文件：token 以 @ 开头时触发；文件插入 "@path "，目录插入 "@dir/"（保持弹层，继续补全下一级）
 //   路径含空格或用户已输入 @" 时插入 @"..."
 // 文件索引走主进程 pi:list-files，命令列表走 pi RPC get_commands。
+import {
+	MAX_ITEMS,
+	atRangeAt,
+	baseName,
+	commandRangeAt,
+	dirName,
+	rankCommands as rankCommandItems,
+	rankFiles as rankFileItems,
+} from "../core/input-trigger.js";
+
 export function init(ctx) {
 	const input = ctx.input;
 	if (!input) return;
@@ -11,7 +21,6 @@ export function init(ctx) {
 	const pi = ctx.pi || {};
 	const FILE_TTL = 8000;
 	const CMD_TTL = 60000;
-	const MAX_ITEMS = 20;
 
 	const SLASH_ICON =
 		'<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 2.6 5.5 13.4" stroke-linecap="round"/></svg>';
@@ -21,31 +30,6 @@ export function init(ctx) {
 		'<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.8 4.2c0-.5.4-.9.9-.9h3l1.3 1.5h6.3c.5 0 .9.4.9.9v5.9c0 .5-.4.9-.9.9H2.7c-.5 0-.9-.4-.9-.9V4.2Z" stroke-linejoin="round"/></svg>';
 	const DRILL_ICON =
 		'<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3.5 10.5 8 6 12.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-
-	// 与 pi 一致：空白、引号、等号与 CJK 标点分隔 token；CJK 字母属于路径本身
-	const DELIMS = /[\s"'=]/;
-	const CJK_PUNCT = /[，．：；！？（）［］｛｝“”‘’…—]/;
-	const WRAPPERS = { "(": ")", "[": "]", "{": "}", "<": ">", "`": "`" };
-
-	const isDelim = (ch) => !!ch && (DELIMS.test(ch) || CJK_PUNCT.test(ch));
-
-	const baseName = (path) => {
-		const i = path.lastIndexOf("/");
-		return i < 0 ? path : path.slice(i + 1);
-	};
-	const dirName = (path) => {
-		const i = path.lastIndexOf("/");
-		return i < 0 ? "" : path.slice(0, i);
-	};
-	const depthOf = (path) => path.split("/").length;
-	const isSubsequence = (text, query) => {
-		let i = 0;
-		for (const ch of text) {
-			if (ch === query[i]) i++;
-			if (i === query.length) return true;
-		}
-		return i === query.length;
-	};
 
 	// ---------- 弹层 ----------
 	const CSS = `
@@ -448,123 +432,13 @@ export function init(ctx) {
 		setIndex(-1, false);
 	};
 
-	// ---------- @ 触发范围 ----------
-	const boundaryOk = (line, i) => {
-		if (i <= 0) return true;
-		const prev = line[i - 1];
-		return isDelim(prev) || Object.prototype.hasOwnProperty.call(WRAPPERS, prev);
-	};
-
-	const unclosedQuoteStart = (line) => {
-		let inQuote = false;
-		let start = -1;
-		for (let i = 0; i < line.length; i++) {
-			if (line[i] !== '"') continue;
-			inQuote = !inQuote;
-			start = inQuote ? i : -1;
-		}
-		return inQuote ? start : -1;
-	};
-
-	const tokenStart = (line) => {
-		let i = line.length;
-		while (i > 0 && !isDelim(line[i - 1])) i--;
-		return i;
-	};
-
-	const stripWrappers = (line, i) => {
-		while (i < line.length) {
-			const closer = WRAPPERS[line[i]];
-			if (!closer || line.indexOf(closer, i + 1) !== -1) break;
-			i++;
-		}
-		return i;
-	};
-
-	const atRange = () => {
-		const caret = input.selectionStart ?? input.value.length;
-		if (input.selectionEnd !== caret) return null;
-		const value = input.value;
-		const nl = caret > 0 ? value.lastIndexOf("\n", caret - 1) : -1;
-		const lineStart = nl + 1;
-		const line = value.slice(lineStart, caret);
-
-		const q = unclosedQuoteStart(line);
-		if (q >= 0) {
-			let start = q;
-			if (q > 0 && line[q - 1] === "@") start = q - 1;
-			if (line[start] !== "@" || !boundaryOk(line, start)) return null;
-			return { start: lineStart + start, end: caret, query: line.slice(q + 1), quoted: true };
-		}
-
-		let start = stripWrappers(line, tokenStart(line));
-		if (line[start] !== "@" || !boundaryOk(line, start)) return null;
-		return { start: lineStart + start, end: caret, query: line.slice(start + 1), quoted: false };
-	};
-
-	// ---------- / 触发范围 ----------
-	const commandRange = () => {
-		const caret = input.selectionStart ?? input.value.length;
-		if (input.selectionEnd !== caret) return null;
-		const before = input.value.slice(0, caret);
-		if (before.includes("\n")) return null;
-		const lead = before.length - before.trimStart().length;
-		const body = before.slice(lead);
-		if (!body.startsWith("/")) return null;
-		if (/\s/.test(body)) return null;
-		const query = body.slice(1);
-		if (query.includes("/")) return null;
-		return { start: lead, end: caret, query };
-	};
+	// ---------- @ / 触发范围 ----------
+	const caretOf = () => input.selectionStart ?? input.value.length;
+	const atRange = () => atRangeAt(input.value, caretOf(), input.selectionEnd ?? caretOf());
+	const commandRange = () => commandRangeAt(input.value, caretOf(), input.selectionEnd ?? caretOf());
 
 	// ---------- 数据 ----------
-	const rankFiles = () => {
-		const q = String(range?.query || "").toLowerCase().replace(/\\/g, "/");
-		const scored = [];
-		for (const f of fileState.files) {
-			if (!f || typeof f.path !== "string") continue;
-			const base = baseName(f.path).toLowerCase();
-			const full = f.path.toLowerCase();
-			let score = 0;
-			if (!q) {
-				score = 1;
-			} else if (base === q) {
-				score = 100;
-			} else if (base.startsWith(q)) {
-				score = 80;
-			} else if (base.includes(q)) {
-				score = 50;
-			} else if (full.startsWith(q)) {
-				score = 44;
-			} else if (full.includes(q)) {
-				score = 30;
-			} else if (isSubsequence(base, q)) {
-				score = 18;
-			} else {
-				continue;
-			}
-			if (f.dir) score += 8;
-			scored.push({ f, score });
-		}
-		scored.sort((a, b) => {
-			// 空 query 时先列浅层条目，否则深目录会把根目录文件挤掉
-			if (!q) {
-				return (
-					depthOf(a.f.path) - depthOf(b.f.path) ||
-					(b.f.dir ? 1 : 0) - (a.f.dir ? 1 : 0) ||
-					a.f.path.length - b.f.path.length ||
-					a.f.path.localeCompare(b.f.path)
-				);
-			}
-			return (
-				b.score - a.score ||
-				depthOf(a.f.path) - depthOf(b.f.path) ||
-				a.f.path.length - b.f.path.length ||
-				a.f.path.localeCompare(b.f.path)
-			);
-		});
-		return scored.slice(0, MAX_ITEMS).map((x) => x.f);
-	};
+	const rankFiles = () => rankFileItems(fileState.files, range?.query, MAX_ITEMS);
 
 	const renderFiles = () => {
 		if (mode !== "file" || !range) return;
@@ -576,33 +450,7 @@ export function init(ctx) {
 		render();
 	};
 
-	const rankCommands = () => {
-		const q = String(range?.query || "").toLowerCase();
-		const scored = [];
-		for (const c of cmdState.commands) {
-			const name = c.name.toLowerCase();
-			const bare = name.startsWith("skill:") ? name.slice(6) : name;
-			let score = 0;
-			if (!q) {
-				score = 1;
-			} else if (bare.startsWith(q)) {
-				score = 90;
-			} else if (name.startsWith(q)) {
-				score = 85;
-			} else if (bare.includes(q)) {
-				score = 60;
-			} else if (name.includes(q)) {
-				score = 55;
-			} else if (isSubsequence(bare, q) || isSubsequence(name, q)) {
-				score = 25;
-			} else {
-				continue;
-			}
-			scored.push({ c, score });
-		}
-		scored.sort((a, b) => b.score - a.score || a.c.name.localeCompare(b.c.name));
-		return scored.slice(0, MAX_ITEMS).map((x) => x.c);
-	};
+	const rankCommands = () => rankCommandItems(cmdState.commands, range?.query, MAX_ITEMS);
 
 	const renderCommands = () => {
 		if (mode !== "command" || !range) return;
